@@ -288,7 +288,7 @@ export async function handleAdminPasswordLogin(request, env, deps) {
   let user = await deps.upsertUserByEmail(
     db,
     adminEmail,
-    deps.PLAN_CODE_FREE,
+    deps.PLAN_CODE_PERSONAL,
     {},
     env,
   );

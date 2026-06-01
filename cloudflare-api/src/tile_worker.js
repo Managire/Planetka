@@ -1,9 +1,7 @@
 import { corsHeaders, json } from "./worker/responses.js";
 import {
-  isTileFileAllowedForPlan,
   normalizeQualityMode,
   normalizeRequestedPlan,
-  tileFileNotAllowedMessage,
 } from "./worker/entitlements.js";
 import {
   parseNonNegativeInteger,
@@ -51,6 +49,36 @@ async function parseJson(request) {
 
 function normalizeDeviceId(value) {
   return String(value || "").trim().replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128);
+}
+
+function requestClientIp(request) {
+  const direct = String(request.headers.get("CF-Connecting-IP") || request.headers.get("True-Client-IP") || "").trim();
+  if (direct) return direct;
+  const forwarded = String(request.headers.get("X-Forwarded-For") || "").trim();
+  if (forwarded) return String(forwarded.split(",")[0] || "").trim() || "unknown";
+  return "unknown";
+}
+
+function requestClientIpScope(request) {
+  const ip = String(requestClientIp(request) || "").trim().toLowerCase();
+  if (!ip || ip === "unknown") return "";
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) {
+    const parts = ip.split(".");
+    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+  }
+  if (ip.includes(":")) {
+    const [headRaw, tailRaw = ""] = ip.split("::");
+    const head = headRaw ? headRaw.split(":").filter(Boolean) : [];
+    const tail = tailRaw ? tailRaw.split(":").filter(Boolean) : [];
+    const missing = Math.max(0, 8 - head.length - tail.length);
+    const expanded = [
+      ...head.map((part) => part.padStart(4, "0")),
+      ...Array.from({ length: missing }, () => "0000"),
+      ...tail.map((part) => part.padStart(4, "0")),
+    ];
+    return `${expanded.slice(0, 4).join(":")}::/64`;
+  }
+  return "";
 }
 
 function base64UrlEncode(bytes) {
@@ -144,7 +172,9 @@ function authCacheSet(key, value, ttlMs = 60000) {
 async function requireAuthenticatedUserContext(request, env) {
   const token = readBearerToken(request);
   if (!token) return { error: json({ ok: false, error: "missing_bearer_token" }, 401, env) };
-  const cached = authCacheGet(token);
+  const currentIpScope = requestClientIpScope(request);
+  const cacheKey = `${token}:${currentIpScope}`;
+  const cached = authCacheGet(cacheKey);
   if (cached) return cached;
   let access;
   try {
@@ -155,6 +185,11 @@ async function requireAuthenticatedUserContext(request, env) {
   }
   if (String(access && access.type || "") !== "access" || !access.sub) {
     return { error: json({ ok: false, error: "invalid_access_token" }, 401, env) };
+  }
+  const authMethod = String(access.auth_method || "").trim();
+  const tokenIpScope = String(access.client_ip_scope || access.clientIpScope || "").trim();
+  if (authMethod.toLowerCase() === "anonymous" && tokenIpScope && currentIpScope && tokenIpScope !== currentIpScope) {
+    return { error: json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
   }
   const planCode = normalizeRequestedPlan(access.plan_code || access.user_status || access.plan || "");
   const qualityAccessPlanCode = normalizeRequestedPlan(access.quality_access_plan_code || access.qualityAccessPlanCode || planCode);
@@ -168,13 +203,13 @@ async function requireAuthenticatedUserContext(request, env) {
     access,
     planCode,
     qualityAccessPlanCode: qualityAccessPlanCode || planCode,
-    authMethod: String(access.auth_method || "").trim(),
+    authMethod,
     apiKeyId: String(access.api_key_id || "").trim(),
     deviceId: normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || ""),
     devicePolicy: null,
     tokenSource: "bearer_lightweight",
   };
-  authCacheSet(token, result);
+  authCacheSet(cacheKey, result);
   return result;
 }
 
@@ -239,6 +274,7 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     resolve_id: resolveId,
     auth_method: String(auth && auth.authMethod || "").trim(),
     device_id: String(auth && auth.deviceId || "").trim(),
+    client_ip_scope: String(auth && auth.access && (auth.access.client_ip_scope || auth.access.clientIpScope) || "").trim(),
     scene_id: String(options && options.sceneId || "").trim(),
     allowed_tile_files: Array.isArray(options && options.allowedTileFiles)
       ? options.allowedTileFiles.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 128)
@@ -259,7 +295,9 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
 async function readTileSessionClaims(request, env) {
   const rawToken = String(request.headers.get("X-Planetka-Tile-Token") || "").trim();
   if (!rawToken) return { claims: null };
-  const cached = authCacheGet(`tile:${rawToken}`);
+  const currentIpScope = requestClientIpScope(request);
+  const cacheKey = `tile:${rawToken}:${currentIpScope}`;
+  const cached = authCacheGet(cacheKey);
   if (cached) return { claims: cached };
   let payload;
   try {
@@ -271,6 +309,11 @@ async function readTileSessionClaims(request, env) {
   if (String(payload && payload.type || "") !== "tile_session" || !payload.sub) {
     return { error: json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
   }
+  const authMethod = String(payload.auth_method || "").trim();
+  const tokenIpScope = String(payload.client_ip_scope || payload.clientIpScope || "").trim();
+  if (authMethod.toLowerCase() === "anonymous" && tokenIpScope && currentIpScope && tokenIpScope !== currentIpScope) {
+    return { error: json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
+  }
   const claims = {
     userId: String(payload.sub || "").trim(),
     userEmail: String(payload.email || "").trim(),
@@ -279,14 +322,14 @@ async function readTileSessionClaims(request, env) {
     qualityAccessPlanCode: normalizeRequestedPlan(payload.quality_access_plan_code || payload.qualityAccessPlanCode || payload.plan_code || ""),
     qualityMode: normalizeQualityMode(payload.quality_mode || ""),
     resolveId: normalizeResolveId(payload.resolve_id || ""),
-    authMethod: String(payload.auth_method || "").trim(),
+    authMethod,
     deviceId: normalizeDeviceId(payload.device_id || ""),
     sceneId: String(payload.scene_id || payload.sceneId || "").trim(),
     allowedTileFiles: Array.isArray(payload.allowed_tile_files || payload.allowedTileFiles)
       ? (payload.allowed_tile_files || payload.allowedTileFiles).map((value) => String(value || "").trim()).filter(Boolean).slice(0, 128)
       : [],
   };
-  authCacheSet(`tile:${rawToken}`, claims);
+  authCacheSet(cacheKey, claims);
   return { claims };
 }
 
@@ -463,7 +506,6 @@ const TILE_DEPS = {
   dbAll,
   dbGet,
   dbRun,
-  isTileFileAllowedForPlan,
   issueTileSessionToken,
   json,
   normalizeDeviceId,
@@ -471,7 +513,6 @@ const TILE_DEPS = {
   normalizeRequestedPlan,
   normalizeResolveId,
   nowIso,
-  tileFileNotAllowedMessage,
   parseJson,
   readTileSessionClaims,
   recordResolveSummaryEvent,

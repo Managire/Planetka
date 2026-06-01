@@ -24,12 +24,12 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 
   const renderTierSplitValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
-    const free = Number(safeValues.free || 0);
-    const pro = Number(safeValues.pro || safeValues.professional || 0);
+    const personal = Number(safeValues.personal || 0);
+    const commercial = Number(safeValues.commercial || 0);
     const total = Number(safeValues.total || fallbackTotal || 0);
     return [
-      `<span class="tier-free">${escapeHtml(String(valueFormatter(free)))}</span>`,
-      `<span class="tier-pro">${escapeHtml(String(valueFormatter(pro)))}</span>`,
+      `<span class="tier-personal">${escapeHtml(String(valueFormatter(personal)))}</span>`,
+      `<span class="tier-commercial">${escapeHtml(String(valueFormatter(commercial)))}</span>`,
       `<span class="tier-total">${escapeHtml(String(valueFormatter(total)))}</span>`,
     ].join(' <span class="tier-separator">/</span> ');
   };
@@ -55,8 +55,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 12px; }
     .label { color: #93c5fd; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
     .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
-    .tier-free { color: #22c55e; }
-    .tier-pro { color: #ef4444; }
+    .tier-personal { color: #22c55e; }
+    .tier-commercial { color: #ef4444; }
     .tier-total { color: #ffffff; }
     .tier-separator { color: #64748b; font-weight: 500; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
@@ -84,7 +84,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   <div class="muted">Signed in as ${escapeHtml(String(user.email || ""))}. Session source: ${escapeHtml(String(tokenSource || "unknown"))}. Auto-refresh every 15 seconds. Build: ${escapeHtml(buildStamp)}</div>
   <div class="controls">
     <a href="/admin/analytics/users" style="color:#93c5fd; text-decoration:none;">All users</a>
-    <a href="/admin/analytics/products" style="color:#93c5fd; text-decoration:none;">Product pricing</a>
+    <a href="/admin/analytics/products" style="color:#93c5fd; text-decoration:none;">Licence pricing</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
 	  <div class="controls">
@@ -106,10 +106,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
 	  <div class="grid">
-    <div class="card"><div class="label">Users: Free / Pro / Total</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
-    <div class="card"><div class="label">Resolves: Free / Pro / Total</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
-    <div class="card"><div class="label">Tile Requests: Free / Pro / Total</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
-    <div class="card"><div class="label">GB Served: Free / Pro / Total</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
+    <div class="card"><div class="label">Users: Personal / Commercial / Total</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
+    <div class="card"><div class="label">Resolves: Personal / Commercial / Total</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
+    <div class="card"><div class="label">Tile Requests: Personal / Commercial / Total</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
+    <div class="card"><div class="label">GB Served: Personal / Commercial / Total</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
     <div class="card"><div class="label">Tile requests (window)</div><div id="reqCount" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.request_count))}</div></div>
     <div class="card"><div class="label">Bytes served (window)</div><div id="bytesServed" class="value">${escapeHtml(fmtGbLocal(snapshotSummary.bytes_served))} GB</div></div>
     <div class="card"><div class="label">Errors (window)</div><div id="errors" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.error_count))}</div></div>
@@ -197,8 +197,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       };
       const safeValues = values && typeof values === "object" ? values : {};
       const parts = [
-        ["tier-free", Number(safeValues.free || 0)],
-        ["tier-pro", Number(safeValues.pro || safeValues.professional || 0)],
+        ["tier-personal", Number(safeValues.personal || 0)],
+        ["tier-commercial", Number(safeValues.commercial || 0)],
         ["tier-total", Number(safeValues.total || fallbackTotal || 0)],
       ];
       target.innerHTML = parts

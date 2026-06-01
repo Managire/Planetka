@@ -23,6 +23,8 @@ from .auth import (
     allows_texture_quality_for_context,
     ensure_authenticated_session,
     is_authenticated,
+    is_commercial_licence,
+    commercial_licence_required_message,
     texture_quality_not_allowed_message,
 )
 from .asset_builder import (
@@ -40,7 +42,6 @@ from .r2_source import (
     retain_recent_resolve_cache,
 )
 from .sanity_utils import _normalize_texture_source_path, validate_known_good_texture_source
-from .scene_licensing import scene_license_payload
 from .streaming_utils import (
     consume_staged_prefetch_payload,
     prepare_resolve_streaming_for_visible_tiles,
@@ -762,11 +763,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
-    animation_id: StringProperty(
-        name="Animation ID",
-        default="",
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
 
     def _abort_resolve(self, message, code=ErrorCode.RESOLVE_REFRESH_FAILED, exc=None, log_message=None, cleanup_obj=None):
         if cleanup_obj is not None:
@@ -1095,7 +1091,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         full_source_tiles,
         texture_quality_mode,
         normalized,
-        scene_licence_id="",
     ):
         ui_reports = []
         try:
@@ -1134,6 +1129,23 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             ui_reports.append(self._ui_report("WARNING", panorama_message))
             return ResolveEarlyResult(response={'CANCELLED'}, ui_reports=ui_reports)
 
+        if panorama_mode and not is_commercial_licence(get_prefs()):
+            message = commercial_licence_required_message()
+            _store_last_resolve_error(
+                scene,
+                with_error_code(ErrorCode.RESOLVE_PRECHECK_FAILED, message),
+                "failed storing panorama account resolve error",
+            )
+            return ResolveEarlyResult(
+                response=fail(
+                    self,
+                    message,
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                ),
+                ui_reports=ui_reports,
+            )
+
         if bool(getattr(self, "defer_download", False)):
             if _is_render_job_active():
                 logger.info("Planetka: ignored deferred resolve request during active render job.")
@@ -1158,7 +1170,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 [str(tile) for tile in (tiles or ()) if str(tile or "").strip()],
                 manual_request=True,
                 texture_quality_mode_override=texture_quality_mode,
-                scene_licence_id=scene_licence_id,
             )
             if not queued:
                 return ResolveEarlyResult(
@@ -1187,9 +1198,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_altitude_km,
         capture_download_progress=True,
         feature="",
-        scene_id="",
-        animation_id="",
-    ):
+        ):
         ui_reports = []
         phase_start = time.perf_counter()
         try:
@@ -1201,8 +1210,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
-                scene_id=scene_id,
-                animation_id=animation_id,
                 capture_download_progress=bool(capture_download_progress),
             )
             payload_data = self._parse_stream_payload(stream_payload)
@@ -1255,9 +1262,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_altitude_km,
         capture_download_progress=True,
         feature="",
-        scene_id="",
-        animation_id="",
-    ):
+        ):
         stream_payload = consume_staged_prefetch_payload(
             tiles,
             normalized,
@@ -1273,8 +1278,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
-                scene_id=scene_id,
-                animation_id=animation_id,
             )
         if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
             return prepare_resolve_streaming_for_visible_tiles(
@@ -1286,8 +1289,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
-                scene_id=scene_id,
-                animation_id=animation_id,
             )
         return stream_payload
 
@@ -1679,20 +1680,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_altitude_km = float(select_ctx.nav_altitude_km or 0.0)
         phase_tile_select_ms = float(select_ctx.phase_tile_select_ms or 0.0)
 
-        scene_licence_id = ""
-        if _normalize_texture_quality_mode(texture_quality_mode) == "FULL":
-            try:
-                stored_scene_licence_id = str(scene.get("planetka_current_scene_licence_id", "") or "").strip()
-                has_tile_override = bool(str(getattr(self, "tiles_override_json", "") or "").strip())
-                if stored_scene_licence_id and has_tile_override:
-                    scene_licence_id = stored_scene_licence_id
-                else:
-                    scene_licence = scene_license_payload(scene=scene, props=props, full_quality_tiles=tiles)
-                    scene_licence_id = str(scene_licence.get("scene_id", "") or "")
-                if scene_licence_id:
-                    scene["planetka_current_scene_licence_id"] = scene_licence_id
-            except (TypeError, ValueError, RuntimeError, AttributeError):
-                logger.debug("Planetka: failed preparing scene licence id for Full Quality resolve", exc_info=True)
 
         early_result = self._phase_handle_panorama_or_defer(
             context,
@@ -1702,7 +1689,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             full_source_tiles,
             texture_quality_mode,
             normalized,
-            scene_licence_id=scene_licence_id,
         )
         self._flush_ui_reports(getattr(early_result, "ui_reports", ()))
         if getattr(early_result, "response", None) is not None:
@@ -1712,8 +1698,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         explicit_feature = str(getattr(self, "streaming_feature", "") or "").strip().lower()
         if explicit_feature:
             streaming_feature = explicit_feature
-        streaming_animation_id = str(getattr(self, "animation_id", "") or "").strip()
-
         stream_ctx = self._phase_prepare_streaming(
             scene,
             tiles,
@@ -1724,8 +1708,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             nav_altitude_km,
             capture_download_progress=bool(getattr(self, "capture_download_progress", True)),
             feature=streaming_feature,
-            scene_id=scene_licence_id,
-            animation_id=streaming_animation_id,
         )
         self._flush_ui_reports(getattr(stream_ctx, "ui_reports", ()))
         if getattr(stream_ctx, "response", None) is not None:

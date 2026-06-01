@@ -18,7 +18,7 @@ from bpy.props import EnumProperty, FloatProperty, FloatVectorProperty, StringPr
 from mathutils import Vector
 
 from .asset_builder import ensure_planetka_root
-from .auth import get_api_base_url, is_authenticated
+from .auth import get_api_base_url, get_authorized_headers, is_authenticated
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .r2_source import get_remote_cache_folder
@@ -449,7 +449,14 @@ def _download_public_cloud_asset(folder, file_name, progress_label=""):
                 started_at=time.time(),
                 finished_at=0.0,
             )
-        request = urllib.request.Request(url, method="GET", headers={"User-Agent": "Planetka-Blender"})
+        headers = {"User-Agent": "Planetka-Blender"}
+        try:
+            headers.update(get_authorized_headers(allow_refresh=True))
+        except Exception:
+            # Preview/Balanced public cloud assets remain accessible without
+            # auth; Full d001 assets are rejected by the backend for Free.
+            pass
+        request = urllib.request.Request(url, method="GET", headers=headers)
         with urllib.request.urlopen(request, timeout=120) as response, open(temp_path, "wb") as handle:
             total_bytes = 0
             try:
@@ -940,6 +947,15 @@ def _coarser_vdb_cloud_d_level(d_level, multiplier=1):
         target = 1
     candidates = [level for level in levels if level >= target]
     return int(min(candidates) if candidates else max(levels))
+
+
+def _initial_vdb_cloud_d_level_for_quality(quality_mode):
+    mode = _normalize_cloud_quality_mode(quality_mode)
+    if mode == "FULL":
+        return 2
+    if mode == "BALANCED":
+        return 4
+    return 8
 
 
 def _select_local_cloud_adaptive_resolution(
@@ -1511,48 +1527,36 @@ def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
     if not _is_known_remote_vdb_cloud_file(safe_name):
         return ""
 
-    requested_base, requested_level = _split_vdb_lod_filename(safe_name)
-    candidate_names = []
-    for level in _nearest_published_vdb_lod_levels(requested_base, requested_level):
-        candidate = _vdb_lod_filename(requested_base, level)
-        if candidate and candidate not in candidate_names:
-            candidate_names.append(candidate)
-    if int(requested_level) <= 1 and safe_name not in candidate_names:
-        candidate_names.insert(0, safe_name)
-    if not candidate_names:
+    cached = ""
+    cached_dir = _vdb_clouds_dir()
+    if cached_dir:
+        cached = os.path.join(cached_dir, safe_name)
+    cached = _vdb_cloud_asset_paths.get(safe_name, "") or cached
+    if cached and _is_blender_readable_vdb_file(cached):
+        if progress_label:
+            _set_cloud_download_progress(active=False, error="", file_name=safe_name)
+        _vdb_cloud_asset_paths[safe_name] = cached
+        return cached
+    if cached and os.path.isfile(cached):
+        try:
+            os.remove(cached)
+        except OSError:
+            logger.debug("Planetka clouds: failed removing incompatible cached VDB asset: %s", cached, exc_info=True)
+            return ""
+
+    try:
+        resolved = _download_public_cloud_asset(REMOTE_VDB_CLOUDS_FOLDER, safe_name, progress_label=progress_label)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed resolving selected VDB cloud asset", exc_info=True)
         return ""
-
-    assets = _refresh_remote_vdb_cloud_assets(force=False)
-    for candidate_name in candidate_names:
-        cached = assets.get(candidate_name, "")
-        if cached and _is_blender_readable_vdb_file(cached):
-            if progress_label:
-                _set_cloud_download_progress(active=False, error="", file_name=candidate_name)
-            return cached
-        if cached and os.path.isfile(cached):
-            try:
-                os.remove(cached)
-            except OSError:
-                logger.debug("Planetka clouds: failed removing incompatible cached VDB LOD: %s", cached, exc_info=True)
-
-    for candidate_name in candidate_names:
-        resolved = ""
-        for attempt in range(2):
-            try:
-                resolved = _download_public_cloud_asset(REMOTE_VDB_CLOUDS_FOLDER, candidate_name, progress_label=progress_label)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka clouds: failed resolving selected VDB cloud asset", exc_info=True)
-                resolved = ""
-            if not resolved or _is_blender_readable_vdb_file(resolved):
-                break
-            try:
-                os.remove(resolved)
-            except OSError:
-                logger.debug("Planetka clouds: failed removing incompatible downloaded VDB LOD: %s", resolved, exc_info=True)
-                break
-        if resolved and _is_blender_readable_vdb_file(resolved):
-            _vdb_cloud_asset_paths[candidate_name] = resolved
-            return resolved
+    if resolved and _is_blender_readable_vdb_file(resolved):
+        _vdb_cloud_asset_paths[safe_name] = resolved
+        return resolved
+    if resolved and os.path.isfile(resolved):
+        try:
+            os.remove(resolved)
+        except OSError:
+            logger.debug("Planetka clouds: failed removing incompatible downloaded VDB asset: %s", resolved, exc_info=True)
     return ""
 
 
@@ -3394,7 +3398,7 @@ def _resolve_vdb_lod_path(source_path, d_level, allow_download=True):
         requested_level = 1
     is_known_remote_source = _is_known_remote_vdb_cloud_file(source_name)
     if is_known_remote_source:
-        levels = list(_nearest_published_vdb_lod_levels(source_name, requested_level))
+        levels = [requested_level]
     else:
         levels = sorted(
             {int(level) for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if 0 < int(level) <= requested_level},
@@ -4395,7 +4399,12 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             return ""
         return selected
 
-    def _create_vdb_cloud_from_path(self, context, source, vdb_path):
+    def _selected_remote_quality_file(self, props, selected):
+        quality_mode = getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW"
+        initial_d = _initial_vdb_cloud_d_level_for_quality(quality_mode)
+        return _vdb_lod_filename(selected, initial_d) or ""
+
+    def _create_vdb_cloud_from_path(self, context, source, vdb_path, source_file=""):
         scene, props = self._props(context)
         if props is None:
             self.report({'ERROR'}, "Planetka settings unavailable.")
@@ -4489,7 +4498,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_Z, abs(float(new_obj.scale.z)) * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR))
             setattr(new_obj, VDB_CLOUD_PROP_BASE_RADIUS, float(base_radius))
             setattr(new_obj, VDB_CLOUD_OBJ_FILE_PROP, os.path.abspath(vdb_path))
-            new_obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = os.path.abspath(vdb_path)
+            new_obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = str(source_file or os.path.abspath(vdb_path))
             new_obj[VDB_CLOUD_LOADED_FILE_PROP] = os.path.abspath(vdb_path)
             _base_name, source_d = _split_vdb_lod_filename(os.path.basename(vdb_path))
             new_obj[VDB_CLOUD_D_LEVEL_PROP] = int(source_d)
@@ -4498,14 +4507,6 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             _end_cloud_update_suspend()
 
         _apply_vdb_cloud_object(new_obj, scene=scene)
-        quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
-        if _prepare_vdb_cloud_variants(new_obj, scene=scene, allow_download=True):
-            _apply_prepared_vdb_cloud_file(
-                new_obj,
-                scene=scene,
-                allow_prepare_missing=False,
-                quality_mode=quality_mode,
-            )
 
         if source == "LOCAL":
             props.vdb_cloud_file = os.path.abspath(vdb_path)
@@ -4531,7 +4532,9 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
 
         def worker():
             try:
-                path = _resolve_remote_vdb_cloud_asset(selected, progress_label="Downloading VDB Cloud")
+                _scene, props = self._props(context)
+                initial_name = self._selected_remote_quality_file(props, selected)
+                path = _resolve_remote_vdb_cloud_asset(initial_name, progress_label="Downloading VDB Cloud")
                 self._download_path = path
                 if not path or not os.path.isfile(path):
                     self._download_error = "Selected VDB cloud could not be downloaded."
@@ -4561,9 +4564,16 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         if not selected:
             self.report({'ERROR'}, "Select a Planetka Cloud VDB preset first.")
             return {'CANCELLED'}
-        cached = _refresh_remote_vdb_cloud_assets(force=False).get(selected, "")
+        initial_name = self._selected_remote_quality_file(props, selected)
+        cached_dir = _vdb_clouds_dir()
+        cached = os.path.join(cached_dir, initial_name) if cached_dir and initial_name else ""
         if cached and os.path.isfile(cached):
-            return self._create_vdb_cloud_from_path(context, "CLOUD", cached)
+            if _is_blender_readable_vdb_file(cached):
+                return self._create_vdb_cloud_from_path(context, "CLOUD", cached, source_file=selected)
+            try:
+                os.remove(cached)
+            except OSError:
+                logger.debug("Planetka clouds: failed removing incompatible cached VDB asset: %s", cached, exc_info=True)
         return self._start_remote_download(context, selected)
 
     def modal(self, context, event):
@@ -4587,7 +4597,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         if self._download_error:
             self.report({'ERROR'}, self._download_error)
             return {'CANCELLED'}
-        return self._create_vdb_cloud_from_path(context, "CLOUD", self._download_path)
+        return self._create_vdb_cloud_from_path(context, "CLOUD", self._download_path, source_file=self._download_selected)
 
     def execute(self, context):
         scene, props = self._props(context)
@@ -4603,7 +4613,9 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             if not selected:
                 self.report({'ERROR'}, "Select a Planetka Cloud VDB preset first.")
                 return {'CANCELLED'}
-            vdb_path = _resolve_remote_vdb_cloud_asset(selected, progress_label="Downloading VDB Cloud")
+            initial_name = self._selected_remote_quality_file(props, selected)
+            vdb_path = _resolve_remote_vdb_cloud_asset(initial_name, progress_label="Downloading VDB Cloud")
+            return self._create_vdb_cloud_from_path(context, source, vdb_path, source_file=selected)
         return self._create_vdb_cloud_from_path(context, source, vdb_path)
 
 

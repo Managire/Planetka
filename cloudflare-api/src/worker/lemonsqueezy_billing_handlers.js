@@ -1,18 +1,13 @@
 import {
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_COMMERCIAL,
   normalizeRequestedPlan,
 } from "./entitlements.js";
 
 const LEMON_API_BASE = "https://api.lemonsqueezy.com/v1";
 const LEMON_LICENSE_API_BASE = "https://api.lemonsqueezy.com/v1/licenses";
 const LEMON_WEBHOOK_EVENTS_TABLE = "lemon_webhook_events";
-const SCENE_PURCHASES_TABLE = "scene_full_quality_purchases";
-const SCENE_PURCHASE_PENDING_TABLE = "scene_full_quality_purchase_pending";
-const SCENE_PURCHASE_VERIFIED_EMAILS_TABLE = "scene_purchase_verified_emails";
-const ANIMATION_PURCHASES_TABLE = "animation_render_purchases";
-const ANIMATION_PURCHASE_PENDING_TABLE = "animation_render_purchase_pending";
-const DEFAULT_PRO_PRICE_LABEL = "€349";
-const DEFAULT_SCENE_PRICE_EUR = 15;
+const DEFAULT_COMMERCIAL_PRICE_LABEL = "";
+const DEFAULT_COMMERCIAL_PRICE_CENTS = 25000;
 
 function textEncoder() {
   return new TextEncoder();
@@ -71,11 +66,9 @@ function lemonEnv(env, deps) {
   return {
     apiKey: deps.requireSecret(env, "LEMONSQUEEZY_API_KEY"),
     storeId: String(env.LEMONSQUEEZY_STORE_ID || "").trim(),
-    proVariantId: String(env.LEMONSQUEEZY_PRO_VARIANT_ID || "").trim(),
-    sceneProductId: String(env.LEMONSQUEEZY_SCENE_PRODUCT_ID || "").trim(),
-    sceneVariantId: String(env.LEMONSQUEEZY_SCENE_VARIANT_ID || "").trim(),
+    commercialVariantId: String(env.LEMONSQUEEZY_COMMERCIAL_VARIANT_ID || "").trim(),
     testMode: boolFromEnv(env.LEMONSQUEEZY_TEST_MODE, false),
-    priceLabel: String(env.LEMONSQUEEZY_PRO_PRICE_LABEL || DEFAULT_PRO_PRICE_LABEL).trim() || DEFAULT_PRO_PRICE_LABEL,
+    priceLabel: String(env.LEMONSQUEEZY_COMMERCIAL_PRICE_LABEL || DEFAULT_COMMERCIAL_PRICE_LABEL).trim() || DEFAULT_COMMERCIAL_PRICE_LABEL,
   };
 }
 
@@ -83,19 +76,11 @@ function requireLemonIds(config) {
   if (!config.storeId) {
     throw new Error("missing_lemonsqueezy_store_id");
   }
-  if (!config.proVariantId) {
-    throw new Error("missing_lemonsqueezy_pro_variant_id");
+  if (!config.commercialVariantId) {
+    throw new Error("missing_lemonsqueezy_commercial_variant_id");
   }
 }
 
-function requireLemonSceneIds(config) {
-  if (!config.storeId) {
-    throw new Error("missing_lemonsqueezy_store_id");
-  }
-  if (!config.sceneVariantId) {
-    throw new Error("missing_lemonsqueezy_scene_variant_id");
-  }
-}
 
 function extractCheckoutUrl(payload) {
   return String(payload && payload.data && payload.data.attributes && payload.data.attributes.url || "").trim();
@@ -107,11 +92,7 @@ function extractCheckoutId(payload) {
 
 async function createLemonCheckout({ env, deps, user, config, variantId, checkoutData, customPriceCents = null, successPath = "/billing/lemonsqueezy/success" }) {
   const apiBaseUrl = String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "");
-  const envRedirectKey = successPath === "/billing/lemonsqueezy/scene-success"
-    ? "LEMONSQUEEZY_SCENE_SUCCESS_URL"
-    : successPath === "/billing/lemonsqueezy/animation-success"
-      ? "LEMONSQUEEZY_ANIMATION_SUCCESS_URL"
-      : "LEMONSQUEEZY_SUCCESS_URL";
+  const envRedirectKey = "LEMONSQUEEZY_SUCCESS_URL";
   const redirectUrl = String(env[envRedirectKey] || `${apiBaseUrl}${successPath}`).trim();
   const userEmail = typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
     ? ""
@@ -121,14 +102,14 @@ async function createLemonCheckout({ env, deps, user, config, variantId, checkou
     : {
       custom: {
         user_id: String(user.id || "").trim(),
-        product: "planetka_pro",
+        product: "planetka_commercial",
       },
     };
   if (!finalCheckoutData.custom.user_id) {
     finalCheckoutData.custom.user_id = String(user.id || "").trim();
   }
   if (!finalCheckoutData.custom.product) {
-    finalCheckoutData.custom.product = "planetka_pro";
+    finalCheckoutData.custom.product = "planetka_commercial";
   }
   if (userEmail && !finalCheckoutData.email) {
     finalCheckoutData.email = userEmail;
@@ -136,7 +117,7 @@ async function createLemonCheckout({ env, deps, user, config, variantId, checkou
       finalCheckoutData.custom.email = userEmail;
     }
   }
-  const selectedVariantId = String(variantId || config.proVariantId || "").trim();
+  const selectedVariantId = String(variantId || config.commercialVariantId || "").trim();
   const attributes = {
     product_options: {
       enabled_variants: [Number(selectedVariantId)],
@@ -147,7 +128,7 @@ async function createLemonCheckout({ env, deps, user, config, variantId, checkou
       media: true,
       logo: true,
       desc: true,
-      discount: true,
+      discount: false,
     },
     checkout_data: finalCheckoutData,
     test_mode: Boolean(config.testMode),
@@ -192,20 +173,21 @@ async function createLemonCheckout({ env, deps, user, config, variantId, checkou
   return { checkoutUrl, checkoutId: extractCheckoutId(payload) };
 }
 
-async function createProLemonCheckout({ env, deps, user, config }) {
+async function createCommercialLemonCheckout({ env, deps, user, config }) {
   requireLemonIds(config);
   return await createLemonCheckout({
     env,
     deps,
     user,
     config,
-    variantId: config.proVariantId,
+    variantId: config.commercialVariantId,
     checkoutData: {
       custom: {
-      user_id: String(user.id || "").trim(),
-      product: "planetka_pro",
+        user_id: String(user.id || "").trim(),
+        product: "planetka_commercial",
       },
     },
+    customPriceCents: DEFAULT_COMMERCIAL_PRICE_CENTS,
   });
 }
 
@@ -309,331 +291,6 @@ async function markLemonWebhookEventFailed(db, eventId, error, deps) {
   );
 }
 
-function centsForScenePrice(env, rawValue) {
-  const fallback = Number(env.PLANETKA_SCENE_FULL_QUALITY_PRICE_EUR || DEFAULT_SCENE_PRICE_EUR);
-  const parsed = Number.parseFloat(String(rawValue ?? fallback));
-  const eur = Number.isFinite(parsed) ? Math.max(0, Math.min(10000, parsed)) : DEFAULT_SCENE_PRICE_EUR;
-  return Math.round(eur * 100);
-}
-
-async function scenePriceCents(db, env, deps) {
-  try {
-    const row = await deps.dbGet(
-      db,
-      `SELECT value FROM app_settings WHERE key = ? LIMIT 1`,
-      ["custom_scene_licence_fee_eur"],
-    );
-    return centsForScenePrice(env, row && row.value);
-  } catch (_error) {
-    return centsForScenePrice(env, env.PLANETKA_SCENE_FULL_QUALITY_PRICE_EUR);
-  }
-}
-
-function normalizeSceneId(value) {
-  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
-}
-
-function normalizeAnimationId(value) {
-  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
-}
-
-function animationPriceCents(frameCount) {
-  const frames = Math.max(1, Number.parseInt(frameCount, 10) || 1);
-  return Math.max(1, Math.ceil(frames / 300)) * 2900;
-}
-
-function normalizeTileList(value) {
-  const source = Array.isArray(value) ? value : [];
-  const seen = new Set();
-  const result = [];
-  for (const item of source) {
-    const tile = String(item || "").trim();
-    if (!tile || tile.length > 120 || seen.has(tile)) {
-      continue;
-    }
-    seen.add(tile);
-    result.push(tile);
-  }
-  result.sort();
-  return result.slice(0, 64);
-}
-
-function safeJsonString(value, maxLength = 20000) {
-  try {
-    return JSON.stringify(value ?? null).slice(0, maxLength);
-  } catch (_error) {
-    return "null";
-  }
-}
-
-async function ensureScenePurchaseTables(db, deps) {
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS ${SCENE_PURCHASE_PENDING_TABLE} (
-        id TEXT PRIMARY KEY,
-        scene_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        variant_id TEXT,
-        amount_cents INTEGER NOT NULL DEFAULT 0,
-        currency TEXT NOT NULL DEFAULT 'EUR',
-        camera_json TEXT,
-        tiles_json TEXT,
-        tile_hash TEXT,
-        checkout_id TEXT,
-        checkout_url TEXT,
-        created_at TEXT NOT NULL,
-        completed_at TEXT
-      )
-    `,
-  );
-  await deps.dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_scene_pending_user_scene ON ${SCENE_PURCHASE_PENDING_TABLE}(user_id, scene_id)`,
-  );
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS ${SCENE_PURCHASES_TABLE} (
-        id TEXT PRIMARY KEY,
-        scene_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        purchase_type TEXT NOT NULL DEFAULT 'scene_full_quality_commercial_license',
-        order_id TEXT,
-        variant_id TEXT,
-        amount_cents INTEGER NOT NULL DEFAULT 0,
-        currency TEXT NOT NULL DEFAULT 'EUR',
-        camera_json TEXT,
-        tiles_json TEXT,
-        tile_hash TEXT,
-        status TEXT NOT NULL DEFAULT 'paid',
-        created_at TEXT NOT NULL,
-        purchased_at TEXT NOT NULL
-      )
-    `,
-  );
-  await deps.dbRun(
-    db,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_purchase_user_scene_paid ON ${SCENE_PURCHASES_TABLE}(user_id, scene_id)`,
-  );
-  await deps.dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_scene_purchase_email ON ${SCENE_PURCHASES_TABLE}(lower(user_email), purchased_at DESC)`,
-  );
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS ${SCENE_PURCHASE_VERIFIED_EMAILS_TABLE} (
-        user_id TEXT NOT NULL,
-        email TEXT NOT NULL,
-        verified_at TEXT NOT NULL,
-        source TEXT NOT NULL DEFAULT 'email_link',
-        PRIMARY KEY (user_id, email)
-      )
-    `,
-  );
-  await deps.dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON ${SCENE_PURCHASE_VERIFIED_EMAILS_TABLE}(email)`,
-  );
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS ${ANIMATION_PURCHASE_PENDING_TABLE} (
-        id TEXT PRIMARY KEY,
-        animation_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        variant_id TEXT,
-        amount_cents INTEGER NOT NULL DEFAULT 0,
-        currency TEXT NOT NULL DEFAULT 'EUR',
-        frame_count INTEGER NOT NULL DEFAULT 0,
-        animation_json TEXT,
-        checkout_id TEXT,
-        checkout_url TEXT,
-        created_at TEXT NOT NULL,
-        completed_at TEXT
-      )
-    `,
-  );
-  await deps.dbRun(db, `CREATE INDEX IF NOT EXISTS idx_animation_pending_user_animation ON ${ANIMATION_PURCHASE_PENDING_TABLE}(user_id, animation_id)`);
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS ${ANIMATION_PURCHASES_TABLE} (
-        id TEXT PRIMARY KEY,
-        animation_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        purchase_type TEXT NOT NULL DEFAULT 'animation_render_license',
-        order_id TEXT,
-        variant_id TEXT,
-        amount_cents INTEGER NOT NULL DEFAULT 0,
-        currency TEXT NOT NULL DEFAULT 'EUR',
-        frame_count INTEGER NOT NULL DEFAULT 0,
-        animation_json TEXT,
-        status TEXT NOT NULL DEFAULT 'paid',
-        created_at TEXT NOT NULL,
-        purchased_at TEXT NOT NULL
-      )
-    `,
-  );
-  await deps.dbRun(db, `CREATE UNIQUE INDEX IF NOT EXISTS idx_animation_purchase_user_animation_paid ON ${ANIMATION_PURCHASES_TABLE}(user_id, animation_id)`);
-}
-
-async function scenePurchaseLookupEmails(db, user, deps) {
-  const emails = new Set();
-  const currentEmail = deps.normalizeEmail(user && user.email || "");
-  if (currentEmail && !(typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(currentEmail))) {
-    emails.add(currentEmail);
-  }
-  if (typeof deps.dbAll === "function") {
-    const rows = await deps.dbAll(
-      db,
-      `SELECT email FROM ${SCENE_PURCHASE_VERIFIED_EMAILS_TABLE} WHERE user_id = ?`,
-      [String(user && user.id || "")],
-    );
-    for (const row of Array.isArray(rows) ? rows : []) {
-      const email = deps.normalizeEmail(row && row.email || "");
-      if (email) {
-        emails.add(email);
-      }
-    }
-  }
-  return Array.from(emails).slice(0, 12);
-}
-
-function purchaseWhereClause(user, emails, idColumn = "", includeId = "", normalizeId = (value) => String(value || "").trim()) {
-  const clauses = ["user_id = ?"];
-  const bindings = [String(user && user.id || "")];
-  if (Array.isArray(emails) && emails.length) {
-    clauses.push(`lower(user_email) IN (${emails.map(() => "?").join(", ")})`);
-    bindings.push(...emails);
-  }
-  const safeIdColumn = String(idColumn || "").trim();
-  const normalizedId = includeId ? normalizeId(includeId) : "";
-  if (safeIdColumn && normalizedId) {
-    bindings.push(normalizedId);
-  }
-  return {
-    where: `(${clauses.join(" OR ")})${safeIdColumn && normalizedId ? ` AND ${safeIdColumn} = ?` : ""} AND status = 'paid'`,
-    bindings,
-  };
-}
-
-function scenePurchaseWhereClause(user, emails, includeSceneId = false) {
-  return purchaseWhereClause(user, emails, "scene_id", includeSceneId, normalizeSceneId);
-}
-
-function animationPurchaseWhereClause(user, emails, includeAnimationId = false) {
-  return purchaseWhereClause(user, emails, "animation_id", includeAnimationId, normalizeAnimationId);
-}
-
-async function loadScenePurchase(db, user, sceneId, deps) {
-  await ensureScenePurchaseTables(db, deps);
-  const emails = await scenePurchaseLookupEmails(db, user, deps);
-  const filter = scenePurchaseWhereClause(user, emails, sceneId);
-  return await deps.dbGet(
-    db,
-    `
-      SELECT *
-      FROM ${SCENE_PURCHASES_TABLE}
-      WHERE ${filter.where}
-      LIMIT 1
-    `,
-    filter.bindings,
-  );
-}
-
-async function loadAnimationPurchase(db, user, animationId, deps) {
-  await ensureScenePurchaseTables(db, deps);
-  const emails = await scenePurchaseLookupEmails(db, user, deps);
-  const filter = animationPurchaseWhereClause(user, emails, animationId);
-  return await deps.dbGet(
-    db,
-    `
-      SELECT *
-      FROM ${ANIMATION_PURCHASES_TABLE}
-      WHERE ${filter.where}
-      LIMIT 1
-    `,
-    filter.bindings,
-  );
-}
-
-async function listScenePurchases(db, user, deps, limit = 50) {
-  await ensureScenePurchaseTables(db, deps);
-  const emails = await scenePurchaseLookupEmails(db, user, deps);
-  const filter = scenePurchaseWhereClause(user, emails);
-  const rows = typeof deps.dbAll === "function"
-    ? await deps.dbAll(
-      db,
-      `
-        SELECT id, scene_id, user_id, user_email, purchase_type, amount_cents, currency,
-               camera_json, tiles_json, tile_hash, purchased_at
-        FROM ${SCENE_PURCHASES_TABLE}
-        WHERE ${filter.where}
-        GROUP BY scene_id
-        ORDER BY purchased_at DESC
-        LIMIT ?
-      `,
-      [...filter.bindings, Math.max(1, Math.min(200, Number.parseInt(limit, 10) || 50))],
-    )
-    : [];
-  return (Array.isArray(rows) ? rows : []).map((row) => ({
-    id: String(row && row.id || ""),
-    scene_id: String(row && row.scene_id || ""),
-    purchase_type: String(row && row.purchase_type || "scene_full_quality_commercial_license"),
-    amount_cents: Number.parseInt(row && row.amount_cents || 0, 10) || 0,
-    currency: String(row && row.currency || "EUR"),
-    camera: (() => {
-      try { return JSON.parse(String(row && row.camera_json || "{}")); } catch (_error) { return {}; }
-    })(),
-    tiles: (() => {
-      try { return JSON.parse(String(row && row.tiles_json || "[]")); } catch (_error) { return []; }
-    })(),
-    tile_hash: String(row && row.tile_hash || ""),
-    purchased_at: String(row && row.purchased_at || ""),
-  }));
-}
-
-async function listAnimationPurchases(db, user, deps, limit = 50) {
-  await ensureScenePurchaseTables(db, deps);
-  const emails = await scenePurchaseLookupEmails(db, user, deps);
-  const filter = animationPurchaseWhereClause(user, emails);
-  const rows = typeof deps.dbAll === "function"
-    ? await deps.dbAll(
-      db,
-      `
-        SELECT id, animation_id, user_id, user_email, purchase_type, order_id, variant_id,
-               amount_cents, currency, frame_count, animation_json, purchased_at
-        FROM ${ANIMATION_PURCHASES_TABLE}
-        WHERE ${filter.where}
-        GROUP BY animation_id
-        ORDER BY purchased_at DESC
-        LIMIT ?
-      `,
-      [...filter.bindings, Math.max(1, Math.min(200, Number.parseInt(limit, 10) || 50))],
-    )
-    : [];
-  return (Array.isArray(rows) ? rows : []).map((row) => ({
-    id: String(row && row.id || ""),
-    animation_id: String(row && row.animation_id || ""),
-    purchase_type: String(row && row.purchase_type || "animation_render_license"),
-    amount_cents: Number.parseInt(row && row.amount_cents || 0, 10) || 0,
-    currency: String(row && row.currency || "EUR"),
-    frame_count: Number.parseInt(row && row.frame_count || 0, 10) || 0,
-    animation: (() => {
-      try { return JSON.parse(String(row && row.animation_json || "{}")); } catch (_error) { return {}; }
-    })(),
-    purchased_at: String(row && row.purchased_at || ""),
-  }));
-}
-
 function extractWebhookDetails(payload, request) {
   const meta = payload && payload.meta || {};
   const data = payload && payload.data || {};
@@ -653,9 +310,6 @@ function extractWebhookDetails(payload, request) {
     userId: String(custom.user_id || custom.userId || "").trim(),
     email: String(custom.email || attrs.user_email || attrs.customer_email || "").trim().toLowerCase(),
     product: String(custom.product || "").trim(),
-    purchaseId: String(custom.purchase_id || custom.purchaseId || "").trim(),
-    sceneId: normalizeSceneId(custom.scene_id || custom.sceneId || ""),
-    animationId: normalizeAnimationId(custom.animation_id || custom.animationId || ""),
     variantId,
     amountCents: Number.parseInt(attrs.total || attrs.subtotal || attrs.total_usd || 0, 10) || 0,
     currency: String(attrs.currency || "EUR").trim().toUpperCase() || "EUR",
@@ -663,7 +317,7 @@ function extractWebhookDetails(payload, request) {
   };
 }
 
-async function upgradeUserToPro(db, { userId, email }, deps) {
+async function upgradeUserToCommercial(db, { userId, email }, deps) {
   const normalizedEmail = deps.normalizeEmail(email || "");
   let user = null;
   if (userId) {
@@ -690,12 +344,12 @@ async function upgradeUserToPro(db, { userId, email }, deps) {
     );
     if (!existingEmailUser) {
       finalEmail = normalizedEmail;
-      await deps.dbRun(db, `UPDATE users SET status = ?, email = ? WHERE id = ?`, [PLAN_CODE_PROFESSIONAL, normalizedEmail, targetUserId]);
+      await deps.dbRun(db, `UPDATE users SET status = ?, email = ? WHERE id = ?`, [PLAN_CODE_COMMERCIAL, normalizedEmail, targetUserId]);
     } else {
-      await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [PLAN_CODE_PROFESSIONAL, targetUserId]);
+      await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [PLAN_CODE_COMMERCIAL, targetUserId]);
     }
   } else {
-    await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [PLAN_CODE_PROFESSIONAL, targetUserId]);
+    await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [PLAN_CODE_COMMERCIAL, targetUserId]);
   }
   const apiKeysResult = await deps.dbRun(
     db,
@@ -705,7 +359,7 @@ async function upgradeUserToPro(db, { userId, email }, deps) {
       WHERE user_id = ?
         AND status = 'active'
     `,
-    [PLAN_CODE_PROFESSIONAL, targetUserId],
+    [PLAN_CODE_COMMERCIAL, targetUserId],
   );
   const revokedSessionsResult = await deps.dbRun(
     db,
@@ -721,7 +375,7 @@ async function upgradeUserToPro(db, { userId, email }, deps) {
     userId: targetUserId,
     email: finalEmail,
     previousPlan,
-    planCode: PLAN_CODE_PROFESSIONAL,
+    planCode: PLAN_CODE_COMMERCIAL,
     updatedActiveApiKeys: deps.dbMetaChanges(apiKeysResult),
     revokedSessions: deps.dbMetaChanges(revokedSessionsResult),
     updatedAt: now,
@@ -741,8 +395,8 @@ export function createLemonSqueezyBillingHandlers(deps) {
     const { db, user } = auth;
     const accountState = await deps.buildAccountState(db, user, env);
     const planCode = normalizeRequestedPlan(accountState.planCode || user.status);
-    if (planCode === PLAN_CODE_PROFESSIONAL) {
-      return deps.json({ ok: true, already_pro: true, plan_code: PLAN_CODE_PROFESSIONAL }, 200, env);
+    if (planCode === PLAN_CODE_COMMERCIAL) {
+      return deps.json({ ok: true, already_commercial: true, plan_code: PLAN_CODE_COMMERCIAL }, 200, env);
     }
     let config;
     try {
@@ -752,7 +406,7 @@ export function createLemonSqueezyBillingHandlers(deps) {
       console.error("lemonsqueezy.checkout_config_error", String(error && error.message || error));
       return deps.json({ ok: false, error: "lemonsqueezy_not_configured" }, 503, env);
     }
-    const checkout = await createProLemonCheckout({ env, deps, user, config });
+    const checkout = await createCommercialLemonCheckout({ env, deps, user, config });
     if (checkout.error) {
       return deps.json({ ok: false, error: checkout.error }, checkout.status || 502, env);
     }
@@ -762,291 +416,6 @@ export function createLemonSqueezyBillingHandlers(deps) {
         checkout_url: checkout.checkoutUrl,
         price_label: config.priceLabel,
         test_mode: Boolean(config.testMode),
-      },
-      200,
-      env,
-    );
-  }
-
-  async function handleCreateSceneCheckout(request, env) {
-    const auth = await deps.requireAuthenticatedUserContext(
-      request,
-      env,
-      { enforceApiKeyDevicePolicy: true },
-    );
-    if (auth.error) {
-      return auth.error;
-    }
-    const { db, user } = auth;
-    const body = await deps.parseJson(request);
-    const sceneId = normalizeSceneId(body.scene_id || body.sceneId || "");
-    const tiles = normalizeTileList(body.tiles || body.full_quality_tiles || body.fullQualityTiles || []);
-    if (!sceneId || !tiles.length) {
-      return deps.json({ ok: false, error: "missing_scene_purchase_details" }, 400, env);
-    }
-    await ensureScenePurchaseTables(db, deps);
-    const existing = await loadScenePurchase(db, user, sceneId, deps);
-    if (existing) {
-      return deps.json({ ok: true, already_purchased: true, scene_id: sceneId, purchase_id: String(existing.id || "") }, 200, env);
-    }
-    let config;
-    try {
-      config = lemonEnv(env, deps);
-      requireLemonSceneIds(config);
-    } catch (error) {
-      console.error("lemonsqueezy.scene_checkout_config_error", String(error && error.message || error));
-      return deps.json({ ok: false, error: "scene_checkout_not_configured" }, 503, env);
-    }
-    const amountCents = await scenePriceCents(db, env, deps);
-    const purchaseId = crypto.randomUUID();
-    const now = deps.nowIso();
-    const userEmail = typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
-      ? ""
-      : deps.normalizeEmail(user.email || "");
-    const cameraPayload = body.camera && typeof body.camera === "object" ? body.camera : {};
-    const tileHash = String(body.tile_hash || body.tileHash || "").trim().slice(0, 128);
-    await deps.dbRun(
-      db,
-      `
-        INSERT INTO ${SCENE_PURCHASE_PENDING_TABLE} (
-          id, scene_id, user_id, user_email, status, variant_id, amount_cents, currency,
-          camera_json, tiles_json, tile_hash, created_at
-        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, 'EUR', ?, ?, ?, ?)
-      `,
-      [
-        purchaseId,
-        sceneId,
-        String(user.id || ""),
-        userEmail,
-        String(config.sceneVariantId),
-        amountCents,
-        safeJsonString(cameraPayload),
-        safeJsonString(tiles),
-        tileHash,
-        now,
-      ],
-    );
-    const checkout = await createLemonCheckout({
-      env,
-      deps,
-      user,
-      config,
-      variantId: config.sceneVariantId,
-      customPriceCents: amountCents,
-      successPath: "/billing/lemonsqueezy/scene-success",
-      checkoutData: {
-        custom: {
-          user_id: String(user.id || ""),
-          product: "scene_full_quality_commercial_license",
-          purchase_id: purchaseId,
-          scene_id: sceneId,
-        },
-      },
-    });
-    if (checkout.error) {
-      return deps.json({ ok: false, error: checkout.error }, checkout.status || 502, env);
-    }
-    await deps.dbRun(
-      db,
-      `UPDATE ${SCENE_PURCHASE_PENDING_TABLE} SET checkout_id = ?, checkout_url = ? WHERE id = ?`,
-      [String(checkout.checkoutId || ""), String(checkout.checkoutUrl || ""), purchaseId],
-    );
-    return deps.json(
-      {
-        ok: true,
-        checkout_url: checkout.checkoutUrl,
-        purchase_id: purchaseId,
-        scene_id: sceneId,
-        amount_cents: amountCents,
-        currency: "EUR",
-        test_mode: Boolean(config.testMode),
-      },
-      200,
-      env,
-    );
-  }
-
-  async function handleCreateAnimationCheckout(request, env) {
-    const auth = await deps.requireAuthenticatedUserContext(
-      request,
-      env,
-      { enforceApiKeyDevicePolicy: true },
-    );
-    if (auth.error) {
-      return auth.error;
-    }
-    const { db, user } = auth;
-    const body = await deps.parseJson(request);
-    const animationId = normalizeAnimationId(body.animation_id || body.animationId || "");
-    const frameCount = Math.max(1, Number.parseInt(body.frame_count || body.frameCount || 0, 10) || 0);
-    if (!animationId || frameCount <= 0) {
-      return deps.json({ ok: false, error: "missing_animation_purchase_details" }, 400, env);
-    }
-    await ensureScenePurchaseTables(db, deps);
-    const existing = await loadAnimationPurchase(db, user, animationId, deps);
-    if (existing) {
-      return deps.json({ ok: true, already_purchased: true, animation_id: animationId, purchase_id: String(existing.id || "") }, 200, env);
-    }
-    let config;
-    try {
-      config = lemonEnv(env, deps);
-      requireLemonSceneIds(config);
-    } catch (error) {
-      console.error("lemonsqueezy.animation_checkout_config_error", String(error && error.message || error));
-      return deps.json({ ok: false, error: "animation_checkout_not_configured" }, 503, env);
-    }
-    const amountCents = animationPriceCents(frameCount);
-    const purchaseId = crypto.randomUUID();
-    const now = deps.nowIso();
-    const userEmail = typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
-      ? ""
-      : deps.normalizeEmail(user.email || "");
-    await deps.dbRun(
-      db,
-      `
-        INSERT INTO ${ANIMATION_PURCHASE_PENDING_TABLE} (
-          id, animation_id, user_id, user_email, status, variant_id, amount_cents, currency,
-          frame_count, animation_json, created_at
-        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, 'EUR', ?, ?, ?)
-      `,
-      [
-        purchaseId,
-        animationId,
-        String(user.id || ""),
-        userEmail,
-        String(config.sceneVariantId),
-        amountCents,
-        frameCount,
-        safeJsonString(body, 30000),
-        now,
-      ],
-    );
-    const checkout = await createLemonCheckout({
-      env,
-      deps,
-      user,
-      config,
-      variantId: config.sceneVariantId,
-      customPriceCents: amountCents,
-      successPath: "/billing/lemonsqueezy/animation-success",
-      checkoutData: {
-        custom: {
-          user_id: String(user.id || ""),
-          product: "animation_render_license",
-          purchase_id: purchaseId,
-          animation_id: animationId,
-        },
-      },
-    });
-    if (checkout.error) {
-      return deps.json({ ok: false, error: checkout.error }, checkout.status || 502, env);
-    }
-    await deps.dbRun(
-      db,
-      `UPDATE ${ANIMATION_PURCHASE_PENDING_TABLE} SET checkout_id = ?, checkout_url = ? WHERE id = ?`,
-      [String(checkout.checkoutId || ""), String(checkout.checkoutUrl || ""), purchaseId],
-    );
-    return deps.json(
-      {
-        ok: true,
-        checkout_url: checkout.checkoutUrl,
-        purchase_id: purchaseId,
-        animation_id: animationId,
-        amount_cents: amountCents,
-        currency: "EUR",
-        test_mode: Boolean(config.testMode),
-      },
-      200,
-      env,
-    );
-  }
-
-  async function handleCheckAnimationPurchase(request, env) {
-    const auth = await deps.requireAuthenticatedUserContext(
-      request,
-      env,
-      { enforceApiKeyDevicePolicy: true },
-    );
-    if (auth.error) {
-      return auth.error;
-    }
-    const url = new URL(request.url);
-    let animationId = normalizeAnimationId(url.searchParams.get("animation_id") || "");
-    if (!animationId && request.method === "POST") {
-      const body = await deps.parseJson(request);
-      animationId = normalizeAnimationId(body.animation_id || body.animationId || "");
-    }
-    if (!animationId) {
-      return deps.json({ ok: false, error: "missing_animation_id" }, 400, env);
-    }
-    const purchase = await loadAnimationPurchase(auth.db, auth.user, animationId, deps);
-    return deps.json(
-      {
-        ok: true,
-        purchased: Boolean(purchase),
-        animation_id: animationId,
-        purchase_id: purchase ? String(purchase.id || "") : "",
-      },
-      200,
-      env,
-    );
-  }
-
-  async function handleListScenePurchases(request, env) {
-    const auth = await deps.requireAuthenticatedUserContext(
-      request,
-      env,
-      { enforceApiKeyDevicePolicy: true },
-    );
-    if (auth.error) {
-      return auth.error;
-    }
-    const url = new URL(request.url);
-    const limit = Number.parseInt(url.searchParams.get("limit") || "50", 10) || 50;
-    const purchases = await listScenePurchases(auth.db, auth.user, deps, limit);
-    return deps.json({ ok: true, purchases }, 200, env);
-  }
-
-  async function handleListAnimationPurchases(request, env) {
-    const auth = await deps.requireAuthenticatedUserContext(
-      request,
-      env,
-      { enforceApiKeyDevicePolicy: true },
-    );
-    if (auth.error) {
-      return auth.error;
-    }
-    const url = new URL(request.url);
-    const limit = Number.parseInt(url.searchParams.get("limit") || "50", 10) || 50;
-    const purchases = await listAnimationPurchases(auth.db, auth.user, deps, limit);
-    return deps.json({ ok: true, purchases }, 200, env);
-  }
-
-  async function handleCheckScenePurchase(request, env) {
-    const auth = await deps.requireAuthenticatedUserContext(
-      request,
-      env,
-      { enforceApiKeyDevicePolicy: true },
-    );
-    if (auth.error) {
-      return auth.error;
-    }
-    const url = new URL(request.url);
-    let sceneId = normalizeSceneId(url.searchParams.get("scene_id") || "");
-    if (!sceneId && request.method === "POST") {
-      const body = await deps.parseJson(request);
-      sceneId = normalizeSceneId(body.scene_id || body.sceneId || "");
-    }
-    if (!sceneId) {
-      return deps.json({ ok: false, error: "missing_scene_id" }, 400, env);
-    }
-    const purchase = await loadScenePurchase(auth.db, auth.user, sceneId, deps);
-    return deps.json(
-      {
-        ok: true,
-        purchased: Boolean(purchase),
-        scene_id: sceneId,
-        purchase_id: purchase ? String(purchase.id || "") : "",
       },
       200,
       env,
@@ -1092,144 +461,18 @@ export function createLemonSqueezyBillingHandlers(deps) {
         await markLemonWebhookEventProcessed(db, eventId, deps);
         return deps.json({ ok: true, ignored: true, event_name: details.eventName }, 200, env);
       }
-      if (String(details.variantId) === String(config.sceneVariantId) && details.product === "animation_render_license") {
-        await ensureScenePurchaseTables(db, deps);
-        const pending = details.purchaseId
-          ? await deps.dbGet(db, `SELECT * FROM ${ANIMATION_PURCHASE_PENDING_TABLE} WHERE id = ? LIMIT 1`, [details.purchaseId])
-          : null;
-        const animationId = normalizeAnimationId((pending && pending.animation_id) || details.animationId || "");
-        const targetUserId = String((pending && pending.user_id) || details.userId || "").trim();
-        if (!animationId || !targetUserId) {
-          await markLemonWebhookEventFailed(db, eventId, "missing_animation_purchase_context", deps);
-          return deps.json({ ok: false, error: "missing_animation_purchase_context" }, 400, env);
-        }
-        const email = deps.normalizeEmail(details.email || pending && pending.user_email || "");
-        const purchaseId = String((pending && pending.id) || details.purchaseId || crypto.randomUUID());
-        const now = deps.nowIso();
-        await deps.dbRun(
-          db,
-          `
-            INSERT INTO ${ANIMATION_PURCHASES_TABLE} (
-              id, animation_id, user_id, user_email, purchase_type, order_id, variant_id,
-              amount_cents, currency, frame_count, animation_json, status, created_at, purchased_at
-            ) VALUES (?, ?, ?, ?, 'animation_render_license', ?, ?, ?, ?, ?, ?, 'paid', ?, ?)
-            ON CONFLICT(user_id, animation_id) DO UPDATE SET
-              user_email = excluded.user_email,
-              order_id = excluded.order_id,
-              variant_id = excluded.variant_id,
-              amount_cents = excluded.amount_cents,
-              currency = excluded.currency,
-              frame_count = excluded.frame_count,
-              animation_json = excluded.animation_json,
-              status = 'paid',
-              purchased_at = excluded.purchased_at
-          `,
-          [
-            purchaseId,
-            animationId,
-            targetUserId,
-            email,
-            details.orderId,
-            String(details.variantId || config.sceneVariantId),
-            Number.parseInt((pending && pending.amount_cents) || details.amountCents || 0, 10) || 0,
-            String(details.currency || "EUR"),
-            Number.parseInt(pending && pending.frame_count || 0, 10) || 0,
-            String(pending && pending.animation_json || "{}"),
-            String(pending && pending.created_at || now),
-            now,
-          ],
-        );
-        await deps.dbRun(
-          db,
-          `UPDATE ${ANIMATION_PURCHASE_PENDING_TABLE} SET status = 'paid', completed_at = ? WHERE id = ?`,
-          [now, purchaseId],
-        );
-        await markLemonWebhookEventProcessed(db, eventId, deps);
-        return deps.json({ ok: true, processed: true, purchase_type: "animation", animation_id: animationId }, 200, env);
-      }
-      if (String(details.variantId) === String(config.sceneVariantId)) {
-        await ensureScenePurchaseTables(db, deps);
-        const pending = details.purchaseId
-          ? await deps.dbGet(
-            db,
-            `SELECT * FROM ${SCENE_PURCHASE_PENDING_TABLE} WHERE id = ? LIMIT 1`,
-            [details.purchaseId],
-          )
-          : null;
-        const sceneId = normalizeSceneId((pending && pending.scene_id) || details.sceneId || "");
-        const targetUserId = String((pending && pending.user_id) || details.userId || "").trim();
-        if (!sceneId || !targetUserId) {
-          await markLemonWebhookEventFailed(db, eventId, "missing_scene_purchase_context", deps);
-          return deps.json({ ok: false, error: "missing_scene_purchase_context" }, 400, env);
-        }
-        const email = deps.normalizeEmail(details.email || pending && pending.user_email || "");
-        const purchaseId = String((pending && pending.id) || details.purchaseId || crypto.randomUUID());
-        const now = deps.nowIso();
-        await deps.dbRun(
-          db,
-          `
-            INSERT INTO ${SCENE_PURCHASES_TABLE} (
-              id, scene_id, user_id, user_email, purchase_type, order_id, variant_id,
-              amount_cents, currency, camera_json, tiles_json, tile_hash, status, created_at, purchased_at
-            ) VALUES (?, ?, ?, ?, 'scene_full_quality_commercial_license', ?, ?, ?, ?, ?, ?, ?, 'paid', ?, ?)
-            ON CONFLICT(user_id, scene_id) DO UPDATE SET
-              user_email = excluded.user_email,
-              order_id = excluded.order_id,
-              variant_id = excluded.variant_id,
-              amount_cents = excluded.amount_cents,
-              currency = excluded.currency,
-              camera_json = excluded.camera_json,
-              tiles_json = excluded.tiles_json,
-              tile_hash = excluded.tile_hash,
-              status = 'paid',
-              purchased_at = excluded.purchased_at
-          `,
-          [
-            purchaseId,
-            sceneId,
-            targetUserId,
-            email,
-            details.orderId,
-            String(details.variantId || config.sceneVariantId),
-            Number.parseInt((pending && pending.amount_cents) || details.amountCents || 0, 10) || 0,
-            String(details.currency || "EUR"),
-            String(pending && pending.camera_json || "{}"),
-            String(pending && pending.tiles_json || "[]"),
-            String(pending && pending.tile_hash || ""),
-            String(pending && pending.created_at || now),
-            now,
-          ],
-        );
-        if (email) {
-          const existingEmailUser = await deps.dbGet(
-            db,
-            `SELECT id FROM users WHERE lower(email) = ? AND id != ? LIMIT 1`,
-            [email, targetUserId],
-          );
-          if (!existingEmailUser) {
-            await deps.dbRun(db, `UPDATE users SET email = ? WHERE id = ?`, [email, targetUserId]);
-          }
-        }
-        await deps.dbRun(
-          db,
-          `UPDATE ${SCENE_PURCHASE_PENDING_TABLE} SET status = 'paid', completed_at = ? WHERE id = ?`,
-          [now, purchaseId],
-        );
-        await markLemonWebhookEventProcessed(db, eventId, deps);
-        return deps.json({ ok: true, processed: true, purchase_type: "scene", scene_id: sceneId }, 200, env);
-      }
-      if (String(details.variantId) !== String(config.proVariantId)) {
+      if (String(details.variantId) !== String(config.commercialVariantId)) {
         await markLemonWebhookEventProcessed(db, eventId, deps);
         return deps.json({ ok: true, ignored: true, reason: "variant_mismatch" }, 200, env);
       }
-      const upgraded = await upgradeUserToPro(db, { userId: details.userId, email: details.email }, deps);
+      const upgraded = await upgradeUserToCommercial(db, { userId: details.userId, email: details.email }, deps);
       if (upgraded.error) {
         await markLemonWebhookEventFailed(db, eventId, upgraded.error, deps);
         return deps.json({ ok: false, error: upgraded.error }, upgraded.status || 500, env);
       }
       await markLemonWebhookEventProcessed(db, eventId, deps);
       console.log(
-        "lemonsqueezy.pro_upgrade_processed",
+        "lemonsqueezy.commercial_purchase_processed",
         JSON.stringify({
           event_id: eventId,
           order_id: details.orderId,
@@ -1279,11 +522,11 @@ export function createLemonSqueezyBillingHandlers(deps) {
     }
     const meta = validation.payload && validation.payload.meta || {};
     const variantId = String(meta.variant_id || "").trim();
-    if (variantId !== String(config.proVariantId)) {
+    if (variantId !== String(config.commercialVariantId)) {
       return deps.json({ ok: false, error: "license_variant_mismatch" }, 403, env);
     }
     const customerEmail = deps.normalizeEmail(meta.customer_email || "");
-    const upgraded = await upgradeUserToPro(db, { userId: String(user.id || ""), email: customerEmail }, deps);
+    const upgraded = await upgradeUserToCommercial(db, { userId: String(user.id || ""), email: customerEmail }, deps);
     if (upgraded.error) {
       return deps.json({ ok: false, error: upgraded.error }, upgraded.status || 500, env);
     }
@@ -1307,7 +550,7 @@ export function createLemonSqueezyBillingHandlers(deps) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Planetka Pro Upgrade</title>
+  <title>Planetka Commercial Licence</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f3ed; color: #172033; margin: 0; padding: 40px 20px; }
     main { max-width: 680px; margin: 0 auto; background: #fffaf1; border: 1px solid #d9c9a6; border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px rgba(40, 29, 10, 0.12); }
@@ -1317,56 +560,8 @@ export function createLemonSqueezyBillingHandlers(deps) {
 </head>
 <body>
   <main>
-    <h1>Thank you for upgrading to Planetka Pro.</h1>
-    <p>Return to Blender. Planetka will refresh your account and unlock Pro features automatically once the checkout is confirmed.</p>
-  </main>
-</body>
-</html>`;
-    return deps.html(htmlBody, 200, env, { "Cache-Control": "no-store" });
-  }
-
-  async function handleSceneSuccess(_request, env) {
-    const htmlBody = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Planetka Scene Licence</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f3ed; color: #172033; margin: 0; padding: 40px 20px; }
-    main { max-width: 680px; margin: 0 auto; background: #fffaf1; border: 1px solid #d9c9a6; border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px rgba(40, 29, 10, 0.12); }
-    h1 { margin: 0 0 14px; font-size: 30px; }
-    p { font-size: 17px; line-height: 1.5; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Thank you for purchasing a Planetka scene licence.</h1>
-    <p>Return to Blender. Planetka will unlock Full Quality and the commercial licence for this scene once the checkout is confirmed.</p>
-  </main>
-</body>
-</html>`;
-    return deps.html(htmlBody, 200, env, { "Cache-Control": "no-store" });
-  }
-
-  async function handleAnimationSuccess(_request, env) {
-    const htmlBody = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Planetka Animation Render</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f3ed; color: #172033; margin: 0; padding: 40px 20px; }
-    main { max-width: 680px; margin: 0 auto; background: #fffaf1; border: 1px solid #d9c9a6; border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px rgba(40, 29, 10, 0.12); }
-    h1 { margin: 0 0 14px; font-size: 30px; }
-    p { font-size: 17px; line-height: 1.5; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Thank you for purchasing Planetka Animation Render.</h1>
-    <p>Return to Blender and start Final Animation Render again.</p>
+    <h1>Thank you for buying a Planetka Commercial Licence.</h1>
+    <p>Return to Blender. Planetka will refresh your account and unlock Commercial licence status automatically once the checkout is confirmed.</p>
   </main>
 </body>
 </html>`;
@@ -1375,16 +570,8 @@ export function createLemonSqueezyBillingHandlers(deps) {
 
   return {
     handleCreateCheckout,
-    handleCreateSceneCheckout,
-    handleCreateAnimationCheckout,
-    handleListScenePurchases,
-    handleListAnimationPurchases,
-    handleCheckScenePurchase,
-    handleCheckAnimationPurchase,
     handleWebhook,
     handleRestoreLicense,
     handleSuccess,
-    handleSceneSuccess,
-    handleAnimationSuccess,
   };
 }

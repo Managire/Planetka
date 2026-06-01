@@ -37,7 +37,7 @@ DEFAULT_API_KEY_REQUEST_URL = str(
 
 TIER_INTEGRITY_ERROR_CODE = "tier_integrity_violation"
 TIER_INTEGRITY_STATUS_MESSAGE = (
-    "Critical account tier integrity error detected. "
+    "Critical licence integrity error detected. "
     "Planetka is locked until resolved. Contact info@planetka.io."
 )
 CLOUD_OVERLOADED_ERROR_CODE = "planetka_cloud_overloaded"
@@ -61,11 +61,10 @@ _ACCOUNT_LIMIT_OR_ACCESS_TOKENS = (
     "device_limit_exceeded",
     "account_blocked",
     "access_denied",
-    "not_allowed_for_tier",
     "quality_mode_not_allowed",
 )
 _KNOWN_NON_OVERLOAD_ERROR_TOKENS = (
-    "full quality requires a pro",
+    "full quality requires a commercial licence",
 )
 _OVERLOAD_TEXT_TOKENS = (
     CLOUD_OVERLOADED_ERROR_CODE,
@@ -209,12 +208,12 @@ def describe_auth_error(error):
         return "Planetka connection was blocked by a security check. Please try again later or contact support."
     if "network_error" in lowered:
         return _CLOUD_CONNECTION_OFFLINE_MESSAGE
-    if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
+    if "quality_mode_not_allowed" in lowered or "not_available_for_licence" in lowered or "insufficient_data" in lowered:
         return "Planetka Cloud could not stream the selected texture quality. Please retry."
     if "lemonsqueezy" in lowered or "checkout" in lowered:
         return "Planetka checkout is temporarily unavailable. Please try again shortly."
     if "missing_resolve_id" in lowered:
-        return "Purchase details are missing. Retry Resolve and ensure Planetka is up to date."
+        return "Planetka request details are missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
 
 
@@ -467,8 +466,6 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_stored_plan_name = ""
     prefs.auth_contact_url = ""
     prefs.auth_upgrade_url = ""
-    prefs.scene_licence_price_label = ""
-    prefs.scene_licence_price_cents = 0
     prefs.auth_login_state = str(state or "logged_out")
     prefs.auth_status_message = str(status_message or "")
     _save_user_prefs()
@@ -542,7 +539,7 @@ def _raise_tier_integrity_violation(prefs, reason, details=None):
     payload = {"reason": str(reason or "tier_integrity_violation").strip() or "tier_integrity_violation"}
     if isinstance(details, dict):
         payload.update(details)
-    logger.error("Planetka: account tier integrity violation: %s", payload)
+    logger.error("Planetka: licence integrity violation: %s", payload)
     try:
         _clear_auth_session_preserve_api_key(
             prefs=prefs,
@@ -566,18 +563,18 @@ def _require_valid_authenticated_tier(prefs=None, context="runtime"):
 
 def _normalize_account_plan_code(value):
     token = str(value or "").strip().lower()
-    if token in {"professional", "pro", "paid", "unlimited"}:
-        return "pro"
-    if token in {"personal", "free", ""}:
-        return "free"
+    if token in {"commercial", "paid", "unlimited"}:
+        return "commercial"
+    if token in {"personal", ""}:
+        return "personal"
     return token
 
 
 def _account_plan_name(plan_code):
     normalized = _normalize_account_plan_code(plan_code)
-    if normalized == "pro":
-        return "Pro"
-    return "Free"
+    if normalized == "commercial":
+        return "Commercial"
+    return "Personal"
 
 
 def _first_plan_code_from_payload(payload, *keys):
@@ -636,23 +633,19 @@ def get_account_plan_name(prefs=None):
     return str(getattr(prefs, "auth_plan_name", "") or _account_plan_name(get_account_tier(prefs))).strip()
 
 
-def is_professional_account(prefs=None):
-    return get_account_tier(prefs) == "pro"
-
-
-def is_pro_account(prefs=None):
-    return is_professional_account(prefs)
+def is_commercial_licence(prefs=None):
+    return get_account_tier(prefs) == "commercial"
 
 
 def account_access_summary(prefs=None):
     tier = get_account_tier(prefs)
-    if tier == "pro":
-        return "Pro account: Preview, Balanced, and Full texture quality with commercial licence."
-    return "Free account: Preview and Balanced texture quality for personal use."
+    if tier == "commercial":
+        return "Commercial licence: all Planetka features for commercial and personal use."
+    return "Personal licence: all Planetka features for personal use only."
 
 
-def professional_account_required_message():
-    return "This feature requires Pro."
+def commercial_licence_required_message():
+    return "Commercial use requires a Commercial licence."
 
 
 def _normalize_texture_quality_token(value):
@@ -663,18 +656,13 @@ def _normalize_texture_quality_token(value):
 
 
 def allows_texture_quality_for_context(prefs=None, requested_mode=None):
-    mode = _normalize_texture_quality_token(requested_mode or "PREVIEW")
-    tier = get_account_tier(prefs)
-    if tier == "pro":
-        return True
-    return mode in {"PREVIEW", "BALANCED", "FULL"}
+    del prefs, requested_mode
+    return True
 
 
 def texture_quality_not_allowed_message(prefs=None, requested_mode=None):
-    mode = _normalize_texture_quality_token(requested_mode or "PREVIEW")
-    if mode == "FULL":
-        return "Full Quality requires a scene licence."
-    return "Selected texture quality is not available for this account."
+    del prefs, requested_mode
+    return "Selected texture quality is not available."
 
 
 def allows_full_quality_for_context(prefs=None, source=None):
@@ -683,7 +671,7 @@ def allows_full_quality_for_context(prefs=None, source=None):
 
 
 def allows_animation_render_for_context(prefs=None, source=None, requested_mode=None):
-    del source, requested_mode
+    del prefs, source, requested_mode
     return True
 
 
@@ -914,13 +902,6 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
         payload.get("support_url"),
     )
     prefs.auth_upgrade_url = _first_non_empty(payload.get("upgrade_url"))
-    price_label = str(payload.get("scene_licence_price_label", "") or "").strip()
-    if price_label:
-        prefs.scene_licence_price_label = price_label
-    try:
-        prefs.scene_licence_price_cents = max(0, int(payload.get("scene_licence_price_cents", 0) or 0))
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        prefs.scene_licence_price_cents = 0
     prefs.auth_login_state = str(login_state or "authenticated")
     prefs.auth_status_message = str(status_message or "")
     _require_valid_authenticated_tier(prefs, context="auth_payload")
@@ -947,13 +928,6 @@ def _apply_account_profile_fields(prefs, payload):
     upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     if upgrade_url:
         prefs.auth_upgrade_url = upgrade_url
-    price_label = str(payload.get("scene_licence_price_label", "") or "").strip()
-    if price_label:
-        prefs.scene_licence_price_label = price_label
-    try:
-        prefs.scene_licence_price_cents = max(0, int(payload.get("scene_licence_price_cents", 0) or 0))
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        prefs.scene_licence_price_cents = 0
     _require_valid_authenticated_tier(prefs, context="account_profile")
 
 
@@ -976,7 +950,7 @@ def sync_account_profile(prefs=None):
     return True
 
 
-def create_pro_upgrade_checkout(prefs=None):
+def create_commercial_licence_checkout(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         raise AuthApiError(0, "prefs_unavailable")
@@ -986,142 +960,18 @@ def create_pro_upgrade_checkout(prefs=None):
     _status, payload = _json_request("POST", "/billing/lemonsqueezy/checkout", {}, headers=headers, timeout=30)
     if not isinstance(payload, dict) or not payload.get("ok"):
         raise AuthApiError(_status or 0, payload.get("error") if isinstance(payload, dict) else "checkout_create_failed", payload=payload)
-    if payload.get("already_pro"):
+    if payload.get("already_commercial"):
         _apply_account_profile_fields(prefs, payload)
         _save_user_prefs()
         _tag_ui_redraw()
-        return {"already_pro": True, "checkout_url": ""}
+        return {"already_commercial": True, "checkout_url": ""}
     checkout_url = str(payload.get("checkout_url", "") or "").strip()
     if not checkout_url:
         raise AuthApiError(_status or 0, "checkout_url_missing", payload=payload)
     return payload
 
 
-def create_scene_full_quality_checkout(scene_payload, prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    payload = dict(scene_payload or {})
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, response = _json_request(
-        "POST",
-        "/billing/lemonsqueezy/scene-checkout",
-        payload,
-        headers=headers,
-        timeout=30,
-    )
-    if not isinstance(response, dict) or not response.get("ok"):
-        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "scene_checkout_failed", payload=response)
-    return response
-
-
-def check_scene_full_quality_purchase(scene_id, prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    safe_scene_id = str(scene_id or "").strip()
-    if not safe_scene_id:
-        raise AuthApiError(400, "missing_scene_id")
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    path = "/billing/scene-purchases/check?scene_id=" + urllib.parse.quote(safe_scene_id, safe="")
-    _status, response = _json_request("GET", path, {}, headers=headers, timeout=15)
-    if not isinstance(response, dict) or not response.get("ok"):
-        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "scene_purchase_check_failed", payload=response)
-    return response
-
-
-def create_animation_render_checkout(animation_payload, prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    payload = dict(animation_payload or {})
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, response = _json_request(
-        "POST",
-        "/billing/lemonsqueezy/animation-checkout",
-        payload,
-        headers=headers,
-        timeout=30,
-    )
-    if not isinstance(response, dict) or not response.get("ok"):
-        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "animation_checkout_failed", payload=response)
-    return response
-
-
-def check_animation_render_purchase(animation_id, prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    safe_animation_id = str(animation_id or "").strip()
-    if not safe_animation_id:
-        raise AuthApiError(400, "missing_animation_id")
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    path = "/billing/animation-purchases/check?animation_id=" + urllib.parse.quote(safe_animation_id, safe="")
-    _status, response = _json_request("GET", path, {}, headers=headers, timeout=15)
-    if not isinstance(response, dict) or not response.get("ok"):
-        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "animation_purchase_check_failed", payload=response)
-    return response
-
-
-def list_scene_full_quality_purchases(prefs=None, limit=50):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    safe_limit = max(1, min(200, int(limit or 50)))
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, response = _json_request("GET", f"/billing/scene-purchases/list?limit={safe_limit}", {}, headers=headers, timeout=20)
-    if not isinstance(response, dict) or not response.get("ok"):
-        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "scene_purchases_failed", payload=response)
-    return list(response.get("purchases", []) or [])
-
-
-def list_animation_render_purchases(prefs=None, limit=50):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    safe_limit = max(1, min(200, int(limit or 50)))
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, response = _json_request("GET", f"/billing/animation-purchases/list?limit={safe_limit}", {}, headers=headers, timeout=20)
-    if not isinstance(response, dict) or not response.get("ok"):
-        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "animation_purchases_failed", payload=response)
-    return list(response.get("purchases", []) or [])
-
-
-def request_scene_licence_restore_link(email, prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    safe_email = str(email or "").strip()
-    if not safe_email or "@" not in safe_email:
-        raise AuthApiError(400, "invalid_email")
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, response = _json_request(
-        "POST",
-        "/billing/scene-purchases/restore/request",
-        {"email": safe_email},
-        headers=headers,
-        timeout=30,
-    )
-    if not isinstance(response, dict) or not response.get("ok"):
-        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "scene_licence_restore_failed", payload=response)
-    return response
-
-
-def restore_pro_with_license_key(license_key, prefs=None):
+def restore_commercial_licence_with_license_key(license_key, prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         raise AuthApiError(0, "prefs_unavailable")
@@ -1139,7 +989,7 @@ def restore_pro_with_license_key(license_key, prefs=None):
         timeout=30,
     )
     if not isinstance(payload, dict) or not payload.get("ok"):
-        raise AuthApiError(_status or 0, payload.get("error") if isinstance(payload, dict) else "pro_restore_failed", payload=payload)
+        raise AuthApiError(_status or 0, payload.get("error") if isinstance(payload, dict) else "commercial_restore_failed", payload=payload)
     sync_account_profile(prefs)
     return payload
 
@@ -1181,7 +1031,19 @@ def refresh_auth_session(prefs=None):
     _status = None
     payload = None
     try:
-        _status, payload = _json_request("POST", "/auth/refresh", {"refresh_token": refresh_token})
+        device_id = _ensure_device_id(prefs)
+        headers = {}
+        if device_id:
+            headers["X-Planetka-Device-Id"] = device_id
+        _status, payload = _json_request(
+            "POST",
+            "/auth/refresh",
+            {
+                "refresh_token": refresh_token,
+                "device_id": device_id,
+            },
+            headers=headers,
+        )
     except AuthApiError as refresh_error:
         if not str(getattr(prefs, "auth_api_key", "") or "").strip():
             try:

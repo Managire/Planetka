@@ -11,8 +11,8 @@ import {
   parsePositiveNumber,
 } from "./worker/env.js";
 import {
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   defaultSignupPlanCode,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
@@ -185,6 +185,30 @@ function requestClientIp(request) {
   return "unknown";
 }
 
+function requestClientIpScope(request) {
+  const ip = String(requestClientIp(request) || "").trim().toLowerCase();
+  if (!ip || ip === "unknown") {
+    return "";
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) {
+    const parts = ip.split(".");
+    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+  }
+  if (ip.includes(":")) {
+    const [headRaw, tailRaw = ""] = ip.split("::");
+    const head = headRaw ? headRaw.split(":").filter(Boolean) : [];
+    const tail = tailRaw ? tailRaw.split(":").filter(Boolean) : [];
+    const missing = Math.max(0, 8 - head.length - tail.length);
+    const expanded = [
+      ...head.map((part) => part.padStart(4, "0")),
+      ...Array.from({ length: missing }, () => "0000"),
+      ...tail.map((part) => part.padStart(4, "0")),
+    ];
+    return `${expanded.slice(0, 4).join(":")}::/64`;
+  }
+  return "";
+}
+
 function requestCountry(request) {
   const country = String(request.headers.get("CF-IPCountry") || request.cf && request.cf.country || "").trim().toUpperCase();
   if (!country || country === "XX" || country === "T1") {
@@ -331,11 +355,11 @@ function isSyntheticAnonymousEmail(value) {
 
 function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_FREE) {
-    return PLAN_CODE_FREE;
+  if (normalized === PLAN_CODE_PERSONAL) {
+    return PLAN_CODE_PERSONAL;
   }
-  if (normalized === PLAN_CODE_PROFESSIONAL) {
-    return PLAN_CODE_PROFESSIONAL;
+  if (normalized === PLAN_CODE_COMMERCIAL) {
+    return PLAN_CODE_COMMERCIAL;
   }
   return "";
 }
@@ -646,7 +670,7 @@ async function ensureApiKeyTables(db) {
       CREATE TABLE IF NOT EXISTS api_key_requests (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
-        requested_plan TEXT NOT NULL DEFAULT 'free',
+        requested_plan TEXT NOT NULL DEFAULT 'personal',
         token_hash TEXT NOT NULL UNIQUE,
         expires_at TEXT NOT NULL,
         used_at TEXT,
@@ -690,7 +714,7 @@ async function ensureApiKeyTables(db) {
         key_hash TEXT NOT NULL UNIQUE,
         key_prefix TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
-        plan_code TEXT NOT NULL DEFAULT 'free',
+        plan_code TEXT NOT NULL DEFAULT 'personal',
         expires_at TEXT,
         issued_at TEXT NOT NULL,
         last_used_at TEXT,
@@ -738,7 +762,8 @@ async function ensureRefreshSessionColumns(db) {
         created_at TEXT NOT NULL,
         auth_method TEXT,
         api_key_id TEXT,
-        device_id TEXT
+        device_id TEXT,
+        client_ip_scope TEXT
       )
     `,
   );
@@ -749,6 +774,7 @@ async function ensureRefreshSessionColumns(db) {
     !names.has("auth_method") ? `ALTER TABLE refresh_sessions ADD COLUMN auth_method TEXT` : "",
     !names.has("api_key_id") ? `ALTER TABLE refresh_sessions ADD COLUMN api_key_id TEXT` : "",
     !names.has("device_id") ? `ALTER TABLE refresh_sessions ADD COLUMN device_id TEXT` : "",
+    !names.has("client_ip_scope") ? `ALTER TABLE refresh_sessions ADD COLUMN client_ip_scope TEXT` : "",
   ].filter(Boolean)) {
     try {
       await dbRun(db, statement);
@@ -765,7 +791,7 @@ function fixedInternalPlanForEmail(email) {
   return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizeEmail(email)] || "";
 }
 
-function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE) {
+function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_PERSONAL) {
   const fixedPlan = fixedInternalPlanForEmail(email);
   if (fixedPlan) {
     return fixedPlan;
@@ -841,7 +867,7 @@ async function upsertAnonymousUserByDeviceId(db, deviceId, env = {}) {
     [
       anonymousId,
       syntheticEmail,
-      PLAN_CODE_FREE,
+      PLAN_CODE_PERSONAL,
       now,
       now,
       now,
@@ -883,7 +909,7 @@ async function sendNewUserLoginAlert(env, details = {}) {
   }
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_PERSONAL, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
@@ -969,7 +995,7 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
   void env;
   const storedPlanCode = normalizeTierCodeStrict(user && user.status);
   if (!user || !user.id) {
-    return { storedPlanCode: PLAN_CODE_FREE, qualityAccessPlanCode: PLAN_CODE_FREE };
+    return { storedPlanCode: PLAN_CODE_PERSONAL, qualityAccessPlanCode: PLAN_CODE_PERSONAL };
   }
   if (!storedPlanCode && !isBlockedStatus(user && user.status)) {
     throw new Error("invalid_user_status");
@@ -1000,7 +1026,6 @@ function getPreviewFairUsageHoldForUserFromRow(user) {
 
 async function buildAccountState(db, user, env) {
   const qualityAccess = await resolveUserQualityAccessState(db, user, env);
-  const sceneLicencePriceCents = await resolveSceneLicencePriceCents(db, env);
   const storedPlanCode = normalizeTierCodeStrict(qualityAccess.storedPlanCode);
   if (!storedPlanCode) {
     throw new Error("invalid_user_status");
@@ -1014,32 +1039,7 @@ async function buildAccountState(db, user, env) {
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
     previewFairUsageHold: getPreviewFairUsageHoldForUserFromRow(user),
-    sceneLicencePriceCents,
-    sceneLicencePriceLabel: formatEurPriceLabel(sceneLicencePriceCents),
   };
-}
-
-async function resolveSceneLicencePriceCents(db, env) {
-  const fallback = Number(env.PLANETKA_SCENE_FULL_QUALITY_PRICE_EUR || 15);
-  let rawValue = fallback;
-  try {
-    if (db) {
-      const row = await dbGet(db, `SELECT value FROM app_settings WHERE key = ? LIMIT 1`, ["custom_scene_licence_fee_eur"]);
-      if (row && row.value !== undefined && row.value !== null && String(row.value).trim() !== "") {
-        rawValue = row.value;
-      }
-    }
-  } catch (_error) {
-    rawValue = fallback;
-  }
-  const parsed = Number.parseFloat(String(rawValue));
-  const eur = Number.isFinite(parsed) ? Math.max(0, Math.min(10000, parsed)) : 15;
-  return Math.round(eur * 100);
-}
-
-function formatEurPriceLabel(cents) {
-  const safeCents = Math.max(0, Number.parseInt(cents, 10) || 0);
-  return `€${(safeCents / 100).toFixed(2)}`;
 }
 
 function serializeAccountState(state) {
@@ -1060,197 +1060,7 @@ function serializeAccountState(state) {
     contact_url: safeState.contactUrl,
     preview_fair_usage_hold: safeState.previewFairUsageHold || { held: false },
     previewFairUsageHold: safeState.previewFairUsageHold || { held: false },
-    scene_licence_price_cents: Math.max(0, Number.parseInt(safeState.sceneLicencePriceCents, 10) || 0),
-    scene_licence_price_label: String(safeState.sceneLicencePriceLabel || ""),
   };
-}
-
-async function ensureScenePurchaseRestoreTables(db) {
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS scene_purchase_email_restore_requests (
-        id TEXT PRIMARY KEY,
-        requester_user_id TEXT NOT NULL,
-        email TEXT NOT NULL,
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at TEXT NOT NULL,
-        used_at TEXT,
-        request_ip TEXT,
-        created_at TEXT NOT NULL
-      )
-    `,
-  );
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_restore_token ON scene_purchase_email_restore_requests(token_hash)`);
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_restore_user_email ON scene_purchase_email_restore_requests(requester_user_id, email, created_at DESC)`);
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS scene_purchase_verified_emails (
-        user_id TEXT NOT NULL,
-        email TEXT NOT NULL,
-        verified_at TEXT NOT NULL,
-        source TEXT NOT NULL DEFAULT 'email_link',
-        PRIMARY KEY (user_id, email)
-      )
-    `,
-  );
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON scene_purchase_verified_emails(email)`);
-}
-
-async function sendSceneLicenceRestoreEmail(env, email, token) {
-  const apiKey = requireSecret(env, "EMAIL_API_KEY");
-  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-  const apiBaseUrl = String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "");
-  const activationUrl = `${apiBaseUrl}/billing/scene-purchases/restore/activate?token=${encodeURIComponent(token)}`;
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [email],
-      subject: "Restore your Planetka licences",
-      text: [
-        "Open this link to restore your Planetka scene and animation licences in Blender:",
-        activationUrl,
-        "",
-        "The link expires in 30 minutes.",
-      ].join("\n"),
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 16px;">Restore your Planetka licences</h2>
-          <p>Use the button below to allow your current Blender session to access scene and animation licences purchased with this email address.</p>
-          <p style="margin: 24px 0;">
-            <a href="${activationUrl}" style="background:#111827;color:#ffffff;padding:12px 18px;text-decoration:none;border-radius:8px;display:inline-block;">
-              Restore Licences
-            </a>
-          </p>
-          <p>If the button does not work, open this link:</p>
-          <p><a href="${activationUrl}">${activationUrl}</a></p>
-          <p>This link expires in 30 minutes.</p>
-        </div>
-      `,
-    }),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`resend_error_${response.status}_${body}`);
-  }
-}
-
-async function handleSceneLicenceRestoreRequest(request, env) {
-  const auth = await requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
-  if (auth.error) {
-    return auth.error;
-  }
-  const db = auth.db;
-  await ensureRateLimitsTable(db);
-  await ensureScenePurchaseRestoreTables(db);
-  const body = await parseJson(request);
-  const email = normalizeEmail(body.email || body.user_email || "");
-  if (!email || !email.includes("@")) {
-    return json({ ok: false, error: "invalid_email" }, 400, env);
-  }
-  const ipRate = await consumeRateLimitWindow(
-    db,
-    "scene_purchase_restore_ip",
-    requestClientIp(request),
-    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_IP_LIMIT, 20),
-    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_IP_WINDOW_SECONDS, 900),
-  );
-  if (!ipRate.allowed) {
-    return rateLimitedResponse(env, "scene_restore_ip_rate_limited", "Too many requests. Please try again later.", ipRate.retryAfterSeconds);
-  }
-  const emailRate = await consumeRateLimitWindow(
-    db,
-    "scene_purchase_restore_email",
-    email,
-    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_EMAIL_LIMIT, 6),
-    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_EMAIL_WINDOW_SECONDS, 3600),
-  );
-  if (!emailRate.allowed) {
-    return rateLimitedResponse(env, "scene_restore_email_rate_limited", "Too many requests for this email. Please try again later.", emailRate.retryAfterSeconds);
-  }
-  const token = randomToken(36);
-  const tokenHash = await sha256Hex(token);
-  await dbRun(
-    db,
-    `
-      INSERT INTO scene_purchase_email_restore_requests (
-        id, requester_user_id, email, token_hash, expires_at, request_ip, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      crypto.randomUUID(),
-      String(auth.user && auth.user.id || ""),
-      email,
-      tokenHash,
-      addMinutesIso(30),
-      requestClientIp(request),
-      nowIso(),
-    ],
-  );
-  await sendSceneLicenceRestoreEmail(env, email, token);
-  return json({ ok: true, message: "Scene licence restore link sent." }, 200, env);
-}
-
-async function handleSceneLicenceRestoreActivate(request, env) {
-  const db = requireDb(env);
-  await ensureScenePurchaseRestoreTables(db);
-  const url = new URL(request.url);
-  const token = String(url.searchParams.get("token") || "").trim();
-  if (!token) {
-    return json({ ok: false, error: "missing_token" }, 400, env);
-  }
-  const tokenHash = await sha256Hex(token);
-  const now = nowIso();
-  const row = await dbGet(
-    db,
-    `
-      SELECT id, requester_user_id, email, expires_at, used_at
-      FROM scene_purchase_email_restore_requests
-      WHERE token_hash = ?
-      LIMIT 1
-    `,
-    [tokenHash],
-  );
-  if (!row || row.used_at || Date.parse(row.expires_at) < Date.now()) {
-    return json({ ok: false, error: "invalid_or_expired_token" }, 400, env);
-  }
-  await dbRun(db, `UPDATE scene_purchase_email_restore_requests SET used_at = ? WHERE id = ?`, [now, row.id]);
-  await dbRun(
-    db,
-    `
-      INSERT INTO scene_purchase_verified_emails (user_id, email, verified_at, source)
-      VALUES (?, ?, ?, 'email_link')
-      ON CONFLICT(user_id, email) DO UPDATE SET verified_at = excluded.verified_at, source = excluded.source
-    `,
-    [String(row.requester_user_id || ""), normalizeEmail(row.email || ""), now],
-  );
-  const htmlBody = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Planetka Scene Licences Restored</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f3ed; color: #172033; margin: 0; padding: 40px 20px; }
-    main { max-width: 680px; margin: 0 auto; background: #fffaf1; border: 1px solid #d9c9a6; border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px rgba(40, 29, 10, 0.12); }
-    h1 { margin: 0 0 14px; font-size: 30px; }
-    p { font-size: 17px; line-height: 1.5; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Planetka licences restored.</h1>
-    <p>Return to Blender and click Refresh Licences.</p>
-  </main>
-</body>
-</html>`;
-  return html(htmlBody, 200, env, { "Cache-Control": "no-store" });
 }
 
 async function sendApiKeyActivationEmail(env, email, token) {
@@ -1367,7 +1177,7 @@ async function revokeOtherActiveApiKeysForUser(db, userId, keepApiKeyId = "", re
   return idsToRevoke.length;
 }
 
-async function enforceSingleActiveFreeApiKey(db, userId, preferredApiKeyId = "") {
+async function enforceSingleActiveLicenceApiKey(db, userId, preferredApiKeyId = "") {
   await ensureApiKeyTables(db);
   const safeUserId = String(userId || "").trim();
   const safePreferredApiKeyId = String(preferredApiKeyId || "").trim();
@@ -1457,6 +1267,7 @@ const authSessionDepsBase = {
   authContextCacheSet,
   verifyJwt,
   requireSecret,
+  requestClientIpScope,
   normalizeDeviceId,
   normalizeTierCodeStrict,
   findUserById,
@@ -1473,7 +1284,7 @@ const readBearerUser = (request, env) => readBearerUserRoute(request, env, authS
 const requireAuthenticatedUserContext = (request, env, options = {}) => requireAuthenticatedUserContextRoute(request, env, options, authSessionDeps);
 
 const authCoreDeps = {
-  PLAN_CODE_FREE,
+  PLAN_CODE_PERSONAL,
   DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
   DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
   requireSecret,
@@ -1489,6 +1300,7 @@ const authCoreDeps = {
   parseRateLimitInteger,
   isDeviceLimitExemptEmail,
   requestClientIp,
+  requestClientIpScope,
   requestCountry,
   nowIso,
   addDaysIso,
@@ -1502,7 +1314,7 @@ const authCoreDeps = {
   json,
   authContextCacheGet,
   authContextCacheSet,
-  enforceSingleActiveFreeApiKey,
+  enforceSingleActiveLicenceApiKey,
   computeApiKeyExpiryIso,
 };
 
@@ -1515,8 +1327,8 @@ const authSessionDeps = {
 };
 
 const authApiKeyDeps = {
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   defaultSignupPlanCode,
   DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
@@ -1566,7 +1378,7 @@ const authApiKeyDeps = {
   publicErrorCode,
   isValidApiKey,
   findActiveApiKeyRecord: authCore.findActiveApiKeyRecord,
-  enforceSingleActiveFreeApiKey,
+  enforceSingleActiveLicenceApiKey,
   enforceApiKeyDeviceLimit: authCore.enforceApiKeyDeviceLimit,
   buildAccountState,
   createAccessToken: authCore.createAccessToken,
@@ -1584,6 +1396,7 @@ const authSessionRouteDeps = {
   requireSecret,
   ensureRateLimitsTable,
   requestClientIp,
+  requestClientIpScope,
   requestCountry,
   consumeRateLimitWindow,
   parseRateLimitInteger,
@@ -1624,6 +1437,7 @@ async function handleAnonymousAuth(request, env) {
   await ensureRateLimitsTable(db);
   const body = await parseJson(request);
   const deviceId = normalizeDeviceId(body.device_id || request.headers.get("X-Planetka-Device-Id") || "");
+  const clientIpScope = requestClientIpScope(request);
   if (!deviceId) {
     return json({ ok: false, error: "missing_device_id" }, 400, env);
   }
@@ -1670,6 +1484,7 @@ async function handleAnonymousAuth(request, env) {
       quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
       auth_method: "anonymous",
       device_id: deviceId,
+      client_ip_scope: clientIpScope,
     },
   );
   const refreshToken = await authCore.createRefreshSession(
@@ -1679,6 +1494,7 @@ async function handleAnonymousAuth(request, env) {
     {
       auth_method: "anonymous",
       device_id: deviceId,
+      client_ip_scope: clientIpScope,
     },
   );
   const publicEmail = isSyntheticAnonymousEmail(policyUser.email) ? "" : String(policyUser.email || "");
@@ -1699,8 +1515,8 @@ async function handleAnonymousAuth(request, env) {
 }
 
 const apiKeyPageDeps = {
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   defaultSignupPlanCode,
   DEFAULT_CONTACT_URL,
   DEFAULT_PRIVACY_URL,
@@ -1873,57 +1689,6 @@ async function dispatchAuthRequest(request, env) {
     }
     return lemonSqueezyBillingHandlers.handleCreateCheckout(request, env);
   }
-  if (path === "/billing/lemonsqueezy/scene-checkout") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleCreateSceneCheckout(request, env);
-  }
-  if (path === "/billing/lemonsqueezy/animation-checkout") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleCreateAnimationCheckout(request, env);
-  }
-  if (path === "/billing/scene-purchases" || path === "/billing/scene-purchases/list") {
-    if (request.method !== "GET") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleListScenePurchases(request, env);
-  }
-  if (path === "/billing/scene-purchases/check") {
-    if (request.method !== "GET" && request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleCheckScenePurchase(request, env);
-  }
-  if (path === "/billing/animation-purchases/check") {
-    if (request.method !== "GET" && request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleCheckAnimationPurchase(request, env);
-  }
-  if (path === "/billing/animation-purchases" || path === "/billing/animation-purchases/list") {
-    if (request.method !== "GET") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleListAnimationPurchases(request, env);
-  }
-  if (path === "/billing/scene-purchases/restore/request") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return handleSceneLicenceRestoreRequest(request, env);
-  }
-  if (path === "/billing/scene-purchases/restore/activate") {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return methodNotAllowed(env);
-    }
-    if (request.method === "HEAD") {
-      return new Response(null, { status: 200, headers: corsHeaders(env) });
-    }
-    return handleSceneLicenceRestoreActivate(request, env);
-  }
   if (path === "/billing/lemonsqueezy/webhook") {
     if (request.method !== "POST") {
       return methodNotAllowed(env);
@@ -1944,24 +1709,6 @@ async function dispatchAuthRequest(request, env) {
       return new Response(null, { status: 200, headers: corsHeaders(env) });
     }
     return lemonSqueezyBillingHandlers.handleSuccess(request, env);
-  }
-  if (path === "/billing/lemonsqueezy/scene-success") {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return methodNotAllowed(env);
-    }
-    if (request.method === "HEAD") {
-      return new Response(null, { status: 200, headers: corsHeaders(env) });
-    }
-    return lemonSqueezyBillingHandlers.handleSceneSuccess(request, env);
-  }
-  if (path === "/billing/lemonsqueezy/animation-success") {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return methodNotAllowed(env);
-    }
-    if (request.method === "HEAD") {
-      return new Response(null, { status: 200, headers: corsHeaders(env) });
-    }
-    return lemonSqueezyBillingHandlers.handleAnimationSuccess(request, env);
   }
   if (path === "/me") {
     if (request.method !== "GET" && request.method !== "HEAD") {

@@ -9,9 +9,6 @@ routes = [
   { pattern = "api.planetka.io/api-key/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/me", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/billing/lemonsqueezy/*", zone_name = "planetka.io" },
-  { pattern = "api.planetka.io/billing/scene-purchases", zone_name = "planetka.io" },
-  { pattern = "api.planetka.io/billing/scene-purchases/*", zone_name = "planetka.io" },
-  { pattern = "api.planetka.io/billing/animation-purchases/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/health", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/addon/update-manifest", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/addon/releases/*", zone_name = "planetka.io" },
@@ -53,12 +50,9 @@ ADDON_UPDATE_PUBLISHED_AT = "2026-05-20T00:00:00Z"
 ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/"
 ADDON_UPDATE_MIN_BLENDER = "4.5.7"
 ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS = "300"
-PLANETKA_BETA_DEFAULT_PRO = "1"
+PLANETKA_BETA_DEFAULT_PRO = "0"
 LEMONSQUEEZY_TEST_MODE = "1"
-LEMONSQUEEZY_PRO_PRICE_LABEL = "€349"
-LEMONSQUEEZY_SCENE_PRODUCT_ID = "1083028"
-LEMONSQUEEZY_SCENE_VARIANT_ID = "1697314"
-PLANETKA_SCENE_FULL_QUALITY_PRICE_EUR = "15"
+LEMONSQUEEZY_PRO_PRICE_LABEL = "€299"
 
 [[d1_databases]]
 binding = "DB"

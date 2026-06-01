@@ -30,7 +30,7 @@ export function createAuthCore(deps) {
 
   async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
     await deps.ensureApiKeyTables(db);
-    const safePlan = deps.normalizeRequestedPlan(planCode || user.status || deps.PLAN_CODE_FREE);
+    const safePlan = deps.normalizeRequestedPlan(planCode || user.status || deps.PLAN_CODE_PERSONAL);
     const token = `pka_${deps.randomToken(36)}`;
     const keyHash = await deps.sha256Hex(token);
     const keyPrefix = String(token.slice(0, 16));
@@ -62,13 +62,11 @@ export function createAuthCore(deps) {
         issuedAt,
       ],
     );
-    if (safePlan === deps.PLAN_CODE_FREE) {
-      await deps.enforceSingleActiveFreeApiKey(
-        db,
-        String(user && user.id || "").trim(),
-        keyId,
-      );
-    }
+    await deps.enforceSingleActiveLicenceApiKey(
+      db,
+      String(user && user.id || "").trim(),
+      keyId,
+    );
 
     return {
       apiKey: token,
@@ -283,7 +281,7 @@ export function createAuthCore(deps) {
     const exp = Math.floor(Date.now() / 1000) + (60 * 60);
     const effectivePlanCode = deps.normalizeRequestedPlan(
       deps.resolvePolicyPlanCode(user, env),
-    ) || deps.PLAN_CODE_FREE;
+    ) || deps.PLAN_CODE_PERSONAL;
     const basePayload = {
       type: "access",
       sub: user.id,
@@ -341,6 +339,7 @@ export function createAuthCore(deps) {
       resolve_id: safeResolveId,
       auth_method: String(auth && auth.authMethod || "").trim(),
       device_id: String(auth && auth.deviceId || "").trim(),
+      client_ip_scope: String(auth && auth.access && (auth.access.client_ip_scope || auth.access.clientIpScope) || "").trim(),
       exp,
     };
     const secret = deps.requireSecret(env, "JWT_SIGNING_SECRET");
@@ -360,7 +359,10 @@ export function createAuthCore(deps) {
     if (!rawToken) {
       return { claims: null };
     }
-    const cacheKey = `tile_session:${rawToken}`;
+    const currentIpScope = typeof deps.requestClientIpScope === "function"
+      ? String(deps.requestClientIpScope(request) || "").trim()
+      : "";
+    const cacheKey = `tile_session:${rawToken}:${currentIpScope}`;
     const cached = deps.authContextCacheGet(cacheKey, env);
     if (cached && cached.tileSessionClaims) {
       return { claims: cached.tileSessionClaims };
@@ -391,6 +393,11 @@ export function createAuthCore(deps) {
     if (!userId) {
       return { error: deps.json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
     }
+    const authMethod = String(payload && payload.auth_method || "").trim();
+    const tokenIpScope = String(payload && (payload.client_ip_scope || payload.clientIpScope) || "").trim();
+    if (authMethod.toLowerCase() === "anonymous" && tokenIpScope && currentIpScope && tokenIpScope !== currentIpScope) {
+      return { error: deps.json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
+    }
     const planCode = deps.normalizeRequestedPlan(payload && (payload.plan_code || payload.user_status) || "");
     const storedPlanCode = deps.normalizeRequestedPlan(
       payload && (payload.stored_plan_code || payload.storedPlanCode || planCode) || "",
@@ -408,7 +415,7 @@ export function createAuthCore(deps) {
       qualityAccessPlanCode: qualityAccessPlanCode || planCode,
       qualityMode,
       resolveId,
-      authMethod: String(payload && payload.auth_method || "").trim(),
+      authMethod,
       deviceId: deps.normalizeDeviceId(payload && payload.device_id || ""),
     };
     deps.authContextCacheSet(
@@ -432,6 +439,7 @@ export function createAuthCore(deps) {
     const authMethod = String(metadata.auth_method || metadata.authMethod || "").trim();
     const apiKeyId = String(metadata.api_key_id || metadata.apiKeyId || "").trim();
     const deviceId = deps.normalizeDeviceId(metadata.device_id || metadata.deviceId || "");
+    const clientIpScope = String(metadata.client_ip_scope || metadata.clientIpScope || "").trim().slice(0, 80);
     await deps.dbRun(
       db,
       `
@@ -443,10 +451,21 @@ export function createAuthCore(deps) {
           created_at,
           auth_method,
           api_key_id,
-          device_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          device_id,
+          client_ip_scope
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      [refreshSessionId, userId, refreshHash, expiresAt, createdAt, authMethod || null, apiKeyId || null, deviceId || null],
+      [
+        refreshSessionId,
+        userId,
+        refreshHash,
+        expiresAt,
+        createdAt,
+        authMethod || null,
+        apiKeyId || null,
+        deviceId || null,
+        clientIpScope || null,
+      ],
     );
     return refreshToken;
   }

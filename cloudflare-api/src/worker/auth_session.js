@@ -66,8 +66,11 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     && !enforceApiKeyDevicePolicy
   );
   const bearerToken = readBearerToken(request);
+  const requestIpScope = typeof deps.requestClientIpScope === "function"
+    ? String(deps.requestClientIpScope(request) || "").trim()
+    : "";
   const authCacheKey = canUseLightweightAuthCache && bearerToken
-    ? `lightweight_auth:${bearerToken}`
+    ? `lightweight_auth:${bearerToken}:${requestIpScope}`
     : "";
 
   let access = null;
@@ -113,6 +116,10 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   }
 
   const authMethod = String(access.auth_method || "").trim().toLowerCase();
+  const tokenIpScope = String(access.client_ip_scope || access.clientIpScope || "").trim();
+  if (authMethod === "anonymous" && tokenIpScope && requestIpScope && tokenIpScope !== requestIpScope) {
+    return { error: deps.json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
+  }
   const apiKeyId = String(access.api_key_id || "").trim();
   const deviceId = deps.normalizeDeviceId(
     access.device_id || request.headers.get("X-Planetka-Device-Id") || "",

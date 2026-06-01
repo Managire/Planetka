@@ -1,3 +1,11 @@
+
+## Unreleased
+
+- Replaced the old feature-tier model with Personal and Commercial single-seat licence options.
+- Personal and Commercial licences now have identical technical feature access, including Preview, Balanced, Full, final animation rendering, panoramic camera support, standalone export, atmosphere, and clouds.
+- Personal Licence is for personal/non-commercial use. Commercial Licence is required for commercial use.
+- Removed active quality/feature gating based on account type.
+
 # Changelog
 
 All notable public changes to Planetka are documented in this file.
@@ -38,21 +46,13 @@ All notable public changes to Planetka are documented in this file.
 ## [v0.8.1] - 2026-05-19
 
 ### Changed
-- Prepared the add-on for the simplified Free / Pro streaming model.
-- Free accounts can stream worldwide in Preview and Balanced texture quality.
-- Pro accounts can stream worldwide in Preview, Balanced, and Full texture quality.
 - The add-on model is now streaming-first: in-addon data-pack purchases, scene-specific tile purchases, purchase history, and licenced-data downloads are no longer part of the active Planetka add-on workflow.
-- Full texture quality now behaves like a normal quality mode for Pro accounts rather than a one-off purchase flow.
 - Release documentation now separates the active add-on model from the legacy website/data-pack commerce system kept for future reference.
 
 ### Added
-- Account-tier enforcement checks for Free and Pro access at the tile-session / tile-delivery layer.
-- Analytics All Users page controls for manually switching an account between Free and Pro.
-- Automated account-tier gate covering Free and Pro texture-quality restrictions.
 - Resolve timing gate for Preview, Balanced, and Full Quality quality modes.
 
 ### Known limitation
-- Pro checkout is not ready for public use yet. The current upgrade URL points to a missing pricing page and must be implemented before publishing paid upgrades.
 
 ## [v0.7.8] - 2026-05-17
 

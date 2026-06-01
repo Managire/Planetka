@@ -1,41 +1,31 @@
-# Planetka Release Documentation
+# Planetka Release Notes
 
-Last updated: 2026-05-20
+## Active Product Model
 
-This folder contains release-support documents for Planetka. Only the files listed in `package_allowlist_public.txt` are included in the public add-on package.
+Planetka uses two single-seat licence options:
 
-## Public-package documents
+- **Personal Licence**: personal and non-commercial use only.
+- **Commercial Licence**: required for commercial use.
 
-The public package includes:
+Both licence options have the same technical access and the same add-on functionality. Preview, Balanced, and Full quality levels are quality choices inside the add-on, not separate products.
 
-- `Documentation/Release/FAIR_USAGE_POLICY.md`
-- `Documentation/Release/SYSTEM_REQUIREMENTS.md`
-- user-facing licensing, privacy, attribution, and compliance documents from `Documentation/Licencing/`
+The active Blender add-on workflow streams required data into a working cache. It does not sell individual tiles, scene-specific licences, animation licences, data packs, or purchase-history restores.
 
-Internal release checklists, runbooks, compatibility notes, developer notes, and QA notes are repository-maintenance documents only and must not be included in the user-facing package unless deliberately rewritten for users.
+## Access Recommendation
 
-## Current 0.8.2 add-on model
+Planetka Cloud access should remain controlled through a Planetka licence/API activation flow rather than completely open anonymous access. That keeps the add-on technically universal while preserving abuse control, revocation, usage attribution, and device/session protection.
 
-Planetka 0.8.2 is prepared around a simplified streaming model:
+Payment providers and marketplaces should only prove purchase. Planetka should remain the source of truth for licence activation.
 
-- **Free account**: free account access, worldwide Preview and Balanced texture-quality streaming for personal use.
-- **Pro account**: one-time EUR 280 paid or manually granted account access, worldwide Preview, Balanced, and Full texture-quality streaming for commercial and personal use.
-- **Quality modes**: Preview, Balanced, and Full Quality are normal streaming quality choices. They are not separate purchases.
-- **No in-addon data-pack commerce**: the Blender add-on no longer sells individual tiles, scene-specific texture licences, animation texture licences, or data packs.
-- **No purchase history/download archive**: the active add-on workflow streams required data into a temporary working cache. It does not provide a supported raw-data download library.
-- **Website data-pack pages**: existing product/catalog/map pages may remain available as a separate website/data-product system or future reference, but they are not the active Planetka add-on commerce model.
+## Release Checklist Summary
 
-## Known blocker before public paid release
+Before publication:
 
-Pro checkout is not ready for public use yet. The current upgrade URL points to `https://www.planetka.io/blender/pricing`, which currently returns 404. Do not publish paid upgrades until the checkout page and backend fulfilment are implemented and tested end-to-end.
-
-## Public release checks
-
-Before publishing a release:
-
-- build the package through `tools/build_addon_zip.py` using `package_allowlist_public.txt`;
-- verify the built file list contains no internal runbooks, checklists, developer notes, archived beta documents, or obsolete pricing internals;
-- regenerate legal PDFs with `tools/generate_legal_pdfs.py` after any terms/privacy change;
-- upload the release zip and legal PDFs to the configured R2 keys;
-- deploy split Workers only with explicit `--config` files after confirming each `wrangler deploy --config ... --dry-run` shows restricted public access, current legal versions, and current updater metadata;
-- run Blender smoke tests for Create Earth, Free Preview/Balanced access, Pro Preview/Balanced/Full access, animation preflight/rendering, update checks, and offline/error handling.
+- verify Create Earth in a new `.blend` file;
+- verify Preview, Balanced, and Full quality resolves;
+- verify final animation rendering;
+- verify panoramic camera support;
+- verify standalone file export;
+- verify texture-based, global, and VDB cloud workflows;
+- verify Planetka Cloud licence/API activation and recovery;
+- verify Analytics displays Personal / Commercial / Total metrics.

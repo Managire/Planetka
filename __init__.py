@@ -31,13 +31,8 @@ from .operators import (
     PLANETKA_OT_AccountLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountOpenLogin,
-    PLANETKA_OT_AccountRestorePro,
-    PLANETKA_OT_AccountUpgrade,
-    PLANETKA_OT_SceneFullQualityPurchase,
-    PLANETKA_OT_SceneLicencesSendAccessLink,
-    PLANETKA_OT_SceneLicencesShow,
-    PLANETKA_OT_ScenePurchaseRestore,
-    PLANETKA_OT_ScenePurchasesRefresh,
+    PLANETKA_OT_AccountRestoreCommercial,
+    PLANETKA_OT_AccountCommercialCheckout,
     PLANETKA_OT_UpdateNow,
     PLANETKA_OT_DownloadStatusPopup,
     PLANETKA_OT_DeleteSavedLocation,
@@ -200,13 +195,8 @@ classes = (
     PLANETKA_OT_AccountOpenLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountContact,
-    PLANETKA_OT_AccountRestorePro,
-    PLANETKA_OT_AccountUpgrade,
-    PLANETKA_OT_SceneFullQualityPurchase,
-    PLANETKA_OT_SceneLicencesSendAccessLink,
-    PLANETKA_OT_SceneLicencesShow,
-    PLANETKA_OT_ScenePurchasesRefresh,
-    PLANETKA_OT_ScenePurchaseRestore,
+    PLANETKA_OT_AccountRestoreCommercial,
+    PLANETKA_OT_AccountCommercialCheckout,
     *_LEGACY_CLASSES,
     PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_AddEarth,
@@ -457,6 +447,11 @@ def register():
         _safe_register_class(cls)
     if not hasattr(bpy.types.Scene, "planetka"):
         bpy.types.Scene.planetka = PointerProperty(type=PlanetkaProperties)
+    try:
+        from .auth import _ensure_device_id
+        _ensure_device_id()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed initializing anonymous install id during register", exc_info=True)
 
     _sync_logging_from_scenes()
     _remove_load_post_handler()

@@ -27,9 +27,6 @@ FALLBACK_AUTH_STORED_PLAN_CODE_KEY = "planetka_auth_stored_plan_code"
 FALLBACK_AUTH_STORED_PLAN_NAME_KEY = "planetka_auth_stored_plan_name"
 FALLBACK_AUTH_CONTACT_URL_KEY = "planetka_auth_contact_url"
 FALLBACK_AUTH_UPGRADE_URL_KEY = "planetka_auth_upgrade_url"
-FALLBACK_SCENE_LICENCE_PRICE_LABEL_KEY = "planetka_scene_licence_price_label"
-FALLBACK_SCENE_LICENCE_PRICE_CENTS_KEY = "planetka_scene_licence_price_cents"
-FALLBACK_SCENE_LICENCE_RESTORE_EMAIL_KEY = "planetka_scene_licence_restore_email"
 FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
 FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
@@ -86,19 +83,11 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     auth_stored_plan_name: StringProperty(name="Auth Stored Plan Name", default="", options={'HIDDEN'})
     auth_contact_url: StringProperty(name="Auth Contact URL", default="", options={'HIDDEN'})
     auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
-    scene_licence_price_label: StringProperty(name="Scene Licence Price Label", default="", options={'HIDDEN'})
-    scene_licence_price_cents: IntProperty(name="Scene Licence Price Cents", default=0, options={'HIDDEN'})
-    scene_licence_restore_email: StringProperty(
-        name="Email",
-        description="Email address used for Planetka scene licence purchases",
-        default="",
-        options={'HIDDEN'},
-    )
     auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
     auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
-    pro_restore_license_key_input: StringProperty(
+    commercial_restore_license_key_input: StringProperty(
         name="Planetka Licence Key",
-        description="Planetka licence key for restoring Planetka Pro",
+        description="Planetka licence key for restoring Planetka Commercial Licence",
         default="",
         options={'HIDDEN'},
     )
@@ -289,18 +278,6 @@ def get_prefs():
         auth_upgrade_url = property(
             lambda self: self._get_value(FALLBACK_AUTH_UPGRADE_URL_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_UPGRADE_URL_KEY, value),
-        )
-        scene_licence_price_label = property(
-            lambda self: self._get_value(FALLBACK_SCENE_LICENCE_PRICE_LABEL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_SCENE_LICENCE_PRICE_LABEL_KEY, value),
-        )
-        scene_licence_price_cents = property(
-            lambda self: int(self._get_value(FALLBACK_SCENE_LICENCE_PRICE_CENTS_KEY, 0) or 0),
-            lambda self, value: self._set_value(FALLBACK_SCENE_LICENCE_PRICE_CENTS_KEY, int(value or 0)),
-        )
-        scene_licence_restore_email = property(
-            lambda self: self._get_value(FALLBACK_SCENE_LICENCE_RESTORE_EMAIL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_SCENE_LICENCE_RESTORE_EMAIL_KEY, value),
         )
         auth_login_state = property(
             lambda self: self._get_value(FALLBACK_AUTH_LOGIN_STATE_KEY, "logged_out"),

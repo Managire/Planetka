@@ -7,7 +7,6 @@ from bpy.props import BoolProperty, EnumProperty
 
 from .auth import (
     allows_texture_quality_for_context,
-    is_authenticated,
     texture_quality_not_allowed_message,
 )
 from .planetka_ops.account_ops import (
@@ -15,14 +14,9 @@ from .planetka_ops.account_ops import (
     PLANETKA_OT_AccountLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountOpenLogin,
-    PLANETKA_OT_AccountRestorePro,
-    PLANETKA_OT_AccountUpgrade,
+    PLANETKA_OT_AccountRestoreCommercial,
+    PLANETKA_OT_AccountCommercialCheckout,
     PLANETKA_OT_CheckUpdates,
-    PLANETKA_OT_SceneFullQualityPurchase,
-    PLANETKA_OT_SceneLicencesSendAccessLink,
-    PLANETKA_OT_SceneLicencesShow,
-    PLANETKA_OT_ScenePurchaseRestore,
-    PLANETKA_OT_ScenePurchasesRefresh,
     PLANETKA_OT_UpdateNow,
 )
 from .planetka_ops.location_ops import (
@@ -190,44 +184,6 @@ _REGION_PACK_PURCHASE_TIMEOUT_SEC = 180.0
 _LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 _FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
 _SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY = "planetka_suppress_texture_quality_update_auto_resolve"
-
-
-def _scene_purchase_history_contains(scene, scene_id):
-    safe_scene_id = str(scene_id or "").strip()
-    if scene is None or not safe_scene_id:
-        return False
-    try:
-        purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]"))
-    except (RuntimeError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
-        purchases = []
-    if not isinstance(purchases, list):
-        return False
-    return any(str(item.get("scene_id", "") or "").strip() == safe_scene_id for item in purchases if isinstance(item, dict))
-
-
-def _current_full_quality_scene_licence_payload(scene, props):
-    try:
-        tile_utils = __import__(f"{__package__}.tile_utils", fromlist=["main"]) if __package__ else __import__("tile_utils")
-        scene_licensing = __import__(f"{__package__}.scene_licensing", fromlist=["scene_license_payload"]) if __package__ else __import__("scene_licensing")
-        full_tiles = tile_utils.main(scope_mode="CAMERA")
-        return scene_licensing.scene_license_payload(scene=scene, props=props, full_quality_tiles=full_tiles)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed computing current Full Quality scene licence payload", exc_info=True)
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed computing current Full Quality scene licence payload", exc_info=True)
-    return {}
-
-
-def _current_scene_has_purchased_full_quality(scene, props):
-    payload = _current_full_quality_scene_licence_payload(scene, props)
-    scene_id = str(payload.get("scene_id", "") or "").strip() if isinstance(payload, dict) else ""
-    if scene_id and _scene_purchase_history_contains(scene, scene_id):
-        try:
-            scene["planetka_current_scene_licence_id"] = scene_id
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed storing current purchased scene licence id", exc_info=True)
-        return True
-    return False
 
 
 def _signature_token(signature):
@@ -422,32 +378,6 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
-        if target_mode == "FULL" and not is_authenticated(prefs):
-            try:
-                bpy.ops.planetka.scene_full_quality_purchase()
-                return {'FINISHED'}
-            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                return fail(
-                    self,
-                    "Full Quality scene purchase could not be started. Please retry.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                    exc=exc,
-                )
-        if target_mode == "FULL":
-            try:
-                from .auth import is_pro_account
-                if not is_pro_account(prefs) and not _current_scene_has_purchased_full_quality(scene, props):
-                    result = bpy.ops.planetka.scene_full_quality_purchase()
-                    return {'FINISHED'} if "FINISHED" in result else {'CANCELLED'}
-            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                return fail(
-                    self,
-                    "Full Quality scene purchase could not be started. Please retry.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                    exc=exc,
-                )
         if not allows_texture_quality_for_context(prefs, target_mode):
             return fail(
                 self,

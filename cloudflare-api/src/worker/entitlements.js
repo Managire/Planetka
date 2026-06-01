@@ -1,5 +1,5 @@
-export const PLAN_CODE_FREE = "free";
-export const PLAN_CODE_PROFESSIONAL = "pro";
+export const PLAN_CODE_PERSONAL = "personal";
+export const PLAN_CODE_COMMERCIAL = "commercial";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
 
@@ -9,11 +9,11 @@ function normalizeEmail(value) {
 
 export function normalizeUserStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (["professional", "pro", "paid", "unlimited"].includes(normalized)) {
-    return PLAN_CODE_PROFESSIONAL;
+  if (["commercial", "paid", "unlimited"].includes(normalized)) {
+    return PLAN_CODE_COMMERCIAL;
   }
-  if (["personal", PLAN_CODE_FREE, ""].includes(normalized)) {
-    return PLAN_CODE_FREE;
+  if (["personal", ""].includes(normalized)) {
+    return PLAN_CODE_PERSONAL;
   }
   return normalized;
 }
@@ -52,22 +52,13 @@ export function isBlockedStatus(statusValue) {
 
 export function normalizeRequestedPlan(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_PROFESSIONAL) return PLAN_CODE_PROFESSIONAL;
-  return PLAN_CODE_FREE;
-}
-
-export function betaProAccountsEnabled(env = {}) {
-  const raw = String(
-    env.PLANETKA_BETA_DEFAULT_PRO
-    ?? env.BETA_DEFAULT_PRO
-    ?? env.BETA_PRO_ACCOUNTS
-    ?? "1",
-  ).trim().toLowerCase();
-  return !["0", "false", "off", "no"].includes(raw);
+  if (normalized === PLAN_CODE_COMMERCIAL) return PLAN_CODE_COMMERCIAL;
+  return PLAN_CODE_PERSONAL;
 }
 
 export function defaultSignupPlanCode(env = {}) {
-  return betaProAccountsEnabled(env) ? PLAN_CODE_PROFESSIONAL : PLAN_CODE_FREE;
+  void env;
+  return PLAN_CODE_PERSONAL;
 }
 
 export function resolvePolicyPlanCode(user, env = {}) {
@@ -94,19 +85,15 @@ export function normalizeQualityMode(value) {
 }
 
 export function isQualityModeAllowedForPlan(planCode, qualityMode) {
-  const plan = normalizeRequestedPlan(planCode);
-  const quality = normalizeQualityMode(qualityMode);
-  if (plan === PLAN_CODE_PROFESSIONAL) return true;
-  return quality === "preview" || quality === "balanced";
+  void planCode;
+  void qualityMode;
+  return true;
 }
 
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
-  const plan = normalizeRequestedPlan(planCode);
-  const quality = normalizeQualityMode(qualityMode);
-  if (plan === PLAN_CODE_FREE && quality === "full") {
-    return "Full Quality requires a scene licence or Planetka Pro.";
-  }
-  return "Selected texture quality is not available for this account.";
+  void planCode;
+  void qualityMode;
+  return "Selected texture quality is not available.";
 }
 
 function parseS2TextureTier(fileName) {
@@ -118,48 +105,53 @@ function parseS2TextureTier(fileName) {
   };
 }
 
+function parseCloudDLevel(fileName) {
+  const safeName = String(fileName || "").trim();
+  if (/^cloud\d+_vox\d+_(?:60|90|120|150)\.vdb$/i.test(safeName)) {
+    return 1;
+  }
+  const match = /(?:^|_)d(\d+)\.(?:exr|vdb)$/i.exec(safeName);
+  if (!match) return null;
+  return Number.parseInt(match[1], 10);
+}
+
 export function isTileFileAllowedForPlan(planCode, fileName) {
-  const tier = parseS2TextureTier(fileName);
-  if (!tier) return true;
-  const plan = normalizeRequestedPlan(planCode);
-  if (plan === PLAN_CODE_PROFESSIONAL) return true;
-  return !(tier.z === 1 && tier.d === 1);
+  void planCode;
+  void fileName;
+  return true;
 }
 
 export function tileFileNotAllowedMessage(planCode, fileName) {
-  const tier = parseS2TextureTier(fileName);
-  const plan = normalizeRequestedPlan(planCode);
-  if (plan === PLAN_CODE_FREE && tier && tier.z === 1 && tier.d === 1) {
-    return "Full Quality requires a scene licence or Planetka Pro.";
-  }
-  return "This texture file is not available for this account.";
+  void planCode;
+  void fileName;
+  return "This texture file is not available.";
 }
 
-export function isProfessionalPlan(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL;
+export function isCommercialPlan(planCode) {
+  return normalizeRequestedPlan(planCode) === PLAN_CODE_COMMERCIAL;
 }
 
-export function accountTierForPlanCode(planCode) {
+export function accountLicenceForPlanCode(planCode) {
   return normalizeRequestedPlan(planCode);
 }
 
 export function planDisplayName(planCode) {
   const plan = normalizeRequestedPlan(planCode);
-  if (plan === PLAN_CODE_PROFESSIONAL) return "Pro";
-  return "Free";
+  if (plan === PLAN_CODE_COMMERCIAL) return "Commercial";
+  return "Personal";
 }
 
 export function planAccessSummary(planCode) {
   const plan = normalizeRequestedPlan(planCode);
-  if (plan === PLAN_CODE_PROFESSIONAL) {
-    return "Pro account: Preview, Balanced, and Full texture quality streaming with commercial licence.";
+  if (plan === PLAN_CODE_COMMERCIAL) {
+    return "Commercial licence: all Planetka features for commercial and personal use.";
   }
-  return "Free account: Preview and Balanced texture quality streaming for personal use.";
+  return "Personal licence: all Planetka features for personal use only.";
 }
 
 export function resolvePlanPriority(planCode) {
   const plan = normalizeRequestedPlan(planCode);
-  if (plan === PLAN_CODE_PROFESSIONAL) return 20;
+  if (plan === PLAN_CODE_COMMERCIAL) return 20;
   return 0;
 }
 

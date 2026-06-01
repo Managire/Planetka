@@ -13,6 +13,9 @@ function buildTileEdgeCacheKey(request, key) {
   const cacheUrl = new URL(request.url);
   cacheUrl.search = "";
   cacheUrl.searchParams.set("__planetka_r2_key", key);
+  if (String(key || "").includes("/clouds_vdb/")) {
+    cacheUrl.searchParams.set("__planetka_vdb_revision", "openvdb224_20260601");
+  }
   return new Request(cacheUrl.toString(), { method: "GET" });
 }
 
@@ -35,176 +38,6 @@ function firstNonEmpty(...values) {
     if (text) return text;
   }
   return "";
-}
-
-function normalizeSceneId(value) {
-  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
-}
-
-function normalizeTileFileName(value) {
-  const text = String(value || "").trim();
-  return text && !text.includes("/") && !text.includes("..") ? text : "";
-}
-
-async function ensureScenePurchaseTables(db, deps) {
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS scene_full_quality_purchases (
-        id TEXT PRIMARY KEY,
-        scene_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        purchase_type TEXT NOT NULL DEFAULT 'scene_full_quality_commercial_license',
-        order_id TEXT,
-        variant_id TEXT,
-        amount_cents INTEGER NOT NULL DEFAULT 0,
-        currency TEXT NOT NULL DEFAULT 'EUR',
-        camera_json TEXT,
-        tiles_json TEXT,
-        tile_hash TEXT,
-        status TEXT NOT NULL DEFAULT 'paid',
-        created_at TEXT NOT NULL,
-        purchased_at TEXT NOT NULL
-      )
-    `,
-  );
-  await deps.dbRun(
-    db,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_purchase_user_scene_paid ON scene_full_quality_purchases(user_id, scene_id)`,
-  );
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS scene_purchase_verified_emails (
-        user_id TEXT NOT NULL,
-        email TEXT NOT NULL,
-        verified_at TEXT NOT NULL,
-        source TEXT NOT NULL DEFAULT 'email_link',
-        PRIMARY KEY (user_id, email)
-      )
-    `,
-  );
-  await deps.dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON scene_purchase_verified_emails(email)`);
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS animation_render_purchases (
-        id TEXT PRIMARY KEY,
-        animation_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        purchase_type TEXT NOT NULL DEFAULT 'animation_render_license',
-        order_id TEXT,
-        variant_id TEXT,
-        amount_cents INTEGER NOT NULL DEFAULT 0,
-        currency TEXT NOT NULL DEFAULT 'EUR',
-        frame_count INTEGER NOT NULL DEFAULT 0,
-        animation_json TEXT,
-        status TEXT NOT NULL DEFAULT 'paid',
-        created_at TEXT NOT NULL,
-        purchased_at TEXT NOT NULL
-      )
-    `,
-  );
-  await deps.dbRun(db, `CREATE UNIQUE INDEX IF NOT EXISTS idx_animation_purchase_user_animation_paid ON animation_render_purchases(user_id, animation_id)`);
-}
-
-function normalizeEmail(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function normalizeAnimationId(value) {
-  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
-}
-
-function isSyntheticAnonymousEmail(value) {
-  return /^anonymous\+[a-f0-9]{32}@planetka\.local$/i.test(String(value || "").trim());
-}
-
-async function verifiedScenePurchaseEmails(db, userId, userEmail, deps) {
-  const emails = new Set();
-  const currentEmail = normalizeEmail(userEmail);
-  if (currentEmail && !isSyntheticAnonymousEmail(currentEmail)) {
-    emails.add(currentEmail);
-  }
-  if (typeof deps.dbAll === "function") {
-    const rows = await deps.dbAll(
-      db,
-      `SELECT email FROM scene_purchase_verified_emails WHERE user_id = ?`,
-      [String(userId || "")],
-    );
-    for (const row of Array.isArray(rows) ? rows : []) {
-      const email = normalizeEmail(row && row.email || "");
-      if (email) {
-        emails.add(email);
-      }
-    }
-  }
-  return Array.from(emails).slice(0, 12);
-}
-
-async function loadPurchasedScene(db, userId, userEmail, sceneId, deps) {
-  const safeSceneId = normalizeSceneId(sceneId);
-  if (!db || !safeSceneId || !userId || !deps || typeof deps.dbGet !== "function") {
-    return null;
-  }
-  await ensureScenePurchaseTables(db, deps);
-  const emails = await verifiedScenePurchaseEmails(db, userId, userEmail, deps);
-  const clauses = ["user_id = ?"];
-  const bindings = [String(userId || "")];
-  if (emails.length) {
-    clauses.push(`lower(user_email) IN (${emails.map(() => "?").join(", ")})`);
-    bindings.push(...emails);
-  }
-  bindings.push(safeSceneId);
-  return await deps.dbGet(
-    db,
-    `
-      SELECT *
-      FROM scene_full_quality_purchases
-      WHERE (${clauses.join(" OR ")}) AND scene_id = ? AND status = 'paid'
-      LIMIT 1
-    `,
-    bindings,
-  );
-}
-
-async function loadPurchasedAnimation(db, userId, userEmail, animationId, deps) {
-  const safeAnimationId = normalizeAnimationId(animationId);
-  if (!db || !safeAnimationId || !userId || !deps || typeof deps.dbGet !== "function") {
-    return null;
-  }
-  await ensureScenePurchaseTables(db, deps);
-  const emails = await verifiedScenePurchaseEmails(db, userId, userEmail, deps);
-  const clauses = ["user_id = ?"];
-  const bindings = [String(userId || "")];
-  if (emails.length) {
-    clauses.push(`lower(user_email) IN (${emails.map(() => "?").join(", ")})`);
-    bindings.push(...emails);
-  }
-  bindings.push(safeAnimationId);
-  return await deps.dbGet(
-    db,
-    `
-      SELECT *
-      FROM animation_render_purchases
-      WHERE (${clauses.join(" OR ")}) AND animation_id = ? AND status = 'paid'
-      LIMIT 1
-    `,
-    bindings,
-  );
-}
-
-function purchasedSceneTileFiles(row) {
-  try {
-    const tiles = JSON.parse(String(row && row.tiles_json || "[]"));
-    return Array.isArray(tiles)
-      ? tiles.map((tile) => `S2_${String(tile || "").trim()}.exr`).map(normalizeTileFileName).filter(Boolean)
-      : [];
-  } catch (_error) {
-    return [];
-  }
 }
 
 function isPublicCloudAssetFolder(folder) {
@@ -253,77 +86,16 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
-  const requestedFeature = String(
-    body && (body.feature || body.feature_code || body.featureCode) || request.headers.get("X-Planetka-Feature") || "",
-  ).trim().toLowerCase();
-  const requestedSceneId = normalizeSceneId(
-    body && (body.scene_id || body.sceneId) || request.headers.get("X-Planetka-Scene-Id") || "",
-  );
-  const requestedAnimationId = normalizeAnimationId(
-    body && (body.animation_id || body.animationId) || request.headers.get("X-Planetka-Animation-Id") || "",
-  );
   const planCode = normalizeRequestedPlan(
     auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
-  const qualityMode = normalizeQualityMode(requestedQualityMode);
-  let scenePurchase = null;
-  let animationPurchase = null;
-  let allowedTileFiles = [];
-  if (requestedResolveId.toLowerCase().startsWith("anim-") || requestedFeature === "final_animation_render") {
-    animationPurchase = await loadPurchasedAnimation(
-      deps.requireDb(env),
-      auth && auth.user && auth.user.id,
-      auth && auth.user && auth.user.email,
-      requestedAnimationId,
-      deps,
-    );
-    if (!animationPurchase) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: "animation_render_purchase_required",
-          message: "Final Animation Render requires an animation render licence.",
-        },
-        403,
-        env,
-      );
-    }
-  }
-  if (planCode !== "pro" && !animationPurchase) {
-    if (qualityMode === "full") {
-      scenePurchase = await loadPurchasedScene(
-        deps.requireDb(env),
-        auth && auth.user && auth.user.id,
-        auth && auth.user && auth.user.email,
-        requestedSceneId,
-        deps,
-      );
-      allowedTileFiles = purchasedSceneTileFiles(scenePurchase);
-      if (!scenePurchase || !allowedTileFiles.length) {
-        return jsonResponse(
-          {
-            ok: false,
-            error: "scene_full_quality_purchase_required",
-            message: "Full Quality for this scene requires a scene licence.",
-          },
-          403,
-          env,
-        );
-      }
-    }
-  }
-  const tokenAuth = animationPurchase
-    ? { ...auth, qualityAccessPlanCode: "pro" }
-    : auth;
+
   const issued = await issueTileSessionToken(
     env,
-    tokenAuth,
+    auth,
     requestedQualityMode,
     requestedResolveId,
-    {
-      sceneId: scenePurchase ? requestedSceneId : "",
-      allowedTileFiles,
-    },
+    {},
   );
   if (issued && issued.error) {
     return issued.error;
@@ -337,7 +109,6 @@ export async function handleTileSessionStart(request, env, deps) {
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
       plan_code: planCode,
-      scene_id: scenePurchase ? requestedSceneId : "",
     },
     200,
     env,
@@ -409,11 +180,9 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   const {
     clampNonNegativeInt,
     normalizeQualityMode,
-    isTileFileAllowedForPlan,
     readTileSessionClaims,
     requireAuthenticatedUserContext,
     resolveTileCacheControl,
-    tileFileNotAllowedMessage,
   } = deps;
 
   if (!env.PLANETKA_DATA) {
@@ -458,38 +227,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   }
 
   try {
-    if (tileSessionAuth && tileSessionAuth.claims) {
-      const planCode = firstNonEmpty(
-        tileSessionAuth.claims.qualityAccessPlanCode,
-        tileSessionAuth.claims.planCode,
-        tileSessionAuth.claims.storedPlanCode,
-      );
-      const allowedTileFiles = Array.isArray(tileSessionAuth.claims.allowedTileFiles)
-        ? tileSessionAuth.claims.allowedTileFiles
-        : [];
-      const sceneAllowsFile = allowedTileFiles.includes(fileName);
-      if (
-        !publicCloudAsset
-        &&
-        typeof isTileFileAllowedForPlan === "function"
-        && !sceneAllowsFile
-        && !isTileFileAllowedForPlan(planCode, fileName)
-      ) {
-        return json(
-          {
-            ok: false,
-            error: "tile_quality_not_allowed_for_tier",
-            message: typeof tileFileNotAllowedMessage === "function"
-              ? tileFileNotAllowedMessage(planCode, fileName)
-              : "This texture file is not available for this account.",
-            plan_code: planCode,
-          },
-          403,
-          env,
-        );
-      }
-    }
-
     const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
     const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
     const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();

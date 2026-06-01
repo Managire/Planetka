@@ -11,8 +11,8 @@ import {
   parsePositiveNumber,
 } from "./worker/env.js";
 import {
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   defaultSignupPlanCode,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
@@ -99,12 +99,6 @@ import {
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
-  getRuntimePricingSettings,
-  listRegionProductPricingRows,
-  setRegionProductDiscountOverride,
-  setRuntimePricingSettings,
-} from "./worker/credit_routes.js";
-import {
   runScheduledMaintenanceJobs,
 } from "./worker/maintenance_jobs.js";
 import {
@@ -188,7 +182,6 @@ let userConsentColumnsReady = false;
 let userQualityAccessColumnsReady = false;
 let newsletterContactsTableReady = false;
 let authRefreshEventsTableReady = false;
-let creditAccountTableReady = false;
 let rateLimitsLastPruneAt = 0;
 const authContextCache = new Map();
 
@@ -428,11 +421,11 @@ function normalizeDeviceId(value) {
 
 function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_FREE) {
-    return PLAN_CODE_FREE;
+  if (normalized === PLAN_CODE_PERSONAL) {
+    return PLAN_CODE_PERSONAL;
   }
-  if (normalized === PLAN_CODE_PROFESSIONAL) {
-    return PLAN_CODE_PROFESSIONAL;
+  if (normalized === PLAN_CODE_COMMERCIAL) {
+    return PLAN_CODE_COMMERCIAL;
   }
   return "";
 }
@@ -681,28 +674,6 @@ async function ensureUserQualityAccessColumns(db) {
   userQualityAccessColumnsReady = true;
 }
 
-async function ensureMinimalCreditAccountTable(db) {
-  if (creditAccountTableReady) {
-    return;
-  }
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS user_credit_accounts (
-        user_id TEXT PRIMARY KEY,
-        account_type TEXT NOT NULL DEFAULT 'account',
-        world_full_quality_unlocked_at TEXT,
-        world_full_quality_checkout_session_id TEXT,
-        world_full_quality_paid_eur REAL NOT NULL DEFAULT 0,
-        pricing_version INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `,
-  );
-  creditAccountTableReady = true;
-}
-
 async function ensureNewsletterContactsTable(db) {
   if (newsletterContactsTableReady) {
     return;
@@ -765,7 +736,7 @@ async function ensureApiKeyTables(db) {
       CREATE TABLE IF NOT EXISTS api_key_requests (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
-        requested_plan TEXT NOT NULL DEFAULT 'free',
+        requested_plan TEXT NOT NULL DEFAULT 'personal',
         token_hash TEXT NOT NULL UNIQUE,
         expires_at TEXT NOT NULL,
         used_at TEXT,
@@ -809,7 +780,7 @@ async function ensureApiKeyTables(db) {
         key_hash TEXT NOT NULL UNIQUE,
         key_prefix TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
-        plan_code TEXT NOT NULL DEFAULT 'free',
+        plan_code TEXT NOT NULL DEFAULT 'personal',
         expires_at TEXT,
         issued_at TEXT NOT NULL,
         last_used_at TEXT,
@@ -884,7 +855,7 @@ function fixedInternalPlanForEmail(email) {
   return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizeEmail(email)] || "";
 }
 
-function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE) {
+function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_PERSONAL) {
   const fixedPlan = fixedInternalPlanForEmail(email);
   if (fixedPlan) {
     return fixedPlan;
@@ -951,7 +922,7 @@ async function sendNewUserLoginAlert(env, details = {}) {
   }
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_PERSONAL, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
@@ -1037,7 +1008,7 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
   void env;
   const storedPlanCode = normalizeTierCodeStrict(user && user.status);
   if (!user || !user.id) {
-    return { storedPlanCode: PLAN_CODE_FREE, qualityAccessPlanCode: PLAN_CODE_FREE };
+    return { storedPlanCode: PLAN_CODE_PERSONAL, qualityAccessPlanCode: PLAN_CODE_PERSONAL };
   }
   if (!storedPlanCode && !isBlockedStatus(user && user.status)) {
     throw new Error("invalid_user_status");
@@ -1219,7 +1190,7 @@ async function revokeOtherActiveApiKeysForUser(db, userId, keepApiKeyId = "", re
   return idsToRevoke.length;
 }
 
-async function enforceSingleActiveFreeApiKey(db, userId, preferredApiKeyId = "") {
+async function enforceSingleActiveLicenceApiKey(db, userId, preferredApiKeyId = "") {
   await ensureApiKeyTables(db);
   const safeUserId = String(userId || "").trim();
   const safePreferredApiKeyId = String(preferredApiKeyId || "").trim();
@@ -1387,7 +1358,7 @@ const readBearerUser = (request, env) => readBearerUserRoute(request, env, authS
 const requireAuthenticatedUserContext = (request, env, options = {}) => requireAuthenticatedUserContextRoute(request, env, options, authSessionDeps);
 
 const authCoreDeps = {
-  PLAN_CODE_FREE,
+  PLAN_CODE_PERSONAL,
   DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
   DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
   requireSecret,
@@ -1416,7 +1387,7 @@ const authCoreDeps = {
   json,
   authContextCacheGet,
   authContextCacheSet,
-  enforceSingleActiveFreeApiKey,
+  enforceSingleActiveLicenceApiKey,
   computeApiKeyExpiryIso,
 };
 
@@ -1429,8 +1400,8 @@ const authSessionDeps = {
 };
 
 const authApiKeyDeps = {
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   defaultSignupPlanCode,
   DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
@@ -1479,7 +1450,7 @@ const authApiKeyDeps = {
   publicErrorCode,
   isValidApiKey,
   findActiveApiKeyRecord: authCore.findActiveApiKeyRecord,
-  enforceSingleActiveFreeApiKey,
+  enforceSingleActiveLicenceApiKey,
   enforceApiKeyDeviceLimit: authCore.enforceApiKeyDeviceLimit,
   buildAccountState,
   createAccessToken: authCore.createAccessToken,
@@ -1528,8 +1499,8 @@ const authSessionRouteDeps = {
 const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRouteDeps);
 
 const apiKeyPageDeps = {
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   defaultSignupPlanCode,
   DEFAULT_CONTACT_URL,
   DEFAULT_PRIVACY_URL,
@@ -1761,30 +1732,7 @@ function estimateR2MonthlyCostUsd(env, monthlyClassBOps) {
 }
 
 async function ensureCreditTables(db) {
-  await ensureMinimalCreditAccountTable(db);
-  await dbRun(db, `CREATE TABLE IF NOT EXISTS user_tile_entitlements (
-    user_id TEXT NOT NULL,
-    tile_key TEXT NOT NULL,
-    quality_mode TEXT NOT NULL DEFAULT 'full',
-    credits_spent REAL NOT NULL DEFAULT 0,
-    land_km2 REAL NOT NULL DEFAULT 0,
-    billable_land_km2 REAL NOT NULL DEFAULT 0,
-    source TEXT NOT NULL DEFAULT 'client_pricing',
-    unlocked_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, tile_key)
-  )`);
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_user_tile_entitlements_user ON user_tile_entitlements(user_id)`);
-  await dbRun(db, `CREATE TABLE IF NOT EXISTS user_credit_purchases (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    purchase_type TEXT NOT NULL,
-    amount_paid_eur REAL NOT NULL DEFAULT 0,
-    gross_eur REAL NOT NULL DEFAULT 0,
-    metadata_json TEXT,
-    stripe_session_id TEXT,
-    created_at TEXT NOT NULL
-  )`);
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_user_credit_purchases_user_created ON user_credit_purchases(user_id, created_at DESC)`);
+  void db;
 }
 
 async function ensureTileRequestEventsTable(db) {
@@ -1930,8 +1878,8 @@ const ANALYTICS_QUERY_DEPS = {
   DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
   INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
   MAX_ANALYTICS_WINDOW_MINUTES,
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   clampNonNegativeInt,
   countRowsFromQuery,
   dbAll,
@@ -1979,26 +1927,22 @@ const ADMIN_ANALYTICS_DEPS = {
   html,
   isAnalyticsSnapshotStale,
   json,
-  listRegionProductPricingRows,
   listAnalyticsUsers: (db, env, options = {}) => listAnalyticsUsersQuery(db, env, options, ANALYTICS_QUERY_DEPS),
   loadAnalyticsSnapshot,
   loadAnalyticsUsersSnapshot,
-  getRuntimePricingSettings,
   normalizePlanCode,
   nowIso,
   parseAnalyticsUsersSort: (value) => parseAnalyticsUsersSortQuery(value),
   parseAnalyticsUsersSortDirection: (value) => parseAnalyticsUsersSortDirectionQuery(value),
   parseHeavyUserPlanFilter: (value) => parseHeavyUserPlanFilterQuery(value, ANALYTICS_QUERY_DEPS),
   parseNonNegativeInteger,
-  PLAN_CODE_FREE,
+  PLAN_CODE_PERSONAL,
   publicErrorMessage: (message) => message,
   requireAnalyticsAdmin,
   sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
     sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
   sanitizeLiveTileMapMinutes: (value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) =>
     sanitizeLiveTileMapMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
-  setRegionProductDiscountOverride,
-  setRuntimePricingSettings,
   storeAnalyticsSnapshot,
   dbAll,
   dbGet,
@@ -2036,8 +1980,8 @@ const ADMIN_SESSION_DEPS = {
   nowIso,
   parseJson,
   parseRateLimitInteger,
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   rateLimitedResponse,
   requestClientIp,
   requireAuthenticatedUserContext,
@@ -2076,8 +2020,8 @@ const ADMIN_USER_DEPS = {
   parseCsvEmailSet,
   parseBooleanFlag,
   isBlockedStatus,
-  PLAN_CODE_FREE,
-  PLAN_CODE_PROFESSIONAL,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   randomToken,
   requestClientIp,
   activateApiKeyFromToken: authApiKeyHandlers.activateApiKeyFromToken,

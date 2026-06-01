@@ -74,6 +74,12 @@ export function createAuthSessionRouteHandlers(deps) {
     };
     const body = await deps.parseJson(request);
     const refreshToken = String(body.refresh_token || "").trim();
+    const requestDeviceId = deps.normalizeDeviceId(
+      body.device_id || request.headers.get("X-Planetka-Device-Id") || "",
+    );
+    const requestIpScope = typeof deps.requestClientIpScope === "function"
+      ? String(deps.requestClientIpScope(request) || "").trim()
+      : "";
     if (!refreshToken) {
       return errorResponse("missing_refresh_token", 400, null, {
         has_body: Boolean(body && Object.keys(body).length),
@@ -92,6 +98,7 @@ export function createAuthSessionRouteHandlers(deps) {
           rs.auth_method,
           rs.api_key_id,
           rs.device_id,
+          rs.client_ip_scope,
           u.email,
           u.status
         FROM refresh_sessions rs
@@ -121,8 +128,15 @@ export function createAuthSessionRouteHandlers(deps) {
     if (Date.parse(session.expires_at) < Date.now()) {
       return errorResponse("refresh_token_expired", 400, session);
     }
+    const sessionAuthMethod = String(session.auth_method || "").trim().toLowerCase();
+    const sessionDeviceId = deps.normalizeDeviceId(session.device_id || "");
+    if (sessionAuthMethod === "anonymous" && sessionDeviceId && (!requestDeviceId || sessionDeviceId !== requestDeviceId)) {
+      return errorResponse("device_id_mismatch", 401, session, {
+        request_device_id: requestDeviceId,
+      });
+    }
     if (
-      String(session.auth_method || "").trim().toLowerCase() === "api_key"
+      sessionAuthMethod === "api_key"
       && String(session.api_key_id || "").trim()
     ) {
       const keyUsable = await deps.isApiKeyUsableById(db, session.api_key_id, session.user_id);
@@ -163,6 +177,7 @@ export function createAuthSessionRouteHandlers(deps) {
         auth_method: String(session.auth_method || "").trim(),
         api_key_id: String(session.api_key_id || "").trim(),
         device_id: String(session.device_id || "").trim(),
+        client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
       },
     );
     const nextRefreshToken = await deps.createRefreshSession(
@@ -173,6 +188,7 @@ export function createAuthSessionRouteHandlers(deps) {
         auth_method: String(session.auth_method || "").trim(),
         api_key_id: String(session.api_key_id || "").trim(),
         device_id: String(session.device_id || "").trim(),
+        client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
       },
     );
     await recordRefreshEvent({
@@ -182,6 +198,12 @@ export function createAuthSessionRouteHandlers(deps) {
       userId: String(user.id || "").trim(),
       userEmail: deps.normalizeEmail(user.email || ""),
       sessionRow: session,
+      details: requestIpScope && String(session.client_ip_scope || "").trim() && requestIpScope !== String(session.client_ip_scope || "").trim()
+        ? {
+          previous_ip_scope: String(session.client_ip_scope || "").trim(),
+          current_ip_scope: requestIpScope,
+        }
+        : null,
     });
 
     return deps.json(

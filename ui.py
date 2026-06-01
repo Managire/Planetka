@@ -19,7 +19,7 @@ from .auth import (
     get_status_message,
     ensure_authenticated_session,
     is_authenticated,
-    is_pro_account,
+    is_commercial_licence,
 )
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
@@ -839,42 +839,6 @@ def _quality_total_size_label(estimate_bytes):
         return "Calculating size"
 
 
-def _scene_licence_price_label(prefs):
-    label = str(getattr(prefs, "scene_licence_price_label", "") or "").strip() if prefs is not None else ""
-    if label:
-        return label
-    try:
-        cents = int(getattr(prefs, "scene_licence_price_cents", 0) or 0) if prefs is not None else 0
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        cents = 0
-    return f"€{(cents / 100):.2f}" if cents > 0 else ""
-
-
-def _scene_purchase_history_contains(scene, scene_id):
-    safe_scene_id = str(scene_id or "").strip()
-    if scene is None or not safe_scene_id:
-        return False
-    try:
-        purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]"))
-    except (RuntimeError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
-        purchases = []
-    if not isinstance(purchases, list):
-        return False
-    return any(str(item.get("scene_id", "") or "").strip() == safe_scene_id for item in purchases if isinstance(item, dict))
-
-
-def _current_scene_full_quality_is_purchased(scene):
-    if scene is None:
-        return False
-    try:
-        scene_id = str(scene.get("planetka_current_scene_licence_id", "") or "").strip()
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        scene_id = ""
-    if scene_id and _scene_purchase_history_contains(scene, scene_id):
-        return True
-    return bool(_full_quality_download_success_for_ui(scene))
-
-
 def _earth_radius_bu_for_ui(scene):
     earth = get_earth_object()
     if earth is None:
@@ -1262,8 +1226,8 @@ def _api_key_inline_status(prefs, connected, status_message):
         return "Key invalid", "ERROR", True
     if "session expired" in lowered or "connect your account again" in lowered:
         return "Session expired", "ERROR", True
-    if "critical account tier integrity error" in lowered or "tier integrity" in lowered:
-        return "Critical tier integrity error", "ERROR", True
+    if "critical licence integrity error" in lowered or "licence integrity" in lowered:
+        return "Critical licence integrity error", "ERROR", True
 
     return "Connect failed", "ERROR", True
 
@@ -1419,10 +1383,10 @@ def _draw_account_panel(layout):
         account_tier = str(get_account_tier(prefs) or "").strip().lower()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         account_tier = ""
-    if account_tier == "pro":
-        account_type_label = "Pro (Commercial)"
-    elif account_tier == "free":
-        account_type_label = "Free (Personal)"
+    if account_tier == "commercial":
+        account_type_label = "Commercial"
+    elif account_tier == "personal":
+        account_type_label = "Personal"
     else:
         account_type_label = "-"
     layout.label(text=f"Account type: {account_type_label}", icon="COMMUNITY")
@@ -1463,7 +1427,7 @@ def _draw_general_account_summary(layout):
         account_tier = str(get_account_tier(prefs) or "").strip().lower()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         account_tier = ""
-    account_type_label = "Pro" if account_tier == "pro" else "Free"
+    account_type_label = "Commercial" if account_tier == "commercial" else "Personal"
     status_message = get_status_message(prefs)
 
     account_box = layout.box()
@@ -1474,22 +1438,14 @@ def _draw_general_account_summary(layout):
     row = account_box.row()
     row.label(text="Account Type")
     row.label(text=account_type_label)
-    if account_tier != "pro":
-        account_box.operator("planetka.account_upgrade", text="Upgrade to Pro", icon="KEY_HLT")
+    if account_tier != "commercial":
+        account_box.operator("planetka.account_commercial_checkout", text="Buy Commercial Licence", icon="KEY_HLT")
         restore_box = account_box.box()
-        restore_box.label(text="Restore Pro", icon="KEY_HLT")
+        restore_box.label(text="Restore Commercial Licence", icon="KEY_HLT")
         if prefs is not None:
-            restore_box.prop(prefs, "pro_restore_license_key_input", text="Planetka Licence Key")
-        restore_box.operator("planetka.account_restore_pro", text="Restore Pro", icon="CHECKMARK")
+            restore_box.prop(prefs, "commercial_restore_license_key_input", text="Planetka Licence Key")
+        restore_box.operator("planetka.account_restore_commercial", text="Restore Commercial Licence", icon="CHECKMARK")
 
-    history_box = account_box.box()
-    history_box.label(text="Scene and Animation Licences", icon="FILE_TICK")
-    if prefs is not None:
-        history_box.prop(prefs, "scene_licence_restore_email", text="Email")
-    history_box.operator("planetka.scene_licences_send_access_link", text="Send Access Link", icon="URL")
-    history_box.operator("planetka.scene_purchases_refresh", text="Refresh Licences", icon="LOOP_BACK")
-    history_box.operator_context = 'INVOKE_DEFAULT'
-    history_box.operator("planetka.scene_licences_show", text="View Licences", icon="FILE_TICK")
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1643,14 +1599,9 @@ def _draw_live_telemetry(layout, scene):
             ("FULL", "Full"),
         )
         button_row = quality_box.row(align=True)
-        pro_account = is_pro_account(prefs)
-        scene_price_label = _scene_licence_price_label(prefs)
-        current_scene_purchased = _current_scene_full_quality_is_purchased(scene)
         for mode_key, label in qualities:
             quality_allowed = allows_texture_quality_for_context(prefs, mode_key)
             button_label = label
-            if mode_key == "FULL" and not pro_account and scene_price_label and not current_scene_purchased:
-                button_label = f"Full ({scene_price_label})"
             mode_col = button_row.column(align=True)
             estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
             operator_row = mode_col.row(align=True)

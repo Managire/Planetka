@@ -15,7 +15,7 @@ async function resolveTargetUser(db, body, deps) {
 }
 
 const DEFAULT_INTERNAL_QA_RESET_EMAILS = [
-  "free@planetka.io",
+  "personal@planetka.io",
   "tom.griger@gmail.com",
 ].join(",");
 
@@ -37,18 +37,18 @@ function isAllowedQaResetEmail(email, env, deps) {
 
 function defaultQaPlanForEmail(email, deps) {
   const normalized = deps.normalizeEmail(email || "");
-  if (normalized === "free@planetka.io") {
-    return "free";
+  if (normalized === "personal@planetka.io") {
+    return deps.PLAN_CODE_PERSONAL;
   }
   if (normalized === "tom.griger@gmail.com") {
-    return "free";
+    return deps.PLAN_CODE_PERSONAL;
   }
   return "";
 }
 
 function resolveQaResetPlanCode(email, requestedPlanCode, existingUser, deps) {
   const explicitPlan = deps.normalizePlanCode(requestedPlanCode || "");
-  if (explicitPlan === "free") {
+  if (explicitPlan === deps.PLAN_CODE_PERSONAL) {
     return explicitPlan;
   }
   const emailDefault = defaultQaPlanForEmail(email, deps);
@@ -56,10 +56,10 @@ function resolveQaResetPlanCode(email, requestedPlanCode, existingUser, deps) {
     return emailDefault;
   }
   const existingPlan = deps.normalizePlanCode(existingUser && existingUser.status || "");
-  if (existingPlan === "free") {
+  if (existingPlan === deps.PLAN_CODE_PERSONAL) {
     return existingPlan;
   }
-  return deps.normalizeRequestedPlan(existingPlan || "free");
+  return deps.normalizeRequestedPlan(existingPlan || deps.PLAN_CODE_PERSONAL);
 }
 
 async function clearRateLimitBucket(db, scope, rawKey, deps) {
@@ -191,7 +191,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetStatus = deps.PLAN_CODE_PROFESSIONAL || "professional";
+  const targetStatus = deps.PLAN_CODE_COMMERCIAL || "commercial";
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetStatus, targetUserId]);
   const apiKeysResult = await deps.dbRun(
@@ -366,7 +366,7 @@ export async function handleAdminUserSetPlan(request, env, deps) {
   }
 
   const targetPlan = deps.normalizeRequestedPlan(body && body.plan_code || "");
-  if (![deps.PLAN_CODE_FREE, deps.PLAN_CODE_PROFESSIONAL].includes(targetPlan)) {
+  if (![deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL].includes(targetPlan)) {
     return deps.json({ ok: false, error: "invalid_plan_code" }, 400, env);
   }
   if (deps.isBlockedStatus && deps.isBlockedStatus(target.user.status)) {
@@ -456,7 +456,7 @@ export async function handleAdminQaAuthReset(request, env, deps) {
     existingUser,
     deps,
   );
-  if (targetPlan !== "free") {
+  if (targetPlan !== deps.PLAN_CODE_PERSONAL) {
     return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
   }
 

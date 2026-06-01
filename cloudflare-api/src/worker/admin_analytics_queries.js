@@ -203,8 +203,8 @@ export async function collectQuoteQueueHealth(db, deps) {
 
 function normalizeTierCodeStrict(value, deps) {
   const normalized = String(deps.normalizePlanCode(value) || "").trim().toLowerCase();
-  if (normalized === deps.PLAN_CODE_FREE) return deps.PLAN_CODE_FREE;
-  if (normalized === deps.PLAN_CODE_PROFESSIONAL) return deps.PLAN_CODE_PROFESSIONAL;
+  if (normalized === deps.PLAN_CODE_PERSONAL) return deps.PLAN_CODE_PERSONAL;
+  if (normalized === deps.PLAN_CODE_COMMERCIAL) return deps.PLAN_CODE_COMMERCIAL;
   return "";
 }
 
@@ -212,8 +212,8 @@ function analyticsTierSqlExpression(columnExpression) {
   const column = String(columnExpression || "status").trim() || "status";
   return `
     CASE
-      WHEN LOWER(COALESCE(${column}, '')) IN ('pro', 'professional', 'paid', 'unlimited') THEN 'pro'
-      ELSE 'free'
+      WHEN LOWER(COALESCE(${column}, '')) IN ('commercial', 'paid', 'unlimited') THEN 'commercial'
+      ELSE 'personal'
     END
   `;
 }
@@ -348,7 +348,7 @@ function parseAnalyticsRevenueExcludedEmailPatterns(env = {}, deps) {
   const revenueSource = String(
     env.ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS
       || deps.DEFAULT_ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS
-      || "tom.griger@gmail.com,info@planetka.io,free@planetka.io,credits@planetka.io",
+      || "tom.griger@gmail.com,info@planetka.io,personal@planetka.io",
   ).trim();
   return uniqueEmailPatternsFromSources([
     baseSource,
@@ -765,8 +765,8 @@ export async function collectAnalyticsSnapshot(
     db,
     `
       SELECT
-        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'free' THEN 1 ELSE 0 END), 0) AS free_users,
-        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'pro' THEN 1 ELSE 0 END), 0) AS pro_users,
+        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'personal' THEN 1 ELSE 0 END), 0) AS personal_users,
+        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'commercial' THEN 1 ELSE 0 END), 0) AS commercial_users,
         COUNT(*) AS total_users
       FROM users
       WHERE 1 = 1
@@ -790,11 +790,11 @@ export async function collectAnalyticsSnapshot(
         ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(CASE WHEN user_tier = 'free' THEN request_count ELSE 0 END), 0) AS free_requests,
-        COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN request_count ELSE 0 END), 0) AS pro_requests,
+        COALESCE(SUM(CASE WHEN user_tier = 'personal' THEN request_count ELSE 0 END), 0) AS personal_requests,
+        COALESCE(SUM(CASE WHEN user_tier = 'commercial' THEN request_count ELSE 0 END), 0) AS commercial_requests,
         COALESCE(SUM(request_count), 0) AS total_requests,
-        COALESCE(SUM(CASE WHEN user_tier = 'free' THEN bytes_served ELSE 0 END), 0) AS free_bytes,
-        COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN bytes_served ELSE 0 END), 0) AS pro_bytes,
+        COALESCE(SUM(CASE WHEN user_tier = 'personal' THEN bytes_served ELSE 0 END), 0) AS personal_bytes,
+        COALESCE(SUM(CASE WHEN user_tier = 'commercial' THEN bytes_served ELSE 0 END), 0) AS commercial_bytes,
         COALESCE(SUM(bytes_served), 0) AS total_bytes
       FROM traffic
     `,
@@ -817,69 +817,17 @@ export async function collectAnalyticsSnapshot(
           ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(CASE WHEN user_tier = 'free' THEN 1 ELSE 0 END), 0) AS free_resolves,
-        COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN 1 ELSE 0 END), 0) AS pro_resolves,
+        COALESCE(SUM(CASE WHEN user_tier = 'personal' THEN 1 ELSE 0 END), 0) AS personal_resolves,
+        COALESCE(SUM(CASE WHEN user_tier = 'commercial' THEN 1 ELSE 0 END), 0) AS commercial_resolves,
         COUNT(*) AS total_resolves
       FROM tagged_resolves
     `,
     [...eventEmailFilterAliasE.bindings],
   );
 
-  const topLineRevenue = await deps.dbGet(
-    db,
-    `
-      WITH paid_ledger AS (
-        SELECT
-          LOWER(COALESCE(cl.reason, '')) AS reason_norm,
-          cl.amount_eur AS amount_eur,
-          CASE
-            WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json
-            ELSE NULL
-          END AS metadata_json
-        FROM credit_ledger cl
-        LEFT JOIN users u ON u.id = cl.user_id
-        WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_scene_purchase', 'stripe_region_pack_purchase')
-        ${revenueEmailFilterAliasU.condition ? `AND ${revenueEmailFilterAliasU.condition}` : ""}
-      ),
-      paid_amounts AS (
-        SELECT
-          CASE
-            WHEN reason_norm = 'stripe_scene_purchase' THEN COALESCE(
-              CASE WHEN amount_eur > 0 THEN amount_eur ELSE NULL END,
-              CAST(json_extract(metadata_json, '$.paid_eur') AS REAL),
-              CAST(json_extract(metadata_json, '$.nominal_eur') AS REAL),
-              0
-            )
-            WHEN reason_norm = 'stripe_region_pack_purchase' THEN COALESCE(
-              CASE WHEN amount_eur > 0 THEN amount_eur ELSE NULL END,
-              CAST(json_extract(metadata_json, '$.paid_eur') AS REAL),
-              CAST(json_extract(metadata_json, '$.nominal_eur') AS REAL),
-              0
-            )
-            ELSE 0
-          END AS amount_eur
-        FROM paid_ledger
-      )
-      SELECT
-        COALESCE((SELECT ROUND(SUM(CASE WHEN amount_eur > 0 THEN amount_eur ELSE 0 END) * 100.0) / 100.0 FROM paid_amounts), 0) AS total_earned_eur
-    `,
-    [...revenueEmailFilterAliasU.bindings],
-  );
+  const topLineRevenue = { total_earned_eur: 0 };
+  const topLinePaidResolves = { total_paid_resolves: 0 };
 
-  const topLinePaidResolves = await deps.dbGet(
-    db,
-    `
-      SELECT COUNT(*) AS total_paid_resolves
-      FROM credit_ledger cl
-      LEFT JOIN users u ON u.id = cl.user_id
-      WHERE LOWER(COALESCE(cl.reason, '')) IN ('tile_unlock', 'stripe_scene_purchase')
-        AND json_valid(COALESCE(cl.metadata_json, ''))
-        AND LOWER(COALESCE(json_extract(cl.metadata_json, '$.quality_mode'), '')) = 'full'
-        AND COALESCE(CAST(json_extract(cl.metadata_json, '$.tile_count') AS INTEGER), 0) > 0
-        ${revenueEmailFilterAliasU.condition ? `AND ${revenueEmailFilterAliasU.condition}` : ""}
-    `,
-    [...revenueEmailFilterAliasU.bindings],
-  );
 
   const activeWindow6mStartUnix = Math.max(0, nowUnix - (180 * 86400));
   const activeWindow3mStartUnix = Math.max(0, nowUnix - (90 * 86400));
@@ -912,8 +860,8 @@ export async function collectAnalyticsSnapshot(
   );
 
   const makeActiveSplit = () => ({
-    free: 0,
-    pro: 0,
+    personal: 0,
+    commercial: 0,
     total: 0,
   });
   const activeWindows = {
@@ -934,9 +882,9 @@ export async function collectAnalyticsSnapshot(
   ];
   const resolveAnalyticsTierCode = (planValue) => {
     const normalized = normalizeTierCodeStrict(planValue, deps);
-    if (normalized === deps.PLAN_CODE_FREE) return "free";
-    if (normalized === deps.PLAN_CODE_PROFESSIONAL) return "pro";
-    return "free";
+    if (normalized === deps.PLAN_CODE_PERSONAL) return "personal";
+    if (normalized === deps.PLAN_CODE_COMMERCIAL) return "commercial";
+    return "personal";
   };
   for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
     const lastSeenUnix = deps.clampNonNegativeInt(row && row.last_seen_unix);
@@ -1403,23 +1351,23 @@ export async function collectAnalyticsSnapshot(
     window_start_unix: windowStartUnix,
     top_line: {
       users: {
-        free: deps.clampNonNegativeInt(topLineUsers && topLineUsers.free_users),
-        pro: deps.clampNonNegativeInt(topLineUsers && topLineUsers.pro_users),
+        personal: deps.clampNonNegativeInt(topLineUsers && topLineUsers.personal_users),
+        commercial: deps.clampNonNegativeInt(topLineUsers && topLineUsers.commercial_users),
         total: deps.clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
       },
       resolves: {
-        free: deps.clampNonNegativeInt(topLineResolves && topLineResolves.free_resolves),
-        pro: deps.clampNonNegativeInt(topLineResolves && topLineResolves.pro_resolves),
+        personal: deps.clampNonNegativeInt(topLineResolves && topLineResolves.personal_resolves),
+        commercial: deps.clampNonNegativeInt(topLineResolves && topLineResolves.commercial_resolves),
         total: deps.clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
       },
       tile_requests: {
-        free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_requests),
-        pro: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.pro_requests),
+        personal: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_requests),
+        commercial: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_requests),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
       },
       gb_served: {
-        free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_bytes),
-        pro: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.pro_bytes),
+        personal: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_bytes),
+        commercial: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_bytes),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
       },
       earned_eur: {
@@ -1447,27 +1395,27 @@ export async function collectAnalyticsSnapshot(
       users_1h: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
       windows: {
         "6m": {
-          free: deps.clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.free),
+          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
         },
         "3m": {
-          free: deps.clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.free),
+          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
         },
         "1m": {
-          free: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.free),
+          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
         },
         "1w": {
-          free: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.free),
+          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
         },
         "1d": {
-          free: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.free),
+          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
         },
         "1h": {
-          free: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.free),
+          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
         },
       },

@@ -24,7 +24,7 @@ export function createAuthApiKeyHandlers(deps) {
     const optInNews = deps.parseBooleanFlag(body.opt_in_news);
     const requestedPlan = typeof deps.defaultSignupPlanCode === "function"
       ? deps.defaultSignupPlanCode(env)
-      : deps.PLAN_CODE_PROFESSIONAL;
+      : deps.PLAN_CODE_COMMERCIAL;
     const honeypot = String(body.website || "").trim();
     const submittedAtMs = deps.parseNonNegativeInteger(body.submitted_at_ms, 0);
     const minFormAgeMs = Math.max(
@@ -246,7 +246,7 @@ export function createAuthApiKeyHandlers(deps) {
       email,
       requestRow.requested_plan || (typeof deps.defaultSignupPlanCode === "function"
         ? deps.defaultSignupPlanCode(env)
-        : deps.PLAN_CODE_PROFESSIONAL),
+        : deps.PLAN_CODE_COMMERCIAL),
       {},
       env,
     );
@@ -363,24 +363,21 @@ export function createAuthApiKeyHandlers(deps) {
       status: strictStoredTier(record.status),
     };
     user = await deps.enforceUserPlanPolicy(db, user, env);
-    const storedPlanCode = strictStoredTier(user && user.status);
-    if (storedPlanCode === deps.PLAN_CODE_FREE) {
-      const freePolicy = await deps.enforceSingleActiveFreeApiKey(
-        db,
-        String(user.id || ""),
-        String(record.api_key_id || ""),
+    const licencePolicy = await deps.enforceSingleActiveLicenceApiKey(
+      db,
+      String(user.id || ""),
+      String(record.api_key_id || ""),
+    );
+    if (!licencePolicy.allowed) {
+      return deps.json(
+        {
+          ok: false,
+          error: "api_key_revoked",
+          message: "This API key has been replaced. Request a new API key.",
+        },
+        401,
+        env,
       );
-      if (!freePolicy.allowed) {
-        return deps.json(
-          {
-            ok: false,
-            error: "api_key_revoked",
-            message: "This API key has been replaced. Request a new API key.",
-          },
-          401,
-          env,
-        );
-      }
     }
     try {
       await deps.enforceApiKeyDeviceLimit(

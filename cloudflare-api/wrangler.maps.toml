@@ -1,5 +1,5 @@
 name = "planetka-maps"
-main = "src/maps_worker.js"
+main = "src/retired_worker.js"
 compatibility_date = "2026-03-15"
 find_additional_modules = true
 routes = [

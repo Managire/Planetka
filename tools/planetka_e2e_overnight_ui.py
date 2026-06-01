@@ -28,7 +28,7 @@ It covers:
 - smoke mode via PLANETKA_E2E_SMOKE=1 (reduces case counts for script validation only)
 
 Intentionally skipped from automation because they have external side effects:
-- account_login / account_upgrade / account_contact (browser opening)
+- account_login / account_commercial_checkout / account_contact (browser opening)
 - account_logout (destroys session)
 - update_now (mutates installed addon)
 - report_bug (sends support payload / opens mail)
@@ -138,7 +138,7 @@ EXTERNAL_SKIPS = {
     "planetka.account_login": "Opens browser",
     "planetka.account_open_login": "Re-authenticates live account",
     "planetka.account_logout": "Destroys current session",
-    "planetka.account_upgrade": "Opens browser",
+    "planetka.account_commercial_checkout": "Opens browser",
     "planetka.account_contact": "Opens browser",
     "planetka.update_now": "Mutates installed addon",
     "planetka.report_bug": "Sends support payload / mail draft",

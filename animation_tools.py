@@ -1,10 +1,8 @@
 import importlib
-import hashlib
 import json
 import math
 import os
 import time
-import webbrowser
 from dataclasses import dataclass
 
 import bpy
@@ -12,11 +10,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
 from mathutils import Euler, Matrix, Quaternion, Vector
 
 from .auth import (
-    AuthApiError,
     allows_animation_render_for_context,
-    check_animation_render_purchase,
-    create_animation_render_checkout,
-    describe_auth_error,
     get_authorized_headers,
     get_login_state,
     get_status_message,
@@ -166,98 +160,11 @@ def _require_animation_texture_quality_access(operator, prefs=None, texture_qual
     if operator is not None:
         fail(
             operator,
-            "Final Animation Render requires an animation render licence.",
+            "Final Animation Render requires a Commercial licence.",
             code=ErrorCode.RENDER_FAILED,
             logger=logger,
         )
     return False
-
-
-def _animation_frame_count(frame_start, frame_end):
-    try:
-        return max(0, int(frame_end) - int(frame_start) + 1)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _animation_price_units(frame_count):
-    return max(1, int(math.ceil(max(1, int(frame_count or 0)) / 300.0)))
-
-
-def _animation_price_label(frame_count):
-    return f"EUR {29 * _animation_price_units(frame_count):.2f}"
-
-
-def _animation_render_license_payload(scene, frame_start, frame_end, texture_quality_mode, segments):
-    frame_count = _animation_frame_count(frame_start, frame_end)
-    canonical_segments = []
-    for segment in segments or ():
-        if not isinstance(segment, dict):
-            continue
-        canonical_segments.append({
-            "start": int(segment.get("start", frame_start)),
-            "end": int(segment.get("end", frame_end)),
-            "tiles": sorted(str(tile or "").strip() for tile in (segment.get("tiles", ()) or ()) if str(tile or "").strip()),
-        })
-    payload = {
-        "version": 1,
-        "frame_start": int(frame_start),
-        "frame_end": int(frame_end),
-        "frame_count": int(frame_count),
-        "texture_quality_mode": _normalize_animation_render_texture_quality_mode(texture_quality_mode),
-        "segments": canonical_segments,
-    }
-    render = getattr(scene, "render", None) if scene is not None else None
-    if render is not None:
-        try:
-            payload["fps"] = float(getattr(render, "fps", 24.0) or 24.0)
-            payload["fps_base"] = float(getattr(render, "fps_base", 1.0) or 1.0)
-            payload["resolution_x"] = int(getattr(render, "resolution_x", 0) or 0)
-            payload["resolution_y"] = int(getattr(render, "resolution_y", 0) or 0)
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            pass
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    animation_id = "anim_" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
-    return {
-        "animation_id": animation_id,
-        "frame_start": int(frame_start),
-        "frame_end": int(frame_end),
-        "frame_count": int(frame_count),
-        "price_units": _animation_price_units(frame_count),
-        "amount_cents": 2900 * _animation_price_units(frame_count),
-        "texture_quality_mode": payload["texture_quality_mode"],
-        "segments": canonical_segments,
-    }
-
-
-def _ensure_animation_render_purchase(operator, scene, frame_start, frame_end, texture_quality_mode, segments, prefs=None):
-    payload = _animation_render_license_payload(scene, frame_start, frame_end, texture_quality_mode, segments)
-    animation_id = str(payload.get("animation_id", "") or "").strip()
-    try:
-        check = check_animation_render_purchase(animation_id, prefs=prefs)
-        if bool(check.get("purchased")):
-            return animation_id
-    except AuthApiError:
-        logger.debug("Planetka animation: animation purchase check failed; opening checkout", exc_info=True)
-    try:
-        checkout = create_animation_render_checkout(payload, prefs=prefs)
-    except AuthApiError as exc:
-        fail(operator, describe_auth_error(exc), code=ErrorCode.RENDER_FAILED, logger=logger, exc=exc)
-        return ""
-    if bool(checkout.get("already_purchased")):
-        return animation_id
-    checkout_url = str(checkout.get("checkout_url", "") or "").strip()
-    if not checkout_url:
-        fail(operator, "Planetka animation checkout URL is not available.", code=ErrorCode.RENDER_FAILED, logger=logger)
-        return ""
-    if not _open_external_url(checkout_url):
-        fail(operator, "Could not open Planetka animation checkout.", code=ErrorCode.RENDER_FAILED, logger=logger)
-        return ""
-    operator.report(
-        {'INFO'},
-        f"Planetka animation checkout opened ({_animation_price_label(payload.get('frame_count', 0))}). Return after payment and start Final Animation Render again.",
-    )
-    return ""
 
 
 def _ensure_remote_auth_ready_for_final_render(operator, prefs, base_path):
@@ -635,23 +542,6 @@ def _animation_bytes_text(size_bytes):
     if value >= 1024.0 ** 3:
         return f"{value / (1024.0 ** 3):,.2f} GB"
     return f"{value / (1024.0 ** 2):,.2f} MB"
-
-
-def _open_external_url(url):
-    safe_url = str(url or "").strip()
-    if not safe_url:
-        return False
-    try:
-        result = bpy.ops.wm.url_open(url=safe_url)
-        if "FINISHED" in result:
-            return True
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: failed opening URL through Blender", exc_info=True)
-    try:
-        return bool(webbrowser.open(safe_url))
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: failed opening URL in system browser", exc_info=True)
-    return False
 
 
 def _tag_animation_ui_redraw():
@@ -4229,7 +4119,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             # EL/WT/PO support layers intentionally fall back if absent.
             "capture_download_progress": True,
             "streaming_feature": "final_animation_render",
-            "animation_id": str(getattr(self, "_animation_id", "") or ""),
         }
         normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
         if normalized_tiles:
@@ -4561,21 +4450,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                     context,
                     "No animation segments were generated for the selected frame range.",
                 )
-            animation_id = _ensure_animation_render_purchase(
-                self,
-                scene,
-                frame_start,
-                frame_end,
-                selected_texture_quality_mode,
-                segments,
-                prefs=prefs,
-            )
-            if not animation_id:
-                try:
-                    props.auto_resolve = bool(original_auto_resolve)
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka animation: failed restoring auto-resolve after checkout handoff", exc_info=True)
-                return {'CANCELLED'}
+            animation_id = ""
 
             try:
                 render_engine = str(getattr(render, "engine", "") or "").strip().upper()
@@ -4613,7 +4488,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._reset_segment_cancel_epoch_baseline()
             self._animation_tiles = []
             self._animation_resolve_id = f"anim-{int(time.time() * 1000)}"
-            self._animation_id = str(animation_id)
             self._texture_quality_mode = _normalize_animation_render_texture_quality_mode(selected_texture_quality_mode)
             self._base_path = str(base_path or "")
             try:
