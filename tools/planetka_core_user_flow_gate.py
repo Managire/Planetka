@@ -314,6 +314,7 @@ def main():
         geonames = import_submodule(base_module, "geonames_db")
         state = import_submodule(base_module, "state")
         auth = import_submodule(base_module, "auth")
+        operators_module = import_submodule(base_module, "operators")
         r2_source = import_submodule(base_module, "r2_source")
         _force_hermetic_local_texture_mode(r2_source)
 
@@ -417,11 +418,22 @@ def main():
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
         # Streaming quality flow guardrails. This gate is hermetic/offline, so
-        # all three streaming quality levels must resolve and render from the
-        # local fixture without pricing, checkout, or backend authorization.
+        # it validates the full texture path with a synthetic Pro entitlement
+        # instead of opening the paid-scene checkout.
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before quality flow: {full_globe_result}")
         auth.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
+        prefs.auth_access_token = "planetka_core_user_flow_gate_token"
+        prefs.auth_account_tier = "pro"
+        prefs.auth_plan_code = "pro"
+        prefs.auth_plan_name = "Pro"
+        prefs.auth_stored_plan_code = "pro"
+        prefs.auth_stored_plan_name = "Pro"
+        prefs.auth_stored_account_tier = "pro"
+        auth.is_pro_account = lambda prefs=None: True
+        auth.is_authenticated = lambda prefs=None: True
+        operators_module.is_authenticated = lambda prefs=None: True
+        operators_module.allows_texture_quality_for_context = lambda prefs=None, requested_mode=None: True
         prefs.texture_base_path = source_root
         _assert(
             not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
@@ -429,7 +441,7 @@ def main():
         )
         for mode in ("PREVIEW", "BALANCED", "FULL"):
             entry = {
-                "account": "logged_out_local_fixture",
+                "account": "synthetic_pro_local_fixture",
                 "mode": mode,
                 "expected_ok": True,
             }

@@ -11882,7 +11882,7 @@ async function createStripeCheckoutSession(env, params, deps) {
   );
   body.set(
     "custom_text[submit][message]",
-    checkoutMetadataValue(params.submitMessage || "Secure payment via Stripe. Your Planetka licence is applied automatically after payment.", 500),
+    checkoutMetadataValue(params.submitMessage || "Secure payment. Your Planetka licence is applied automatically after payment.", 500),
   );
   for (const [key, value] of Object.entries(metadata)) {
     const safeKey = String(key || "").trim().slice(0, 40);
@@ -14331,7 +14331,7 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       checkoutReturnHtml({
         title: "Planetka Payment Complete",
         heading: "Payment complete",
-        message: "Your Planetka licence is being applied to your account. Return to Blender; the panel will refresh automatically after Stripe confirms the payment.",
+        message: "Your Planetka licence is being applied to your account. Return to Blender; the panel will refresh automatically after payment is confirmed.",
         icon: "OK",
         tone: "success",
       }),

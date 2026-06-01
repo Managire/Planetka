@@ -33,6 +33,7 @@ from .startup_profile_ops import (
 
 _DEFAULT_SCENE_REMOVED_KEY = "planetka_default_scene_removed"
 _PLANETKA_CREATE_CAMERA_NAME = "Planetka Camera"
+_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY = "planetka_skip_atmosphere_cloud_setup_on_create_earth"
 _PLANETKA_RUNTIME_NAME_PREFIX = "Planetka"
 _PLANETKA_STANDALONE_NAME_PREFIX = "PlanetkaStandalone"
 _SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
@@ -419,6 +420,20 @@ def _remove_planetka_objects_preserving_cameras():
             removed += 1
         except _REBUILD_EXCEPTIONS:
             logger.debug("Planetka: failed removing object during rebuild", exc_info=True)
+    return int(removed)
+
+
+def _remove_earth_surface_objects_for_rebuild():
+    removed = 0
+    for obj in list(getattr(bpy.data, "objects", ())):
+        name = str(getattr(obj, "name", "") or "")
+        if not (name.startswith("Earth Surface") or name.startswith("Planetka Earth Surface")):
+            continue
+        try:
+            remove_object_and_unused_mesh(obj)
+            removed += 1
+        except _REBUILD_EXCEPTIONS:
+            logger.debug("Planetka: failed removing Earth surface object during rebuild", exc_info=True)
     return int(removed)
 
 
@@ -901,22 +916,12 @@ def _earth_graph_create_bootstrap_surface(scene):
 
 
 def _earth_graph_cleanup_for_rebuild(scene):
+    del scene
     detached_cameras = 0
-    try:
-        detached_cameras = _detach_cameras_from_planetka_parents(scene)
-    except _REBUILD_EXCEPTIONS:
-        detached_cameras = 0
-        logger.debug("Planetka: failed detaching cameras during rebuild", exc_info=True)
-
-    try:
-        delete_temp_meshes(keep_obj=None)
-    except _REBUILD_EXCEPTIONS:
-        logger.debug("Planetka: failed clearing temporary meshes during rebuild", exc_info=True)
-
-    removed_objects = _remove_planetka_objects_preserving_cameras()
-    removed_collections = _unlink_and_remove_planetka_collections()
+    removed_objects = _remove_earth_surface_objects_for_rebuild()
+    removed_collections = 0
     removed_data = _remove_unused_planetka_datablocks()
-    scene_keys_cleared = _clear_scene_planetka_runtime_idprops(scene)
+    scene_keys_cleared = 0
     try:
         cleanup_counts = cleanup_planetka_unused_data()
     except _REBUILD_EXCEPTIONS:

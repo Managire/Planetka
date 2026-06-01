@@ -87,6 +87,7 @@ def rebuild_earth_execute(operator, context, deps):
     _earth_graph_cleanup_for_rebuild = deps["_earth_graph_cleanup_for_rebuild"]
     _REBUILD_EXCEPTIONS = deps["_REBUILD_EXCEPTIONS"]
     _SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY = deps["_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY"]
+    _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY = deps["_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY"]
     _earth_graph_restore_after_rebuild = deps["_earth_graph_restore_after_rebuild"]
 
     scene = require_scene(operator, context, logger=logger)
@@ -124,16 +125,19 @@ def rebuild_earth_execute(operator, context, deps):
 
     try:
         scene[_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY] = True
+        scene[_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY] = True
     except _REBUILD_EXCEPTIONS:
-        logger.debug("Planetka: failed setting create-earth camera-skip flag for rebuild", exc_info=True)
+        logger.debug("Planetka: failed setting create-earth rebuild skip flags", exc_info=True)
     try:
         rebuild_result = bpy.ops.planetka.add_earth()
     finally:
         try:
             if _SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY in scene:
                 del scene[_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY]
+            if _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY in scene:
+                del scene[_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY]
         except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed clearing create-earth camera-skip flag after rebuild", exc_info=True)
+            logger.debug("Planetka: failed clearing create-earth rebuild skip flags", exc_info=True)
 
     _earth_graph_restore_after_rebuild(scene, props, earth_settings_snapshot, camera_snapshot)
     _restore_camera_view_areas(context, scene, camera_view_snapshot, logger, _REBUILD_EXCEPTIONS)
@@ -201,6 +205,7 @@ def add_earth_execute(operator, context, deps):
     ensure_planetka_root = deps["ensure_planetka_root"]
     warm_base_sphere_mesh_cache = deps["warm_base_sphere_mesh_cache"]
     _earth_graph_create_bootstrap_surface = deps["_earth_graph_create_bootstrap_surface"]
+    _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY = deps["_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY"]
     remove_object_and_unused_mesh = deps["remove_object_and_unused_mesh"]
     _apply_startup_setup_for_create_earth = deps["_apply_startup_setup_for_create_earth"]
     _ensure_planetka_create_camera = deps["_ensure_planetka_create_camera"]
@@ -260,6 +265,11 @@ def add_earth_execute(operator, context, deps):
         return _return_with_selection({'CANCELLED'})
     prefs.texture_base_path = normalized
     invalidate_texture_source_health_cache(normalized)
+    skip_atmosphere_cloud_setup = False
+    try:
+        skip_atmosphere_cloud_setup = bool(scene.get(_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY, False))
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+        skip_atmosphere_cloud_setup = False
 
     try:
         ensure_planetka_assets(scene)
@@ -310,25 +320,27 @@ def add_earth_execute(operator, context, deps):
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed applying startup setup profile", exc_info=True)
 
-    try:
-        atmosphere_mode = _atmosphere_mode_for_create_earth(scene)
-        props.atmosphere_mode = atmosphere_mode
-        props.atmosphere_enabled = True
-        _sync_idprops_from_props(scene, ("atmosphere_mode", "atmosphere_enabled"))
-        if callable(ensure_atmosphere_for_mode):
-            ensure_atmosphere_for_mode(scene=scene, earth_surface=new_obj, mode=atmosphere_mode)
-    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed creating default atmosphere on Create Earth", exc_info=True)
+    if not skip_atmosphere_cloud_setup:
+        try:
+            atmosphere_mode = _atmosphere_mode_for_create_earth(scene)
+            props.atmosphere_mode = atmosphere_mode
+            props.atmosphere_enabled = True
+            _sync_idprops_from_props(scene, ("atmosphere_mode", "atmosphere_enabled"))
+            if callable(ensure_atmosphere_for_mode):
+                ensure_atmosphere_for_mode(scene=scene, earth_surface=new_obj, mode=atmosphere_mode)
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed creating default atmosphere on Create Earth", exc_info=True)
 
-    try:
-        clouds_were_enabled = bool(getattr(props, "enable_global_clouds", False))
-        if not clouds_were_enabled:
-            props.enable_global_clouds = True
-            _sync_idprops_from_props(scene, ("enable_global_clouds",))
-        elif callable(ensure_global_cloud_layer):
-            ensure_global_cloud_layer(scene=scene)
-    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed creating global clouds on Create Earth", exc_info=True)
+    if not skip_atmosphere_cloud_setup:
+        try:
+            clouds_were_enabled = bool(getattr(props, "enable_global_clouds", False))
+            if not clouds_were_enabled:
+                props.enable_global_clouds = True
+                _sync_idprops_from_props(scene, ("enable_global_clouds",))
+            elif callable(ensure_global_cloud_layer):
+                ensure_global_cloud_layer(scene=scene)
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed creating global clouds on Create Earth", exc_info=True)
 
     planetka_camera = _ensure_planetka_create_camera(scene)
     if planetka_camera is None:

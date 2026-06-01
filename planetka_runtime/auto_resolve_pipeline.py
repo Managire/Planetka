@@ -402,7 +402,18 @@ def _ctx_schedule_auto_resolve_download(
         new_sig = _ctx_auto_resolve_download_job_signature(ctx, new_job)
         active_sig = _ctx_auto_resolve_download_job_signature(ctx, state.download_active_job)
         pending_sig = _ctx_auto_resolve_download_job_signature(ctx, state.download_pending_job)
-        if _ctx_job_supersedes_completed_payload(ctx, new_job, state.download_completed):
+        completed_payload = state.download_completed
+        completed_sig = _ctx_auto_resolve_download_job_signature(ctx, _ctx_completed_payload_job(ctx, completed_payload))
+        if (
+            isinstance(completed_payload, dict)
+            and not bool(manual_request)
+        ):
+            deps.resolve_trace(
+                "queue deferred auto resolve while completed payload is waiting to finalize "
+                f"(request_id={request_id}, completed_signature={completed_sig!r}, new_signature={new_sig!r})"
+            )
+            should_arm_timer = True
+        elif _ctx_job_supersedes_completed_payload(ctx, new_job, state.download_completed):
             completed_job = _ctx_completed_payload_job(ctx, state.download_completed)
             deps.resolve_trace(
                 "queue dropped stale completed resolve "
@@ -410,7 +421,9 @@ def _ctx_schedule_auto_resolve_download(
                 f"new_request_id={request_id})"
             )
             state.download_completed = None
-        if new_sig == active_sig or new_sig == pending_sig:
+        if should_arm_timer and isinstance(completed_payload, dict) and not bool(manual_request):
+            pass
+        elif new_sig == active_sig or new_sig == pending_sig:
             if bool(manual_request):
                 if new_sig == active_sig and deps.is_auto_resolve_download_job(state.download_active_job):
                     deps.job_set_field(state.download_active_job, "manual_request", True)
@@ -712,7 +725,7 @@ def _ctx_handle_apply_readonly_failure(ctx, scene, job, manual_request, lock_rea
             ),
         )
     else:
-        deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+        _ctx_defer_auto_resolve_after_blocked_finalize(ctx, scene, reason=reason)
     return False
 
 
@@ -763,6 +776,8 @@ def _ctx_wait_or_drop_completed_during_guard(ctx, scene, job, manual_request, *,
     deps.job_set_field(job, f"{field_prefix}_attempts", 0)
     if manual_request:
         _ctx_mark_manual_queued_resolve_error(ctx, scene, str(user_message or "Resolve was blocked."))
+    else:
+        _ctx_defer_auto_resolve_after_blocked_finalize(ctx, scene, reason=guard_name)
     return True, None, None, None
 
 
@@ -794,6 +809,26 @@ def _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, message):
         scene_state.pending_output_change = False
         deps.write_scene_auto_resolve_state(scene_state)
     deps.viewport_scope_last_resolve_time[scene_id] = now
+
+
+def _ctx_defer_auto_resolve_after_blocked_finalize(ctx, scene, reason=""):
+    deps = ctx.deps
+    state = ctx.state
+    cleared_pending = False
+    with state.download_lock:
+        pending_job = state.download_pending_job
+        if (
+            deps.is_auto_resolve_download_job(pending_job)
+            and not bool(deps.job_field(pending_job, "manual_request", False))
+        ):
+            state.download_pending_job = None
+            cleared_pending = True
+    if scene is not None:
+        _ctx_mark_auto_resolve_dirty(ctx, scene, immediate=False, force_resolve=False)
+    deps.resolve_trace(
+        "Deferred auto-resolve after blocked finalize "
+        f"(reason={str(reason or 'unknown')}, cleared_pending={bool(cleared_pending)})"
+    )
 
 
 def _mark_auto_resolve_terminal_failure(scene, scene_id, job, message):
@@ -1028,7 +1063,7 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
                 ),
             )
         else:
-            deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+            _ctx_defer_auto_resolve_after_blocked_finalize(ctx, scene, reason=lock_reason)
         return True, None, None, None
     deps.job_set_field(job, "apply_lock_since", 0.0)
     deps.job_set_field(job, "apply_lock_attempts", 0)
@@ -1561,6 +1596,18 @@ def _ctx_auto_resolve_download_pump_timer(ctx):
                     deps.resolve_trace(
                         "Pump dropped stale completed download payload "
                         f"(request_id={completed_request_id}, age={completed_age:.2f}s)"
+                    )
+                    completed_scene = None
+                    try:
+                        completed_scene_id = int(deps.job_field(completed_job, "scene_id", 0) or 0)
+                    except (TypeError, ValueError):
+                        completed_scene_id = 0
+                    if completed_scene_id:
+                        completed_scene = deps.scene_from_key(completed_scene_id)
+                    _ctx_defer_auto_resolve_after_blocked_finalize(
+                        ctx,
+                        completed_scene,
+                        reason="stale completed payload",
                     )
                     with state.download_lock:
                         if state.download_completed is completed:

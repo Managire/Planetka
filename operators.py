@@ -48,6 +48,7 @@ from .planetka_ops.earth_lifecycle_helpers import (
     _DEFAULT_SCENE_REMOVED_KEY,
     _PLANETKA_CREATE_CAMERA_NAME,
     _REBUILD_EXCEPTIONS,
+    _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY,
     _SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY,
     _apply_create_earth_clipping_defaults,
     _apply_radius_based_clipping,

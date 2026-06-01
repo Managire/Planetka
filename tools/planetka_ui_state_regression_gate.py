@@ -68,7 +68,7 @@ def _test_texture_quality_uses_single_status_line() -> dict:
     live_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
         "_draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text)" in live_text,
-        "Quality Settings must draw the shared resolve status line above Quality Level.",
+        "Data Control must draw the shared resolve status line above Quality Level.",
     )
     _assert(
         ".progress(" not in live_text,
@@ -90,8 +90,8 @@ def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
         "Sidebar should expose the simplified Quality Level section.",
     )
     _assert(
-        'bl_label = "Quality Settings"' in text,
-        "Sidebar panel should be named Quality Settings.",
+        'bl_label = "Data Control"' in text,
+        "Sidebar panel should be named Data Control.",
     )
     _assert(
         '"BALANCED", "Balanced"' in text,

@@ -245,6 +245,72 @@ def _cloud_quality_d_multiplier(value):
     if mode == "BALANCED":
         return 2
     return 4
+
+
+def _local_cloud_texture_name(obj):
+    """Return the persisted texture selection for existing and newly created scenes.
+
+    The texture selector is registered as a dynamic EnumProperty, but existing
+    .blend files also carry the selected filename as an ID property. Reading the
+    RNA enum first can return the empty default when the dynamic enum is not
+    resolved yet, which breaks remote cloud LOD selection. Prefer the persisted
+    ID value and only fall back to the RNA property.
+    """
+    if obj is None:
+        return ""
+    try:
+        value = str(obj.get(LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "").strip()
+        if value:
+            return value
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        return str(getattr(obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "").strip()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _clear_local_cloud_lod_cache(obj):
+    if obj is None:
+        return
+    for key in (
+        LOCAL_CLOUD_LOADED_TEXTURE_PROP,
+        LOCAL_CLOUD_FINAL_TEXTURE_PROP,
+        LOCAL_CLOUD_BALANCED_TEXTURE_PROP,
+        LOCAL_CLOUD_PREVIEW_TEXTURE_PROP,
+        LOCAL_CLOUD_D_LEVEL_PROP,
+        LOCAL_CLOUD_FINAL_D_LEVEL_PROP,
+        LOCAL_CLOUD_BALANCED_D_LEVEL_PROP,
+        LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP,
+        LOCAL_CLOUD_PROJECTED_PIXELS_PROP,
+        LOCAL_CLOUD_DOWNSCALE_WARNING_PROP,
+    ):
+        try:
+            if key in obj:
+                del obj[key]
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka clouds: failed clearing texture-based cloud LOD cache", exc_info=True)
+
+
+def _clear_vdb_cloud_lod_cache(obj):
+    if obj is None:
+        return
+    for key in (
+        VDB_CLOUD_LOADED_FILE_PROP,
+        VDB_CLOUD_FINAL_FILE_PROP,
+        VDB_CLOUD_BALANCED_FILE_PROP,
+        VDB_CLOUD_PREVIEW_FILE_PROP,
+        VDB_CLOUD_D_LEVEL_PROP,
+        VDB_CLOUD_FINAL_D_LEVEL_PROP,
+        VDB_CLOUD_BALANCED_D_LEVEL_PROP,
+        VDB_CLOUD_PREVIEW_D_LEVEL_PROP,
+        VDB_CLOUD_PROJECTED_PIXELS_PROP,
+    ):
+        try:
+            if key in obj:
+                del obj[key]
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka clouds: failed clearing VDB cloud LOD cache", exc_info=True)
 _cloud_download_progress = {
     "active": False,
     "label": "",
@@ -1121,7 +1187,7 @@ def _resolve_local_cloud_source_path(obj, allow_download=True):
     if source_path:
         source_path = bpy.path.abspath(source_path)
     if not source_path or not os.path.isfile(source_path):
-        texture_name = str(getattr(obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "")
+        texture_name = _local_cloud_texture_name(obj)
         if texture_name in REMOTE_LOCAL_CLOUD_FILES:
             return ""
         loaded_path = str(obj.get(LOCAL_CLOUD_LOADED_TEXTURE_PROP, "") or "")
@@ -1175,7 +1241,7 @@ def _store_local_cloud_prepared_variant(obj, variant, quality_mode="FULL"):
 def _prepare_local_cloud_texture_variants(obj, scene=None, allow_download=True):
     if not _is_local_cloud_object(obj):
         return False
-    texture_name = str(getattr(obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "")
+    texture_name = _local_cloud_texture_name(obj)
     if texture_name in REMOTE_LOCAL_CLOUD_FILES:
         final_variant = _remote_local_cloud_adaptive_texture_variant(
             texture_name,
@@ -1386,6 +1452,26 @@ def _is_known_remote_vdb_cloud_file(file_name):
     return bool(base_name in REMOTE_VDB_CLOUD_FILES)
 
 
+def _is_blender_readable_vdb_file(path):
+    file_path = bpy.path.abspath(str(path or ""))
+    if not file_path or not os.path.isfile(file_path):
+        return False
+    try:
+        with open(file_path, "rb") as handle:
+            header = handle.read(12)
+        if len(header) < 12:
+            return False
+        # Blender 5.0 currently reports support for OpenVDB file format <= 224.
+        # OpenVDB 13 writes format 225, which Blender logs as unsupported and
+        # then displays as an invisible volume.
+        file_version = int.from_bytes(header[8:12], byteorder="little", signed=False)
+        return int(file_version) <= 224
+    except OSError:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def _published_vdb_cloud_lod_levels(file_name):
     base_name, _level = _split_vdb_lod_filename(file_name)
     if base_name not in REMOTE_VDB_CLOUD_FILES:
@@ -1415,7 +1501,7 @@ def _candidate_local_vdb_lod_path(source_path, d_level):
     if not source_dir or not candidate_name:
         return ""
     candidate = os.path.join(source_dir, candidate_name)
-    return os.path.abspath(candidate) if os.path.isfile(candidate) else ""
+    return os.path.abspath(candidate) if _is_blender_readable_vdb_file(candidate) else ""
 
 
 def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
@@ -1439,7 +1525,7 @@ def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
     assets = _refresh_remote_vdb_cloud_assets(force=False)
     for candidate_name in candidate_names:
         cached = assets.get(candidate_name, "")
-        if cached and os.path.isfile(cached):
+        if cached and _is_blender_readable_vdb_file(cached):
             if progress_label:
                 _set_cloud_download_progress(active=False, error="", file_name=candidate_name)
             return cached
@@ -1450,7 +1536,7 @@ def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka clouds: failed resolving selected VDB cloud asset", exc_info=True)
             resolved = ""
-        if resolved and os.path.isfile(resolved):
+        if resolved and _is_blender_readable_vdb_file(resolved):
             _vdb_cloud_asset_paths[candidate_name] = resolved
             return resolved
     return ""
@@ -3306,7 +3392,7 @@ def _resolve_vdb_lod_path(source_path, d_level, allow_download=True):
         desired_name = _vdb_lod_filename(source_name, level)
         if not desired_name:
             continue
-        if desired_name == source_name and os.path.isfile(source):
+        if desired_name == source_name and _is_blender_readable_vdb_file(source):
             _clear_cloud_download_progress_error("Downloading VDB Cloud", source_name)
             return os.path.abspath(source)
         local_candidate = _candidate_local_vdb_lod_path(source, level)
@@ -3318,11 +3404,13 @@ def _resolve_vdb_lod_path(source_path, d_level, allow_download=True):
             if remote_path and os.path.isfile(remote_path):
                 return os.path.abspath(remote_path)
 
-    if os.path.isfile(source):
-        if is_known_remote_source and requested_level > 1:
-            return ""
+    if _is_blender_readable_vdb_file(source):
         _clear_cloud_download_progress_error("Downloading VDB Cloud", source_name)
         return os.path.abspath(source)
+    if allow_download and is_known_remote_source:
+        remote_source = _resolve_remote_vdb_cloud_asset(source_name, progress_label="Downloading VDB Cloud")
+        if remote_source and _is_blender_readable_vdb_file(remote_source):
+            return os.path.abspath(remote_source)
     return ""
 
 
@@ -3341,17 +3429,41 @@ def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True):
     source_path = str(obj.get(VDB_CLOUD_OBJ_SOURCE_FILE_PROP, "") or "")
     if source_path:
         source_path = bpy.path.abspath(source_path)
-    if not source_path or not os.path.isfile(source_path):
+    source_is_known_remote = bool(source_path and _is_known_remote_vdb_cloud_file(os.path.basename(source_path)))
+    if (not source_path or (not os.path.isfile(source_path) and not source_is_known_remote)):
         source_path = str(getattr(obj, VDB_CLOUD_OBJ_FILE_PROP, "") or "")
         if source_path:
             source_path = bpy.path.abspath(source_path)
-    if not source_path or not os.path.isfile(source_path):
+        source_is_known_remote = bool(source_path and _is_known_remote_vdb_cloud_file(os.path.basename(source_path)))
+    if not source_path or (not os.path.isfile(source_path) and not source_is_known_remote):
         return False
 
     is_known_remote_source = _is_known_remote_vdb_cloud_file(os.path.basename(source_path))
     final_d, projected_pixels = _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1)
     balanced_d = _coarser_vdb_cloud_d_level(final_d, multiplier=2)
     preview_d = _coarser_vdb_cloud_d_level(final_d, multiplier=4)
+    current_volume_path = ""
+    try:
+        current_volume_path = bpy.path.abspath(str(getattr(getattr(obj, "data", None), "filepath", "") or ""))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        current_volume_path = ""
+    if current_volume_path and not os.path.isfile(current_volume_path):
+        try:
+            stored_final_d = max(1, int(obj.get(VDB_CLOUD_FINAL_D_LEVEL_PROP, 0) or 0))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            stored_final_d = 0
+        try:
+            stored_balanced_d = max(1, int(obj.get(VDB_CLOUD_BALANCED_D_LEVEL_PROP, 0) or 0))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            stored_balanced_d = 0
+        try:
+            stored_preview_d = max(1, int(obj.get(VDB_CLOUD_PREVIEW_D_LEVEL_PROP, 0) or 0))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            stored_preview_d = 0
+        if stored_final_d > 0:
+            final_d = int(stored_final_d)
+            balanced_d = int(stored_balanced_d or _coarser_vdb_cloud_d_level(final_d, multiplier=2))
+            preview_d = int(stored_preview_d or _coarser_vdb_cloud_d_level(final_d, multiplier=4))
     final_path = _resolve_vdb_lod_path(source_path, final_d, allow_download=allow_download)
     balanced_path = _resolve_vdb_lod_path(source_path, balanced_d, allow_download=allow_download)
     preview_path = _resolve_vdb_lod_path(source_path, preview_d, allow_download=allow_download)
@@ -3393,13 +3505,13 @@ def _apply_prepared_vdb_cloud_file(obj, preview=False, scene=None, allow_prepare
     file_path = str(obj.get(file_prop, "") or "")
     if file_path:
         file_path = bpy.path.abspath(file_path)
-    if (not file_path or not os.path.isfile(file_path)) and allow_prepare_missing:
+    if (not file_path or not _is_blender_readable_vdb_file(file_path)) and allow_prepare_missing:
         if not _prepare_vdb_cloud_variants(obj, scene=scene, allow_download=True):
             return False
         file_path = str(obj.get(file_prop, "") or "")
         if file_path:
             file_path = bpy.path.abspath(file_path)
-    if not file_path or not os.path.isfile(file_path):
+    if not file_path or not _is_blender_readable_vdb_file(file_path):
         return False
     if not _set_vdb_cloud_filepath(obj, file_path):
         return False
@@ -3722,7 +3834,8 @@ def update_local_cloud_object_texture(self, context):
     obj = self
     if _is_cloud_updates_suspended() or not _is_local_cloud_object(obj):
         return
-    filename = str(getattr(obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "")
+    filename = _local_cloud_texture_name(obj)
+    _clear_local_cloud_lod_cache(obj)
     _set_local_cloud_texture_by_filename(obj, filename)
     scene = getattr(context, "scene", None) if context else None
     _apply_local_cloud_object(obj, scene=scene)
@@ -3741,6 +3854,7 @@ def update_local_cloud_object_size(self, context):
     if _is_cloud_updates_suspended() or not _is_local_cloud_object(self):
         return
     scene = getattr(context, "scene", None) if context else None
+    _clear_local_cloud_lod_cache(self)
     _apply_local_cloud_object(self, scene=scene)
     _request_cloud_lod_resolve(scene, immediate=True)
 
@@ -3757,6 +3871,7 @@ def update_vdb_cloud_object_size(self, context):
     if _is_cloud_updates_suspended() or not _is_vdb_cloud_object(self):
         return
     scene = getattr(context, "scene", None) if context else None
+    _clear_vdb_cloud_lod_cache(self)
     _apply_vdb_cloud_object(self, scene=scene)
     _request_cloud_lod_resolve(scene, immediate=True)
 
@@ -3784,9 +3899,28 @@ def _is_workflow_enabled():
         return False
 
 
+def _optimize_cloud_lods_now(scene):
+    if scene is None:
+        return
+    props = getattr(scene, "planetka", None)
+    quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
+    try:
+        if bool(getattr(props, "enable_local_clouds", False)):
+            optimize_texture_based_clouds_for_camera(scene=scene, quality_mode=quality_mode)
+        if bool(getattr(props, "enable_vdb_clouds", False)):
+            optimize_vdb_clouds_for_camera(scene=scene, quality_mode=quality_mode)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed optimizing cloud LODs for explicit cloud edit", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed optimizing cloud LODs for explicit cloud edit", exc_info=True)
+
+
 def _request_cloud_lod_resolve(scene, immediate=False):
     if scene is None or _is_cloud_updates_suspended():
         return
+    props = getattr(scene, "planetka", None)
+    if bool(immediate):
+        _optimize_cloud_lods_now(scene)
     try:
         from . import state as planetka_state
         request_fn = getattr(planetka_state, "request_auto_resolve", None)
@@ -3796,6 +3930,26 @@ def _request_cloud_lod_resolve(scene, immediate=False):
         logger.debug("Planetka clouds: failed requesting cloud LOD resolve", exc_info=True)
     except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka clouds: failed requesting cloud LOD resolve", exc_info=True)
+
+    # Cloud size/source edits are explicit user actions. They must still queue a
+    # resolve when automatic camera resolving is disabled or restricted, because
+    # the correct cloud d-level depends on this edited value.
+    try:
+        auto_mode = str(getattr(props, "auto_resolve_mode", "CAMERA_VIEW") or "CAMERA_VIEW").strip().upper() if props else "CAMERA_VIEW"
+        auto_enabled = bool(getattr(props, "auto_resolve", False)) if props else False
+        if bool(immediate) and (auto_mode == "NEVER" or not auto_enabled):
+            quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
+            bpy.ops.planetka.load_textures(
+                scope_mode="CAMERA",
+                skip_render_compatibility=True,
+                defer_download=True,
+                tiles_override_json="",
+                texture_quality_mode_override=quality_mode,
+            )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed queueing explicit cloud LOD resolve", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed queueing explicit cloud LOD resolve", exc_info=True)
 
 
 def _update_cloud_lod_view_layer():

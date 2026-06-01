@@ -348,7 +348,8 @@ def _cloud_lod_signature(scene):
         if role == "local_cloud":
             try:
                 source = str(
-                    getattr(obj, "planetka_local_cloud_texture", "")
+                    obj.get("planetka_local_cloud_texture", "")
+                    or getattr(obj, "planetka_local_cloud_texture", "")
                     or obj.get("planetka_local_cloud_texture_path", "")
                     or ""
                 )

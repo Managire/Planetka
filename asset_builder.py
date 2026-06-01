@@ -2196,11 +2196,20 @@ def _remove_unintended_material_library_cloud_objects(existing_object_pointers):
         "Texture-Based Cloud No 001",
         "VDB Cloud No 001",
         "Planetka Cloud VDB",
+        "Planetka Global Cloud Layer",
+        "Atmosphere - EEVEE supplement",
+        "Atmosphere - Volumetric",
+        "Planetka Atmosphere Fake",
+        "Planetka Atmosphere",
     }
     sample_roles = {
         "local_cloud",
         "vdb_cloud",
         "vdb_cloud_template",
+        "global_cloud",
+        "global_cloud_template",
+        FAKE_ATMOSPHERE_ROLE_VALUE,
+        VOLUMETRIC_ATMOSPHERE_ROLE_VALUE,
     }
     for obj in tuple(getattr(bpy.data, "objects", ())):
         try:
@@ -2208,7 +2217,8 @@ def _remove_unintended_material_library_cloud_objects(existing_object_pointers):
                 continue
             name = str(getattr(obj, "name", "") or "")
             role = str(obj.get("planetka_cloud_role", "") or "")
-            if name not in sample_names and role not in sample_roles:
+            planetka_role = str(obj.get(FAKE_ATMOSPHERE_ROLE_KEY, "") or "")
+            if name not in sample_names and role not in sample_roles and planetka_role not in sample_roles:
                 continue
             data = getattr(obj, "data", None)
             bpy.data.objects.remove(obj, do_unlink=True)
