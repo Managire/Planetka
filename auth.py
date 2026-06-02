@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import platform
+import threading
 import time
 import uuid
 import urllib.error
@@ -30,6 +31,8 @@ _CLOUD_CONNECTION_CACHE = {
     "online": True,
     "message": "",
 }
+_AUTHORIZED_HEADERS_CACHE_LOCK = threading.Lock()
+_AUTHORIZED_HEADERS_CACHE = {}
 _CLOUD_CONNECTION_TTL_SECONDS = 5.0
 _CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection or try again later."
 _OVERLOAD_HTTP_STATUSES = {429, 503, 520, 522, 524, 529}
@@ -656,7 +659,32 @@ def get_access_token(prefs=None, allow_refresh=True):
     return refresh_cloud_session(prefs)
 
 
+def _cache_authorized_headers(headers):
+    safe_headers = dict(headers or {})
+    if not str(safe_headers.get("Authorization", "") or "").strip():
+        return
+    with _AUTHORIZED_HEADERS_CACHE_LOCK:
+        _AUTHORIZED_HEADERS_CACHE.clear()
+        _AUTHORIZED_HEADERS_CACHE.update(safe_headers)
+
+
+def _cached_authorized_headers():
+    with _AUTHORIZED_HEADERS_CACHE_LOCK:
+        headers = dict(_AUTHORIZED_HEADERS_CACHE)
+    token_header = str(headers.get("Authorization", "") or "").strip()
+    token = token_header.split(" ", 1)[1].strip() if token_header.lower().startswith("bearer ") else ""
+    if not token or _token_expires_soon(token):
+        return {}
+    return headers
+
+
 def get_authorized_headers(prefs=None, allow_refresh=True):
+    if prefs is None and threading.current_thread() is not threading.main_thread():
+        cached_headers = _cached_authorized_headers()
+        if cached_headers:
+            return cached_headers
+        raise AuthApiError(401, "cloud_session_snapshot_unavailable")
+
     prefs = prefs or get_prefs()
     token = get_access_token(prefs=prefs, allow_refresh=allow_refresh)
     if not token:
@@ -668,4 +696,5 @@ def get_authorized_headers(prefs=None, allow_refresh=True):
     addon_version = _read_local_addon_version()
     if addon_version:
         headers["X-Planetka-Addon-Version"] = addon_version
+    _cache_authorized_headers(headers)
     return headers

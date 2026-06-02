@@ -31,6 +31,7 @@ class ResolveDownloadDeps:
     recoverable_exceptions: Any
     resolve_trace: Any
     get_prefs: Any
+    get_authorized_headers: Any
     get_streaming_utils: Any
     clear_status_notices: Any
     scene_key: Any

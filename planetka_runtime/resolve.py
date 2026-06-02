@@ -121,6 +121,13 @@ def _ctx_schedule_resolve_download(
     prefs = deps.get_prefs()
     props = getattr(scene, "planetka", None)
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+    if prefs is not None:
+        try:
+            deps.get_authorized_headers(prefs=prefs, allow_refresh=True)
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed preparing cloud session headers for resolve", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: failed preparing cloud session headers for resolve", exc_info=True)
     texture_quality_mode = _ctx_resolve_texture_quality_mode(
         ctx,
         scene,

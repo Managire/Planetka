@@ -1197,8 +1197,8 @@ def _draw_new_earth(layout):
     layout.use_property_decorate = False
     scene = getattr(getattr(bpy, "context", None), "scene", None)
     prefs = get_prefs()
-    connected = _is_connected()
     has_earth = _has_earth()
+    create_enabled = _planetka_controls_enabled(not has_earth)
 
     if scene is not None and prefs is not None and not has_earth:
         try:
@@ -1247,27 +1247,27 @@ def _draw_new_earth(layout):
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
-    row.enabled = (not has_earth) and connected
+    row.enabled = create_enabled
     row.operator("planetka.remove_default_scene", text="Remove Default Scene", icon="TRASH")
 
     row = layout.row()
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
-    row.enabled = (not has_earth) and connected and (not is_scene_background_black(scene))
+    row.enabled = create_enabled and (not is_scene_background_black(scene))
     row.operator("planetka.set_background_black", text="Set Background to Black", icon="SHADING_RENDERED")
 
     row = layout.row()
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
-    row.enabled = (not has_earth) and connected
+    row.enabled = create_enabled
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
     rebuild_row = layout.row()
     rebuild_row.scale_x = ADD_EARTH_BUTTON_SCALE_X
     rebuild_row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     rebuild_row.alert = False
-    rebuild_row.enabled = connected and has_earth
+    rebuild_row.enabled = _planetka_controls_enabled(has_earth)
     rebuild_row.operator("planetka.rebuild_earth", text="Rebuild Earth", icon="FILE_REFRESH")
 
 def _draw_live_telemetry(layout, scene):
@@ -2167,7 +2167,7 @@ class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_connected())
+        layout.enabled = _planetka_controls_enabled(True)
         _draw_new_earth(layout)
 
 
@@ -2184,7 +2184,7 @@ class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pan
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_connected())
+        layout.enabled = _planetka_controls_enabled(True)
         _draw_new_earth(layout)
 
 
@@ -2201,7 +2201,7 @@ class PLANETKA_PT_NewEarthPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_connected())
+        layout.enabled = _planetka_controls_enabled(True)
         _draw_new_earth(layout)
 
 

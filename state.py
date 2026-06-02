@@ -21,6 +21,7 @@ from mathutils import Vector
 
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
+from .auth import get_authorized_headers
 from .diagnostics import write_realtime_view_diagnostics
 from .planetka_runtime.mesh_lifecycle import (
     cleanup_planetka_unused_data,
@@ -1026,6 +1027,7 @@ def _build_resolve_contexts():
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         resolve_trace=_resolve_trace,
         get_prefs=get_prefs,
+        get_authorized_headers=get_authorized_headers,
         get_streaming_utils=_get_streaming_utils,
         clear_status_notices=_clear_status_notices,
         scene_key=_scene_key,
