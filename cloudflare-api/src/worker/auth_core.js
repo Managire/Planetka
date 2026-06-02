@@ -2,15 +2,10 @@ export function createAuthCore(deps) {
   async function createAccessToken(env, user, extraClaims = {}) {
     const secret = deps.requireSecret(env, "JWT_SIGNING_SECRET");
     const exp = Math.floor(Date.now() / 1000) + (60 * 60);
-    const effectivePlanCode = deps.normalizeRequestedPlan(
-      deps.resolvePolicyPlanCode(user, env),
-    ) || deps.PLAN_CODE_PERSONAL;
     const basePayload = {
       type: "access",
       sub: user.id,
       email: user.email,
-      plan_code: effectivePlanCode,
-      user_status: effectivePlanCode,
       exp,
     };
     const payload = { ...basePayload };
@@ -44,10 +39,6 @@ export function createAuthCore(deps) {
 
   async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
     const safeQualityMode = deps.normalizeQualityMode(requestedQualityMode);
-    const safeStoredPlanCode = deps.normalizeRequestedPlan(auth && auth.planCode);
-    const safeQualityAccessPlanCode = deps.normalizeRequestedPlan(
-      auth && (auth.qualityAccessPlanCode || auth.planCode),
-    );
     const safeResolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
     const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
     const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -55,9 +46,6 @@ export function createAuthCore(deps) {
       type: "tile_session",
       sub: String(auth && auth.user && auth.user.id || "").trim(),
       email: String(auth && auth.user && auth.user.email || "").trim(),
-      plan_code: safeQualityAccessPlanCode,
-      stored_plan_code: safeStoredPlanCode,
-      quality_access_plan_code: safeQualityAccessPlanCode,
       quality_mode: safeQualityMode,
       resolve_id: safeResolveId,
       auth_method: String(auth && auth.authMethod || "").trim(),
@@ -121,21 +109,11 @@ export function createAuthCore(deps) {
     if (authMethod.toLowerCase() === "anonymous" && tokenIpScope && currentIpScope && tokenIpScope !== currentIpScope) {
       return { error: deps.json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
     }
-    const planCode = deps.normalizeRequestedPlan(payload && (payload.plan_code || payload.user_status) || "");
-    const storedPlanCode = deps.normalizeRequestedPlan(
-      payload && (payload.stored_plan_code || payload.storedPlanCode || planCode) || "",
-    );
-    const qualityAccessPlanCode = deps.normalizeRequestedPlan(
-      payload && (payload.quality_access_plan_code || payload.qualityAccessPlanCode || planCode) || "",
-    );
     const qualityMode = deps.normalizeQualityMode(payload && payload.quality_mode || "");
     const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
     const claims = {
       userId,
       userEmail: String(payload && payload.email || "").trim(),
-      planCode,
-      storedPlanCode: storedPlanCode || planCode,
-      qualityAccessPlanCode: qualityAccessPlanCode || planCode,
       qualityMode,
       resolveId,
       authMethod,

@@ -12,15 +12,9 @@ EARTH_ROLE_VALUE = "earth_preview"
 FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
 FALLBACK_TEXTURE_SOURCE_MODE_KEY = "planetka_texture_source_mode"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
-FALLBACK_AUTH_EMAIL_KEY = "planetka_auth_email"
 FALLBACK_AUTH_DEVICE_ID_KEY = "planetka_auth_device_id"
 FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
 FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
-FALLBACK_AUTH_PLAN_CODE_KEY = "planetka_auth_plan_code"
-FALLBACK_AUTH_PLAN_NAME_KEY = "planetka_auth_plan_name"
-FALLBACK_AUTH_STORED_PLAN_CODE_KEY = "planetka_auth_stored_plan_code"
-FALLBACK_AUTH_STORED_PLAN_NAME_KEY = "planetka_auth_stored_plan_name"
-FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
 FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
 FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_preflight_seen_version"
@@ -57,15 +51,9 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         options={'HIDDEN'},
     )
 
-    auth_email: StringProperty(name="Auth Email", default="", options={'HIDDEN'})
     auth_device_id: StringProperty(name="Auth Device ID", default="", options={'HIDDEN'})
     auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
     auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
-    auth_plan_code: StringProperty(name="Auth Plan Code", default="", options={'HIDDEN'})
-    auth_plan_name: StringProperty(name="Auth Plan Name", default="", options={'HIDDEN'})
-    auth_stored_plan_code: StringProperty(name="Auth Stored Plan Code", default="", options={'HIDDEN'})
-    auth_stored_plan_name: StringProperty(name="Auth Stored Plan Name", default="", options={'HIDDEN'})
-    auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
     auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
     startup_setup_profile_json: StringProperty(
         name="Startup Setup Profile",
@@ -195,10 +183,6 @@ def get_prefs():
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 
-        auth_email = property(
-            lambda self: self._get_value(FALLBACK_AUTH_EMAIL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_EMAIL_KEY, value),
-        )
         auth_device_id = property(
             lambda self: self._get_value(FALLBACK_AUTH_DEVICE_ID_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_ID_KEY, value),
@@ -210,26 +194,6 @@ def get_prefs():
         auth_refresh_token = property(
             lambda self: self._get_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, value),
-        )
-        auth_plan_code = property(
-            lambda self: self._get_value(FALLBACK_AUTH_PLAN_CODE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_PLAN_CODE_KEY, value),
-        )
-        auth_plan_name = property(
-            lambda self: self._get_value(FALLBACK_AUTH_PLAN_NAME_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_PLAN_NAME_KEY, value),
-        )
-        auth_stored_plan_code = property(
-            lambda self: self._get_value(FALLBACK_AUTH_STORED_PLAN_CODE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_STORED_PLAN_CODE_KEY, value),
-        )
-        auth_stored_plan_name = property(
-            lambda self: self._get_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, value),
-        )
-        auth_login_state = property(
-            lambda self: self._get_value(FALLBACK_AUTH_LOGIN_STATE_KEY, "logged_out"),
-            lambda self, value: self._set_value(FALLBACK_AUTH_LOGIN_STATE_KEY, value or "logged_out"),
         )
         auth_status_message = property(
             lambda self: self._get_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, ""),

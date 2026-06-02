@@ -58,7 +58,6 @@ export async function handleTileSessionStart(request, env, deps) {
     parseJson,
     issueTileSessionToken,
     normalizeQualityMode,
-    normalizeRequestedPlan,
     json: jsonResponse,
   } = deps;
 
@@ -86,10 +85,6 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
-  const planCode = normalizeRequestedPlan(
-    auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
-  );
-
   const issued = await issueTileSessionToken(
     env,
     auth,
@@ -108,7 +103,6 @@ export async function handleTileSessionStart(request, env, deps) {
       tile_token: issued.token,
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
-      plan_code: planCode,
     },
     200,
     env,

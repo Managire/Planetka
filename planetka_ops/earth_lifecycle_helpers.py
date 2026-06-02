@@ -8,8 +8,6 @@ from ..auth import (
     get_cloud_connection_status,
     ensure_authenticated_session,
     is_authenticated,
-    recover_from_terminal_auth_error,
-    sync_account_profile,
 )
 from ..asset_builder import PLANETKA_ROOT_OBJECT_NAME, ensure_earth_surface_parent, ensure_planetka_root
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
@@ -59,7 +57,7 @@ def _validate_create_earth_texture_source(base_path):
     return normalized, ""
 
 
-def _require_authenticated_account(operator, prefs):
+def _require_planetka_cloud_session(operator, prefs):
     if not is_authenticated(prefs):
         try:
             ensure_authenticated_session(prefs)
@@ -81,27 +79,6 @@ def _require_authenticated_account(operator, prefs):
                 exc=exc,
             )
             return False
-    try:
-        sync_account_profile(prefs)
-    except AuthApiError as exc:
-        recover_from_terminal_auth_error(exc, prefs=prefs, source="create_earth_account_profile")
-        fail(
-            operator,
-            describe_auth_error(exc),
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
-        return False
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-        fail(
-            operator,
-            "Planetka account status could not be verified. Check your connection and try again.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-            exc=exc,
-            log_message="Planetka Create Earth account verification failed",
-        )
-        return False
     status = get_cloud_connection_status(prefs=prefs, force=True, timeout=4.0)
     if not bool(status.get("online", False)):
         message = str(status.get("message", "") or "").strip()

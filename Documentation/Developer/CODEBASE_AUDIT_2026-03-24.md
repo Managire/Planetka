@@ -1,7 +1,7 @@
 # Planetka Codebase Audit (2026-03-24)
 
 ## Scope
-- Runtime resolve pipeline consistency (manual vs auto trigger paths).
+- Runtime resolve consistency (manual vs auto trigger paths).
 - Background download pipeline finalization.
 - Telemetry/status visibility during long-running operations.
 - Packaging/runtime hygiene for Blender 5.1.
@@ -24,7 +24,7 @@
 ## Known weak areas
 1. Large monolithic orchestrator
 - `state.py` is large and carries multiple responsibilities (state sync, timers, queueing, handlers, telemetry).
-- Recommendation: split into focused modules (`resolve_runtime.py`, `auto_resolve.py`, `scene_sync.py`).
+- Recommendation: split into focused modules (`resolve_runtime.py`, `manual_resolve.py`, `scene_sync.py`).
 
 2. Timer + context coupling
 - Blender timer/context behavior is brittle and can regress quietly.
@@ -41,7 +41,7 @@
 ## Production readiness
 - Current readiness: **7.5 / 10** for controlled production testing.
 - Strengths:
-  - Core resolve pipeline now completes reliably in tested scenarios.
+  - Core resolve now completes reliably in tested scenarios.
   - User feedback loop improved via live status telemetry.
   - Non-blocking background downloads restored.
 - Gaps before broad public release:

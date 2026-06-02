@@ -25,7 +25,6 @@ from .state import (
     suspend_navigation_shot_updates,
     update_atmosphere_enabled,
     update_auto_switch_atmosphere,
-    update_auto_resolve,
     update_debug_logging,
     update_navigation_shot,
     update_navigation_focal_length,
@@ -126,103 +125,10 @@ def _safe_context_scene():
 
 
 def update_texture_quality_mode(self, context):
-    scene = getattr(context, "scene", None) if context is not None else _safe_context_scene()
-    try:
-        if scene is not None and bool(scene.get("planetka_suppress_texture_quality_update_auto_resolve", False)):
-            return
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
-    update_auto_resolve(self, context)
-
-
-def _request_resolve_kill_switch():
-    state_module_name = f"{__package__}.state" if __package__ else "state"
-    try:
-        state_module = importlib.import_module(state_module_name)
-        stop_fn = getattr(state_module, "stop_auto_resolve_service", None)
-        if callable(stop_fn):
-            stop_fn()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed stopping auto-resolve service from Hold kill switch", exc_info=True)
-
-    r2_module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
-    try:
-        r2_module = importlib.import_module(r2_module_name)
-        cancel_fn = getattr(r2_module, "request_global_resolve_cancel", None)
-        if callable(cancel_fn):
-            cancel_fn()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed signaling global resolve cancel from Hold kill switch", exc_info=True)
-
-
-def _clear_resolve_kill_switch():
-    r2_module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
-    try:
-        r2_module = importlib.import_module(r2_module_name)
-        clear_fn = getattr(r2_module, "clear_global_resolve_cancel", None)
-        if callable(clear_fn):
-            clear_fn()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing global resolve cancel state", exc_info=True)
-
-
-def _get_hold_resolve(self):
-    try:
-        return not bool(getattr(self, "auto_resolve", True))
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return False
-
-
-def _set_hold_resolve(self, value):
-    hold_enabled = bool(value)
-    if hold_enabled:
-        _request_resolve_kill_switch()
-    else:
-        _clear_resolve_kill_switch()
-
-    target_auto_resolve = not hold_enabled
-    try:
-        current_auto_resolve = bool(getattr(self, "auto_resolve", True))
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        current_auto_resolve = True
-    if current_auto_resolve == target_auto_resolve:
-        return
-
-    try:
-        # Route through the existing property so update callbacks and runtime sync stay intact.
-        self.auto_resolve = target_auto_resolve
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        try:
-            self["auto_resolve"] = bool(target_auto_resolve)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            return
-        update_auto_resolve(self, getattr(bpy, "context", None))
-
-
-def update_auto_resolve_mode(self, context):
-    mode = str(getattr(self, "auto_resolve_mode", "CAMERA_VIEW") or "CAMERA_VIEW").strip().upper()
-    if mode not in {"ALWAYS", "CAMERA_VIEW", "NEVER"}:
-        mode = "CAMERA_VIEW"
-    if mode == "NEVER":
-        _request_resolve_kill_switch()
-        target_auto_resolve = False
-    else:
-        _clear_resolve_kill_switch()
-        target_auto_resolve = True
-
-    try:
-        current_auto_resolve = bool(getattr(self, "auto_resolve", True))
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        current_auto_resolve = True
-    if current_auto_resolve != target_auto_resolve:
-        try:
-            self.auto_resolve = bool(target_auto_resolve)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            try:
-                self["auto_resolve"] = bool(target_auto_resolve)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                pass
-    update_auto_resolve(self, context)
+    del self, context
+    # Quality Level is now an input for the explicit Resolve Planetka button.
+    # Changing it must not start any resolve or download.
+    return None
 
 
 def _show_earth_preview_description():
@@ -680,26 +586,6 @@ class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
 class PlanetkaProperties(bpy.types.PropertyGroup):
     __slots__ = ()
 
-    viewport_opt_suspend_subdivision: BoolProperty(
-        name="Suspend Adaptive Subdivision While Navigating",
-        default=True,
-        description=(
-            "Temporarily disables Adaptive Subdivision while the viewport/camera is moving, "
-            "then restores it after motion stops"
-        ),
-        update=update_auto_resolve,
-    )
-
-    viewport_opt_subdivision_restore_delay_sec: FloatProperty(
-        name="Subdivision Restore Delay (s)",
-        default=0.5,
-        min=0.1,
-        max=2.0,
-        precision=2,
-        description="Wait time after motion stops before Adaptive Subdivision is restored in the viewport",
-        update=update_auto_resolve,
-    )
-
     show_earth_preview: BoolProperty(
         name="Show Earth Preview",
         default=True,
@@ -829,55 +715,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         subtype='FILE_PATH',
         description="Local VDB file used when adding a new VDB cloud",
         default="",
-    )
-
-    auto_resolve: BoolProperty(
-        name="Auto Resolve",
-        default=True,
-        description="Automatically runs Resolve after camera movement when the visible tile set changes",
-        update=update_auto_resolve,
-    )
-
-    auto_resolve_mode: EnumProperty(
-        name="Auto-Resolve",
-        items=(
-            (
-                "NEVER",
-                "Never",
-                "Disable Auto-Resolve; use manual Resolve only",
-            ),
-            (
-                "CAMERA_VIEW",
-                "Camera only",
-                "Auto-resolve only from Camera View; Active View changes are ignored",
-            ),
-            (
-                "ALWAYS",
-                "Always",
-                "Auto-resolve from Camera View and Active View",
-            ),
-        ),
-        default="CAMERA_VIEW",
-        description="Choose when Planetka should run Auto-Resolve",
-        update=update_auto_resolve_mode,
-    )
-
-    hold_resolve: BoolProperty(
-        name="Pause",
-        description="Temporarily pause automatic resolve and download updates",
-        default=False,
-        get=_get_hold_resolve,
-        set=_set_hold_resolve,
-    )
-
-    auto_resolve_idle_sec: FloatProperty(
-        name="Auto Resolve Idle Delay (s)",
-        default=0.5,
-        min=0.1,
-        max=3.0,
-        precision=2,
-        description="Time the camera must stay still before Auto Resolve triggers",
-        update=update_auto_resolve,
     )
 
     auto_adjust_clipping_values: BoolProperty(
@@ -1321,14 +1158,12 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=2.0,
         precision=2,
         description="Bias Resolve tile detail selection (higher = finer detail, higher memory use)",
-        update=update_auto_resolve,
     )
 
     lock_resolve_during_animation: BoolProperty(
         name="Lock Resolve During Animation",
         default=True,
         description="Prevent Resolve updates while timeline playback is running",
-        update=update_auto_resolve,
     )
 
     debug_logging: BoolProperty(

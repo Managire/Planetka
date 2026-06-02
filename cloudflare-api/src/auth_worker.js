@@ -1097,15 +1097,10 @@ async function handleAnonymousAuth(request, env) {
     return blockedAccountResponse(env);
   }
   const policyUser = await enforceUserPlanPolicy(db, user, env);
-  const accountState = await buildAccountState(db, policyUser, env);
   const accessToken = await authCore.createAccessToken(
     env,
     policyUser,
     {
-      plan_code: String(accountState.planCode || ""),
-      user_status: String(accountState.planCode || ""),
-      stored_plan_code: String(accountState.storedPlanCode || ""),
-      quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
       auth_method: "anonymous",
       device_id: deviceId,
       client_ip_scope: clientIpScope,
@@ -1131,7 +1126,6 @@ async function handleAnonymousAuth(request, env) {
       email: publicEmail,
       access_token: accessToken,
       refresh_token: refreshToken,
-      ...serializeAccountState(accountState),
     },
     200,
     env,

@@ -106,42 +106,36 @@ def _test_streaming_quality_ui_has_no_licence_gate() -> dict:
 
 def _test_quality_operator_is_streaming_only() -> dict:
     text = _source_text("operators.py")
-    start = text.find("class PLANETKA_OT_SetTextureQualityAndResolve")
-    end = text.find("class PLANETKA_OT_OpenCreditCheckout", start)
-    if end < 0:
-        end = len(text)
-    operator_text = text[start:end]
+    quality_start = text.find("class PLANETKA_OT_SetTextureQualityAndResolve")
+    resolve_start = text.find("class PLANETKA_OT_ResolvePlanetka", quality_start)
+    next_class = text.find("class ", resolve_start + 1)
+    if next_class < 0:
+        next_class = len(text)
+    quality_text = text[quality_start:resolve_start]
+    resolve_text = text[resolve_start:next_class]
     _assert(
-        '"BALANCED",' in operator_text,
+        '"BALANCED",' in quality_text,
         "Texture quality operator must accept Balanced mode.",
     )
     _assert(
-        "open_credit_package" not in operator_text,
-        "Texture quality operator must not open package.",
+        "bpy.ops.planetka.load_textures" not in quality_text
+        and "defer_download" not in quality_text,
+        "Texture quality buttons must only set Quality Level; they must not resolve or download.",
     )
     _assert(
-        "bpy.ops.planetka.load_textures" in operator_text and "defer_download=True" in operator_text,
-        "Texture quality operator must explicitly queue the shared async resolve path.",
-    )
-    _assert(
-        "planetka_last_full_source_tiles" not in operator_text
-        and "apply_texture_quality_to_full_tiles" not in operator_text
-        and 'tiles_override_json=""' in operator_text,
-        "Texture quality operator must not reuse cached source tiles; it must run the shared resolve path.",
-    )
-    _assert(
-        "_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY" in operator_text
-        and "planetka_suppress_texture_quality_update_auto_resolve" in text,
-        "Texture quality operator must suppress the EnumProperty update auto-resolve and queue exactly one explicit resolve.",
+        "bpy.ops.planetka.load_textures" in resolve_text
+        and 'scope_mode="CAMERA"' in resolve_text
+        and "defer_download=True" in resolve_text,
+        "Resolve Planetka must queue the shared manual camera resolve path.",
     )
     properties_text = _source_text("properties.py")
+    update_text = properties_text[properties_text.find("def update_texture_quality_mode"):properties_text.find("def _show_earth_preview_description")]
     _assert(
-        "planetka_suppress_texture_quality_update_auto_resolve" in properties_text
-        and "return" in properties_text[properties_text.find("def update_texture_quality_mode"):properties_text.find("def _request_resolve_kill_switch")],
-        "Texture quality property update must honor the operator suppression flag.",
+        "Changing it must not start any resolve or download" in update_text
+        and "return None" in update_text,
+        "Texture quality property update must be a pure switch with no resolve side effects.",
     )
     return {"checked": True}
-
 
 def _test_texture_quality_tile_levels(base_module: str) -> dict:
     """Guard the core texture quality contract.
@@ -176,25 +170,25 @@ def _test_texture_quality_tile_levels(base_module: str) -> dict:
 
 
 def _test_quality_switch_fast_path() -> dict:
-    text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
+    text = _source_text("render_prep.py")
+    pipeline_text = _source_text("planetka_runtime/resolve.py")
     _assert(
-        "quality_switch_fast_path" not in text
+        "quality_switch_fast_path" not in text and "quality_switch_fast_path" not in pipeline_text
         and "_scene_last_full_source_tiles" not in text
         and "planetka_last_full_source_tiles" not in text,
         "Texture quality changes must not use the obsolete shortcut source-tile cache.",
     )
     _assert(
-        "full_source_tiles = tile_utils.main(" in text
-        and "apply_texture_quality_to_full_tiles(full_source_tiles, current_quality_mode)" in text,
-        "Auto-resolve must recompute full source tiles and apply quality through the normal path.",
+        "full_source_tiles" in text
+        and "tile_utils.main(" in text
+        and "apply_texture_quality_to_full_tiles(" in text
+        and "quality_mode" in text,
+        "Manual resolve must recompute full source tiles and apply quality through the normal path.",
     )
     _assert(
-        "not quality_mode_changed and now - last_resolve < min_interval_sec" in text,
-        "Quality changes must not be delayed by the normal auto-resolve interval.",
-    )
-    _assert(
-        "and not quality_mode_changed" in text,
-        "Same camera signature must still plan when only the texture quality changed.",
+        "min_interval_sec" not in text
+        and "quality_mode_changed" not in text,
+        "Manual resolve must not contain obsolete resolve interval or quality-change planning logic.",
     )
     operators_text = _source_text("operators.py")
     _assert(
@@ -204,13 +198,12 @@ def _test_quality_switch_fast_path() -> dict:
     )
     return {"checked": True}
 
-
 def _test_obsolete_active_view_quality_override_removed() -> dict:
     for name in (
         "properties.py",
         "state.py",
         "render_prep.py",
-        "planetka_runtime/auto_resolve_pipeline.py",
+        "planetka_runtime/resolve.py",
     ):
         text = _source_text(name)
         _assert(
@@ -221,35 +214,29 @@ def _test_obsolete_active_view_quality_override_removed() -> dict:
     return {"checked": True}
 
 
-def _test_auto_resolve_has_no_forced_preview_jobs() -> dict:
-    text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
-    context_text = _source_text("planetka_runtime/auto_resolve_context.py")
+def _test_resolve_has_no_forced_preview_jobs() -> dict:
+    pipeline_text = _source_text("planetka_runtime/resolve.py")
+    context_text = _source_text("planetka_runtime/resolve_context.py")
     state_text = _source_text("state.py")
     _assert(
-        "automatic Preview" not in text and "suppress_auto_preview" not in text,
-        "Normal auto-resolve must not contain a special automatic Preview job path.",
+        "automatic Preview" not in pipeline_text and "suppress_auto_preview" not in pipeline_text,
+        "Manual resolve must not contain special automatic Preview jobs.",
     )
     _assert(
-        "texture_quality_mode = _ctx_auto_resolve_texture_quality_mode(" in text
-        and "getattr(props, \"texture_quality_mode\", \"PREVIEW\")" in text,
-        "Normal auto-resolve must read the currently selected Quality Level from scene properties.",
+        "DecisionDeps" not in context_text
+        and "NonCriticalDeps" not in context_text
+        and "SceneResolveState" not in state_text,
+        "Deleted decision/noncritical internals must not reappear.",
     )
     _assert(
-        "class AutoResolveDecisionDeps" in context_text
-        and "normalize_texture_quality_mode: Any" in context_text,
-        "Auto-resolve decision context must have the quality normalizer; otherwise it silently falls back to Preview.",
-    )
-    _assert(
-        "normalize_texture_quality_mode=_normalize_texture_quality_mode" in state_text[
-            state_text.find("decision_deps = AutoResolveDecisionDeps("):state_text.find("noncritical_deps = AutoResolveNonCriticalDeps(")
-        ],
-        "Auto-resolve decision deps must receive the quality normalizer from state.py.",
+        "class PLANETKA_OT_ResolvePlanetka" in _source_text("operators.py")
+        and "bpy.ops.planetka.load_textures" in _source_text("operators.py"),
+        "Manual Resolve Planetka operator must remain the sole user-facing resolve trigger.",
     )
     return {"checked": True}
 
-
 def _test_stale_completed_resolve_cannot_override_newer_request() -> dict:
-    text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
+    text = _source_text("planetka_runtime/resolve.py")
     _assert(
         "_ctx_job_supersedes_completed_payload" in text,
         "Download pump must be able to identify stale completed resolves superseded by newer requests.",
@@ -331,6 +318,29 @@ def _test_full_quality_details_removed_from_data_control() -> dict:
     return {"checked": True}
 
 
+def _test_animation_preview_has_no_modal_timer() -> dict:
+    text = _source_text("animation_tools.py")
+    preview_start = text.find("class PLANETKA_OT_AnimationPreviewShot")
+    preview_end = text.find("class PLANETKA_OT_AnimationClearPrepared", preview_start)
+    _assert(preview_start >= 0 and preview_end > preview_start, "Animation preview operator block not found.")
+    preview_text = text[preview_start:preview_end]
+    forbidden = (
+        "def modal(",
+        "event_timer_add",
+        "event_timer_remove",
+        "_timer",
+        "_frame_change_handler",
+        "RUNNING_MODAL",
+        "bpy.ops.planetka.load_textures",
+    )
+    present = [token for token in forbidden if token in preview_text]
+    _assert(
+        not present,
+        f"Animation preview must remain simple playback with no modal/timer/resolve remnants: {present}",
+    )
+    return {"checked": True}
+
+
 def main() -> int:
     started = time.time()
     report = {
@@ -348,11 +358,12 @@ def main() -> int:
             ("texture_quality_tile_levels", lambda: _test_texture_quality_tile_levels(base_module)),
             ("quality_switch_fast_path", _test_quality_switch_fast_path),
             ("obsolete_active_view_quality_override_removed", _test_obsolete_active_view_quality_override_removed),
-            ("auto_resolve_has_no_forced_preview_jobs", _test_auto_resolve_has_no_forced_preview_jobs),
+            ("resolve_has_no_forced_preview_jobs", _test_resolve_has_no_forced_preview_jobs),
             ("stale_completed_resolve_cannot_override_newer_request", _test_stale_completed_resolve_cannot_override_newer_request),
             ("animation_stop_is_cooperative", _test_animation_stop_is_cooperative),
             ("animation_restart_ignores_old_cancel_epoch", _test_animation_restart_ignores_old_cancel_epoch),
             ("full_quality_details_removed_from_data_control", _test_full_quality_details_removed_from_data_control),
+            ("animation_preview_has_no_modal_timer", _test_animation_preview_has_no_modal_timer),
         )
         for name, fn in checks:
             result = fn()

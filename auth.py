@@ -20,14 +20,9 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_BASE_URL = str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.planetka.io").rstrip("/")
-TIER_INTEGRITY_ERROR_CODE = "tier_integrity_violation"
-TIER_INTEGRITY_STATUS_MESSAGE = (
-    "Critical licence integrity error detected. "
-    "Planetka is locked until resolved. Contact info@planetka.io."
-)
 CLOUD_OVERLOADED_ERROR_CODE = "planetka_cloud_overloaded"
 CLOUD_OVERLOADED_MESSAGE = "Planetka servers are temporarily overloaded. Please wait a few moments and try again."
-SESSION_EXPIRED_MESSAGE = "Planetka session expired. Connect your account again."
+SESSION_EXPIRED_MESSAGE = "Planetka Cloud session expired. Restart Blender and try again."
 _ADDON_VERSION_CACHE = None
 _CLOUD_CONNECTION_CACHE = {
     "checked": False,
@@ -38,19 +33,15 @@ _CLOUD_CONNECTION_CACHE = {
 _CLOUD_CONNECTION_TTL_SECONDS = 5.0
 _CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection or try again later."
 _OVERLOAD_HTTP_STATUSES = {429, 503, 520, 522, 524, 529}
-_ACCOUNT_LIMIT_OR_ACCESS_TOKENS = (
+_SESSION_LIMIT_OR_ACCESS_TOKENS = (
     "request limit reached",
-    "request limit reached for this account",
-    "planetka request limit reached for this account",
+    "planetka request limit reached",
     "rate_limit_auth",
     "device_limit_exceeded",
-    "account_blocked",
+    "session_blocked",
     "access_denied",
-    "quality_mode_not_allowed",
 )
-_KNOWN_NON_OVERLOAD_ERROR_TOKENS = (
-    "full quality requires a commercial licence",
-)
+_KNOWN_NON_OVERLOAD_ERROR_TOKENS = ()
 _OVERLOAD_TEXT_TOKENS = (
     CLOUD_OVERLOADED_ERROR_CODE,
     "1102",
@@ -82,9 +73,8 @@ _TERMINAL_AUTH_ERROR_CODES = {
     "invalid_refresh_token",
     "refresh_token_revoked",
     "refresh_token_expired",
-    "account_not_connected",
-    "account_blocked",
-    "invalid_user_status",
+    "session_not_connected",
+    "session_blocked",
 }
 
 
@@ -99,8 +89,6 @@ def is_terminal_auth_error(error):
     except (TypeError, ValueError):
         status = 0
 
-    if TIER_INTEGRITY_ERROR_CODE in code:
-        return True
     if code in _TERMINAL_AUTH_ERROR_CODES:
         return True
     if code.startswith("http_"):
@@ -132,13 +120,12 @@ def _critical_disconnect_status_message(primary_error=None, secondary_error=None
 def _report_critical_disconnect(prefs, source, primary_error=None, secondary_error=None):
     logger.error(
         "Planetka critical auth disconnect: source=%s primary_error=%s primary_status=%s "
-        "secondary_error=%s secondary_status=%s email=%s device_id=%s",
+        "secondary_error=%s secondary_status=%s device_id=%s",
         str(source or "").strip() or "unknown",
         _auth_error_code(primary_error),
         int(getattr(primary_error, "status", 0) or 0) if primary_error is not None else 0,
         _auth_error_code(secondary_error),
         int(getattr(secondary_error, "status", 0) or 0) if secondary_error is not None else 0,
-        str(getattr(prefs, "auth_email", "") or "").strip().lower(),
         str(getattr(prefs, "auth_device_id", "") or "").strip(),
     )
 
@@ -156,15 +143,10 @@ def describe_auth_error(error):
     ):
         return CLOUD_OVERLOADED_MESSAGE
     lowered = message.lower()
-    if TIER_INTEGRITY_ERROR_CODE in lowered:
-        return (
-            "Planetka could not verify this account safely. "
-            "Reconnect and contact info@planetka.io if the problem persists."
-        )
     if any(
         token in lowered
         for token in (
-            "account_not_connected",
+            "session_not_connected",
             "missing_refresh_token",
             "invalid_refresh_token",
             "refresh_token_revoked",
@@ -174,26 +156,24 @@ def describe_auth_error(error):
     ):
         return SESSION_EXPIRED_MESSAGE
     if "device_limit_exceeded" in lowered:
-        return "This Planetka account is already active on the maximum number of computers."
+        return "This Planetka Cloud session is already active on the maximum number of computers."
     if "missing_device_id" in lowered:
         return "Planetka device identity is missing. Restart Blender and try again."
-    if "account_blocked" in lowered or "account is blocked" in lowered:
-        return "Planetka account is blocked. Contact info@planetka.io."
+    if "session_blocked" in lowered or "blocked" in lowered:
+        return "Planetka Cloud access is blocked. Contact info@planetka.io."
     if "1010" in lowered:
         return "Planetka connection was blocked by a security check. Please try again later or contact support."
     if "network_error" in lowered:
         return _CLOUD_CONNECTION_OFFLINE_MESSAGE
-    if "quality_mode_not_allowed" in lowered or "not_available_for_licence" in lowered or "insufficient_data" in lowered:
-        return "Planetka Cloud could not stream the selected texture quality. Please retry."
     if "missing_resolve_id" in lowered:
         return "Planetka request details are missing. Retry Resolve and ensure Planetka is up to date."
-    return f"Planetka login failed: {message.replace('_', ' ')}."
+    return f"Planetka Cloud session failed: {message.replace('_', ' ')}."
 
 
 def recover_from_terminal_auth_error(error, prefs=None, source=""):
     """Clear stale local auth after backend-confirmed terminal auth failures.
 
-    Network outages and Cloudflare overloads must not log the user out. This is
+    Network outages and Planetka Cloud overloads must not log the user out. This is
     only for definitive auth/session failures such as revoked or expired saved
     sessions.
     """
@@ -215,14 +195,6 @@ def recover_from_terminal_auth_error(error, prefs=None, source=""):
     return True
 
 
-def _first_non_empty(*values):
-    for value in values:
-        text = str(value or "").strip()
-        if text:
-            return text
-    return ""
-
-
 def get_api_base_url():
     return DEFAULT_API_BASE_URL
 
@@ -237,7 +209,7 @@ def _coerce_status_code(status):
 def looks_like_planetka_overload(status=0, *details):
     status_code = _coerce_status_code(status)
     combined = " ".join(str(detail or "") for detail in details if detail is not None).strip().lower()
-    if combined and any(token in combined for token in _ACCOUNT_LIMIT_OR_ACCESS_TOKENS):
+    if combined and any(token in combined for token in _SESSION_LIMIT_OR_ACCESS_TOKENS):
         return False
     if combined and any(token in combined for token in _OVERLOAD_TEXT_TOKENS):
         return True
@@ -421,18 +393,13 @@ def _save_user_prefs():
 
 
 def clear_auth_session(prefs=None, state="logged_out", status_message=""):
+    del state
     prefs = prefs or get_prefs()
     if prefs is None:
         return
 
-    prefs.auth_email = ""
     prefs.auth_access_token = ""
     prefs.auth_refresh_token = ""
-    prefs.auth_plan_code = ""
-    prefs.auth_plan_name = ""
-    prefs.auth_stored_plan_code = ""
-    prefs.auth_stored_plan_name = ""
-    prefs.auth_login_state = str(state or "logged_out")
     prefs.auth_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
@@ -458,161 +425,11 @@ def is_authenticated(prefs=None):
     return bool(str(getattr(prefs, "auth_access_token", "") or "").strip())
 
 
-def get_login_state(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return "logged_out"
-    if is_authenticated(prefs):
-        return "authenticated"
-    state = str(getattr(prefs, "auth_login_state", "") or "").strip().lower()
-    return state or "logged_out"
-
-
 def get_status_message(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
     return str(getattr(prefs, "auth_status_message", "") or "").strip()
-
-
-def get_connected_email(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return str(getattr(prefs, "auth_email", "") or "").strip()
-
-
-
-def _raise_tier_integrity_violation(prefs, reason, details=None):
-    payload = {"reason": str(reason or "tier_integrity_violation").strip() or "tier_integrity_violation"}
-    if isinstance(details, dict):
-        payload.update(details)
-    logger.error("Planetka: licence integrity violation: %s", payload)
-    try:
-        _clear_auth_session_preserve_device_id(
-            prefs=prefs,
-            state="tier_integrity_error",
-            status_message=TIER_INTEGRITY_STATUS_MESSAGE,
-        )
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed preserving device id while handling licence integrity violation", exc_info=True)
-        clear_auth_session(
-            prefs=prefs,
-            state="tier_integrity_error",
-            status_message=TIER_INTEGRITY_STATUS_MESSAGE,
-        )
-    raise AuthApiError(500, TIER_INTEGRITY_ERROR_CODE, payload=payload)
-
-
-def _require_valid_authenticated_tier(prefs=None, context="runtime"):
-    del prefs, context
-    return ""
-
-
-def _normalize_account_plan_code(value):
-    token = str(value or "").strip().lower()
-    if token in {"commercial", "paid", "unlimited", "personal", ""}:
-        return "commercial"
-    return token
-
-
-def _account_plan_name(plan_code):
-    normalized = _normalize_account_plan_code(plan_code)
-    if normalized == "commercial":
-        return "Commercial"
-    return "Personal"
-
-
-def _first_plan_code_from_payload(payload, *keys):
-    if not isinstance(payload, dict):
-        return ""
-    for key in keys:
-        value = payload.get(key)
-        if isinstance(value, dict):
-            nested = _first_non_empty(value.get("code"), value.get("plan_code"), value.get("id"))
-            if nested:
-                return nested
-        else:
-            value = _first_non_empty(value)
-            if value:
-                return value
-    return ""
-
-
-def _apply_account_plan_fields(prefs, payload):
-    if prefs is None or not isinstance(payload, dict):
-        return
-    plan_code = _normalize_account_plan_code(
-        _first_plan_code_from_payload(payload, "plan_code", "plan", "user_status")
-    )
-    stored_plan_code = _normalize_account_plan_code(
-        _first_plan_code_from_payload(payload, "stored_plan_code", "storedPlanCode")
-        or plan_code
-    )
-    prefs.auth_plan_code = plan_code
-    prefs.auth_plan_name = _account_plan_name(plan_code)
-    prefs.auth_stored_plan_code = stored_plan_code
-    prefs.auth_stored_plan_name = _account_plan_name(stored_plan_code)
-
-
-def get_licence_code(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return _normalize_account_plan_code(
-        getattr(prefs, "auth_plan_code", "")
-        or getattr(prefs, "auth_stored_plan_code", "")
-    )
-
-
-def get_licence_name(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return str(getattr(prefs, "auth_plan_name", "") or _account_plan_name(get_licence_code(prefs))).strip()
-
-
-def is_commercial_licence(prefs=None):
-    del prefs
-    return True
-
-
-def licence_access_summary(prefs=None):
-    licence_code = get_licence_code(prefs)
-    if licence_code == "commercial":
-        return "Commercial licence: all Planetka features for commercial and personal use."
-    return "Personal licence: all Planetka features for personal use only."
-
-
-def commercial_licence_required_message():
-    return "Commercial use requires a Commercial licence."
-
-
-def _normalize_texture_quality_token(value):
-    token = str(value or "").strip().upper()
-    if token in {"PREVIEW", "BALANCED", "FULL"}:
-        return token
-    return "PREVIEW"
-
-
-def allows_texture_quality_for_context(prefs=None, requested_mode=None):
-    del prefs, requested_mode
-    return True
-
-
-def texture_quality_not_allowed_message(prefs=None, requested_mode=None):
-    del prefs, requested_mode
-    return "Selected texture quality is not available."
-
-
-def allows_full_quality_for_context(prefs=None, source=None):
-    del source
-    return allows_texture_quality_for_context(prefs, "FULL")
-
-
-def allows_animation_render_for_context(prefs=None, source=None, requested_mode=None):
-    del prefs, source, requested_mode
-    return True
 
 
 def _ensure_device_id(prefs=None):
@@ -726,28 +543,12 @@ def _read_local_addon_version():
 
 
 
-def _apply_auth_payload(prefs, payload, login_state="authenticated", status_message=""):
-    prefs.auth_email = str(payload.get("email", "") or "").strip()
+def _apply_auth_payload(prefs, payload, status_message=""):
     prefs.auth_access_token = str(payload.get("access_token", "") or "").strip()
     prefs.auth_refresh_token = str(payload.get("refresh_token", "") or "").strip()
-    _apply_account_plan_fields(prefs, payload)
-    prefs.auth_login_state = str(login_state or "authenticated")
     prefs.auth_status_message = str(status_message or "")
-    _require_valid_authenticated_tier(prefs, context="auth_payload")
     _save_user_prefs()
     _tag_ui_redraw()
-
-
-def _apply_account_profile_fields(prefs, payload):
-    if not isinstance(payload, dict):
-        return
-    email = str(payload.get("email", "") or "").strip()
-    if email:
-        prefs.auth_email = email
-
-    _apply_account_plan_fields(prefs, payload)
-
-    _require_valid_authenticated_tier(prefs, context="account_profile")
 
 
 def connect_anonymous(prefs=None):
@@ -770,7 +571,7 @@ def connect_anonymous(prefs=None):
         headers=headers,
         timeout=15,
     )
-    _apply_auth_payload(prefs, payload, login_state="authenticated")
+    _apply_auth_payload(prefs, payload)
     return payload
 
 
@@ -782,26 +583,6 @@ def ensure_authenticated_session(prefs=None):
         return True
     connect_anonymous(prefs)
     return True
-
-
-def sync_account_profile(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return False
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-
-    try:
-        headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-        _status, payload = _json_request("GET", "/me", None, headers=headers)
-    except AuthApiError as exc:
-        recover_from_terminal_auth_error(exc, prefs=prefs, source="sync_account_profile")
-        raise
-    _apply_account_profile_fields(prefs, payload)
-    _save_user_prefs()
-    _tag_ui_redraw()
-    return True
-
 
 
 def refresh_auth_session(prefs=None):
@@ -855,7 +636,7 @@ def refresh_auth_session(prefs=None):
                 )
             raise refresh_error
 
-    _apply_auth_payload(prefs, payload, login_state="authenticated")
+    _apply_auth_payload(prefs, payload)
     return str(getattr(prefs, "auth_access_token", "") or "").strip()
 
 
@@ -863,8 +644,6 @@ def get_access_token(prefs=None, allow_refresh=True):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
-    if is_authenticated(prefs):
-        _require_valid_authenticated_tier(prefs, context="get_access_token")
 
     access_token = str(getattr(prefs, "auth_access_token", "") or "").strip()
     if access_token and not _token_expires_soon(access_token):
@@ -879,10 +658,9 @@ def get_access_token(prefs=None, allow_refresh=True):
 
 def get_authorized_headers(prefs=None, allow_refresh=True):
     prefs = prefs or get_prefs()
-    _require_valid_authenticated_tier(prefs, context="get_authorized_headers")
     token = get_access_token(prefs=prefs, allow_refresh=allow_refresh)
     if not token:
-        raise AuthApiError(401, "account_not_connected")
+        raise AuthApiError(401, "session_not_connected")
     headers = {"Authorization": f"Bearer {token}"}
     device_id = _ensure_device_id(prefs)
     if device_id:
@@ -891,39 +669,3 @@ def get_authorized_headers(prefs=None, allow_refresh=True):
     if addon_version:
         headers["X-Planetka-Addon-Version"] = addon_version
     return headers
-
-
-def logout_remote_session(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return False
-
-    refresh_token = str(getattr(prefs, "auth_refresh_token", "") or "").strip()
-    access_token = str(getattr(prefs, "auth_access_token", "") or "").strip()
-    device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
-
-    payload = {}
-    if refresh_token:
-        payload["refresh_token"] = refresh_token
-    if device_id:
-        payload["device_id"] = device_id
-
-    headers = {}
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-    if device_id:
-        headers["X-Planetka-Device-Id"] = device_id
-
-    try:
-        _json_request("POST", "/auth/logout", payload, headers=headers, timeout=10)
-        return True
-    except AuthApiError as exc:
-        # Keep logout resilient with older/backward-incompatible backends and
-        # expired tokens; local logout should always proceed.
-        if int(exc.status or 0) in {400, 401, 404}:
-            return False
-        logger.debug("Planetka: remote logout failed", exc_info=True)
-        return False
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka: remote logout failed", exc_info=True)
-        return False

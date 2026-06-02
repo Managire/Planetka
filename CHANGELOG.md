@@ -36,7 +36,7 @@ All notable public changes to Planetka are documented in this file.
 
 ### Fixed
 - Fixed Preview/Balanced/Full resolves so the final shader textures match the selected quality mode rather than being overwritten by Preview resolves.
-- Fixed competing auto-resolve jobs so stale completed resolves cannot override a newer explicit quality request.
+- Fixed competing resolve jobs so stale completed resolves cannot override a newer explicit quality request.
 - Fixed the Final Animation Render Stop control to stop cooperatively without directly cancelling Blender render from the UI operator.
 - Removed the obsolete Active View lower-quality override.
 

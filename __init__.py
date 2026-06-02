@@ -28,7 +28,6 @@ from .operators import (
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_UpdateNow,
-    PLANETKA_OT_DownloadStatusPopup,
     PLANETKA_OT_DeleteSavedLocation,
     PLANETKA_OT_LoadSavedLocation,
     PLANETKA_OT_NavigationApplyShot,
@@ -40,6 +39,7 @@ from .operators import (
     PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_SetBackgroundBlack,
     PLANETKA_OT_SetTextureQualityAndResolve,
+    PLANETKA_OT_ResolvePlanetka,
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_RebuildEarth,
     PLANETKA_OT_ResetStartupSetupFactory,
@@ -52,13 +52,12 @@ from .properties import PlanetkaAnimationWaypoint, PlanetkaProperties
 from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
     _planetka_depsgraph_update_post,
-    _planetka_frame_change_post,
     _planetka_load_post,
     _sync_logging_from_scenes,
     mark_render_job_progress,
     mark_render_job_started,
     recover_post_render_state,
-    stop_auto_resolve_service,
+    stop_resolve,
 )
 from .ui import (
     PLANETKA_OT_ToggleUiSection,
@@ -151,7 +150,6 @@ else:
 
 if _LEGACY_RUNTIME_ENABLED:
     _LEGACY_CLASSES = (
-        PLANETKA_OT_DownloadStatusPopup,
         PLANETKA_OT_AnimationPreviewShot,
         PLANETKA_OT_ValidateTextureSource,
     )
@@ -198,6 +196,7 @@ classes = (
     PLANETKA_OT_OptimizeRenderSettings,
     PLANETKA_OT_SetBackgroundBlack,
     PLANETKA_OT_SetTextureQualityAndResolve,
+    PLANETKA_OT_ResolvePlanetka,
     PLANETKA_OT_UseCurrentViewNavigation,
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_SunlightPreset,
@@ -303,16 +302,6 @@ def _remove_depsgraph_post_handler():
         if (
             handler is _planetka_depsgraph_update_post
             or getattr(handler, "__name__", "") == "_planetka_depsgraph_update_post"
-        ):
-            handlers.remove(handler)
-
-
-def _remove_frame_change_post_handler():
-    handlers = bpy.app.handlers.frame_change_post
-    for handler in list(handlers):
-        if (
-            handler is _planetka_frame_change_post
-            or getattr(handler, "__name__", "") == "_planetka_frame_change_post"
         ):
             handlers.remove(handler)
 
@@ -440,10 +429,8 @@ def register():
     _sync_logging_from_scenes()
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()
-    _remove_frame_change_post_handler()
     bpy.app.handlers.load_post.append(_planetka_load_post)
     bpy.app.handlers.depsgraph_update_post.append(_planetka_depsgraph_update_post)
-    bpy.app.handlers.frame_change_post.append(_planetka_frame_change_post)
     _remove_render_handlers()
     bpy.app.handlers.render_pre.append(_planetka_render_pre)
     bpy.app.handlers.render_post.append(_planetka_render_post)
@@ -483,17 +470,13 @@ def unregister():
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed removing depsgraph_update_post handler during unregister", exc_info=True)
     try:
-        _remove_frame_change_post_handler()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing frame_change_post handler during unregister", exc_info=True)
-    try:
         _remove_render_handlers()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed removing render handlers during unregister", exc_info=True)
     try:
-        stop_auto_resolve_service()
+        stop_resolve()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed stopping auto-resolve service during unregister", exc_info=True)
+        logger.debug("Planetka: failed stopping resolve download pipeline during unregister", exc_info=True)
     if hasattr(bpy.types.Scene, "planetka"):
         try:
             del bpy.types.Scene.planetka

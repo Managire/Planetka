@@ -331,9 +331,8 @@ def main():
         _assert(prefs is not None, "Planetka preferences unavailable.")
 
         auth_payload = _load_auth_payload(auth_payload_path)
-        auth_module._apply_auth_payload(prefs, auth_payload, login_state="authenticated")  # noqa: SLF001
-        _assert(auth_module.is_authenticated(prefs), "Planetka account is not authenticated after payload apply.")
-        auth_module.sync_account_profile(prefs)
+        auth_module._apply_auth_payload(prefs, auth_payload)  # noqa: SLF001
+        _assert(auth_module.is_authenticated(prefs), "Planetka Cloud session is not active after payload apply.")
 
         scene = bpy.context.scene
         camera = _ensure_active_camera(scene)
@@ -341,7 +340,6 @@ def main():
 
         prefs.texture_base_path = "planetka-remote"
         props = scene.planetka
-        props.auto_resolve = False
         props.texture_quality_mode = "FULL"
         props.show_earth_preview = False
         scene.render.engine = "CYCLES"

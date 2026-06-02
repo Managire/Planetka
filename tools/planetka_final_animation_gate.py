@@ -235,8 +235,8 @@ def _ensure_active_camera(scene):
 
 def _drain_queued_resolve(state_module, scene, timeout_sec=12.0):
     runtime_status_fn = getattr(state_module, "get_resolve_runtime_status", None)
-    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
-    stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
+    pump_fn = getattr(state_module, "_resolve_pump_timer", None)
+    stop_fn = getattr(state_module, "stop_resolve", None)
     start = time.monotonic()
     last_status = {}
     while True:
@@ -398,7 +398,6 @@ def _start_final_animation_case(scene, props, animation_tools, engine_id, output
             pass
 
     _configure_engine(scene, engine_id)
-    props.auto_resolve = False
     props.show_earth_preview = False
     props.texture_quality_mode = "FULL"
     props.anim_camera_preset = "ZOOM"

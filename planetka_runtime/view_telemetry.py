@@ -60,64 +60,6 @@ def _safe_windows_from_manager(wm):
         return ()
 
 
-def _active_view_signature_from_bpy(bpy_module):
-    if bpy_module is None:
-        return None
-    wm = _safe_window_manager_from_bpy(bpy_module)
-    if not wm:
-        return None
-
-    for window in _safe_windows_from_manager(wm):
-        try:
-            screen = getattr(window, "screen", None)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            continue
-        if not screen:
-            continue
-        try:
-            areas = tuple(getattr(screen, "areas", ()) or ())
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            continue
-        for area in areas:
-            try:
-                if area.type != 'VIEW_3D':
-                    continue
-                space = getattr(area.spaces, "active", None)
-                if not space or space.type != 'VIEW_3D':
-                    continue
-                rv3d = getattr(space, "region_3d", None)
-                if rv3d is None:
-                    continue
-                region = next((r for r in area.regions if r.type == 'WINDOW'), None)
-                region_sig = (
-                    int(getattr(region, "width", 0)) if region else 0,
-                    int(getattr(region, "height", 0)) if region else 0,
-                )
-                matrix_signature = tuple(
-                    round(float(value), 6)
-                    for row in rv3d.view_matrix
-                    for value in row
-                )
-                return (
-                    str(getattr(rv3d, "view_perspective", "")),
-                    bool(getattr(rv3d, "is_perspective", True)),
-                    round(float(getattr(space, "lens", 50.0)), 6),
-                    region_sig,
-                    matrix_signature,
-                )
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                continue
-    return None
-
-
-def _ctx_active_view_signature(ctx):
-    return _active_view_signature_from_bpy(ctx.deps.bpy)
-
-
-def active_view_signature(ctx=None):
-    return _ctx_active_view_signature(_coerce_ctx(ctx))
-
-
 def active_camera_projection_info(scene):
     camera = getattr(scene, "camera", None) if scene else None
     if camera is None:
@@ -428,51 +370,11 @@ def output_resolution_signature(scene, ctx=None):
     return _ctx_output_resolution_signature(_coerce_ctx(ctx), scene)
 
 
-def _ctx_current_view_scope(ctx, scene):
-    active_sig = _ctx_active_view_signature(ctx)
-    if active_sig is not None and str(active_sig[0]) != "CAMERA":
-        return "ACTIVE_VIEW"
-    if getattr(scene, "camera", None) is not None:
-        return "CAMERA"
-    return "NONE"
-
-
-def current_view_scope(scene, ctx=None):
-    return _ctx_current_view_scope(_coerce_ctx(ctx), scene)
-
-
-def _ctx_auto_resolve_scope_mode(ctx, scene):
-    props = getattr(scene, "planetka", None) if scene is not None else None
-    try:
-        mode = str(getattr(props, "auto_resolve_mode", "CAMERA_VIEW") or "CAMERA_VIEW").strip().upper()
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        mode = "CAMERA_VIEW"
-    if mode == "NEVER":
-        return "NONE"
-    current_scope = _ctx_current_view_scope(ctx, scene)
-    if mode == "CAMERA_VIEW":
-        return "CAMERA" if getattr(scene, "camera", None) is not None else "NONE"
-    if current_scope == "ACTIVE_VIEW":
-        return "ACTIVE_VIEW"
-    if getattr(scene, "camera", None) is not None:
-        return "CAMERA"
-    return "NONE"
-
-
-def auto_resolve_scope_mode(scene, ctx=None):
-    return _ctx_auto_resolve_scope_mode(_coerce_ctx(ctx), scene)
-
-
 def handle_viewport_motion_optimization(scene, camera_signature, runtime=None):
     ctx = _coerce_ctx(runtime)
     deps = ctx.deps
     state = ctx.state
     if scene is None or camera_signature is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
         return
 
     scene_id = deps.scene_key(scene)
@@ -480,144 +382,57 @@ def handle_viewport_motion_optimization(scene, camera_signature, runtime=None):
     if previous_signature == camera_signature:
         return
     state.viewport_opt_last_signature[scene_id] = camera_signature
-    deps.suspend_adaptive_viewport_during_navigation(scene)
 
 
-def timeline_signature(scene):
-    if scene is None:
-        return None
-    try:
-        frame = int(getattr(scene, "frame_current", 0))
-    except (TypeError, ValueError, RuntimeError):
-        frame = 0
-    try:
-        subframe = round(float(getattr(scene, "frame_subframe", 0.0)), 4)
-    except (TypeError, ValueError, RuntimeError):
-        subframe = 0.0
-    return (frame, subframe)
-
-
-def keyed_runtime_signature(scene):
-    if scene is None:
-        return None
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return None
-
-    def _as_float(value, fallback=0.0):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(fallback)
-
-    nav_lon = _as_float(getattr(props, "nav_longitude_deg", 0.0), 0.0)
-    nav_lat = _as_float(getattr(props, "nav_latitude_deg", 0.0), 0.0)
-    nav_alt = max(0.0, _as_float(getattr(props, "nav_altitude_km", 0.0), 0.0))
-    nav_heading = _as_float(getattr(props, "nav_azimuth_deg", 0.0), 0.0)
-    nav_tilt = _as_float(getattr(props, "nav_tilt_deg", 0.0), 0.0)
-    nav_roll = _as_float(getattr(props, "nav_roll_deg", 0.0), 0.0)
-    nav_focal = max(1.0, _as_float(getattr(props, "nav_focal_length_mm", 50.0), 50.0))
-    sun_lon = _as_float(getattr(props, "sunlight_longitude_deg", 0.0), 0.0)
-    sun_tilt = _as_float(getattr(props, "sunlight_seasonal_tilt_deg", 0.0), 0.0)
-    sun_strength = max(0.0, _as_float(getattr(props, "sunlight_strength", 10.0), 10.0))
-
-    return (
-        round(nav_lon, 6),
-        round(nav_lat, 6),
-        round(nav_alt, 6),
-        round(nav_heading, 6),
-        round(nav_tilt, 6),
-        round(nav_roll, 6),
-        round(nav_focal, 6),
-        round(sun_lon, 6),
-        round(sun_tilt, 6),
-        round(sun_strength, 6),
-    )
+def _iter_action_fcurves(action):
+    if action is None:
+        return
+    fcurves = getattr(action, "fcurves", None)
+    if not fcurves:
+        return
+    for fcurve in fcurves:
+        yield fcurve
 
 
 def iter_scene_animation_fcurves(scene, runtime=None):
-    recoverable_exceptions = _coerce_ctx(runtime).deps.recoverable_exceptions
     if scene is None:
         return
-    animation_data = getattr(scene, "animation_data", None)
+    props = getattr(scene, "planetka", None)
+    animation_data = getattr(props, "animation_data", None) if props is not None else None
     if animation_data is None:
         return
     seen = set()
-
-    def _yield_action_fcurves(action):
-        fcurves = getattr(action, "fcurves", None) if action is not None else None
-        if not fcurves:
-            return
-        for fcurve in fcurves:
-            if fcurve is None:
-                continue
-            try:
-                token = int(fcurve.as_pointer())
-            except recoverable_exceptions:
-                token = id(fcurve)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                token = id(fcurve)
+    for action in (getattr(animation_data, "action", None),):
+        for fcurve in _iter_action_fcurves(action) or ():
+            token = id(fcurve)
             if token in seen:
                 continue
             seen.add(token)
             yield fcurve
-
-    action = getattr(animation_data, "action", None)
-    for fcurve in _yield_action_fcurves(action):
-        yield fcurve
-
-    nla_tracks = getattr(animation_data, "nla_tracks", None)
-    if not nla_tracks:
+    tracks = getattr(animation_data, "nla_tracks", None)
+    if not tracks:
         return
-    for track in nla_tracks:
-        strips = getattr(track, "strips", None)
-        if not strips:
-            continue
-        for strip in strips:
-            strip_action = getattr(strip, "action", None)
-            for fcurve in _yield_action_fcurves(strip_action):
+    for track in tracks:
+        for strip in getattr(track, "strips", ()) or ():
+            action = getattr(strip, "action", None)
+            for fcurve in _iter_action_fcurves(action) or ():
+                token = id(fcurve)
+                if token in seen:
+                    continue
+                seen.add(token)
                 yield fcurve
 
 
-def scene_has_keyed_runtime_path(scene, accepted_paths, runtime):
+def scene_has_keyed_runtime_path(scene, accepted_paths, runtime=None):
+    del runtime
     allowed = {str(path or "").strip() for path in (accepted_paths or ()) if str(path or "").strip()}
     if not allowed:
         return False
-    for fcurve in iter_scene_animation_fcurves(scene, runtime):
+    for fcurve in iter_scene_animation_fcurves(scene):
         data_path = str(getattr(fcurve, "data_path", "") or "").strip()
         if data_path in allowed:
             return True
     return False
-
-
-def handle_timeline_motion_optimization(scene, runtime=None):
-    ctx = _coerce_ctx(runtime)
-    deps = ctx.deps
-    state = ctx.state
-    if scene is None:
-        return
-    if deps.is_render_job_active():
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-        return
-
-    scene_id = deps.scene_key(scene)
-    current_signature = timeline_signature(scene)
-    previous_signature = state.timeline_last_signature.get(scene_id)
-    state.timeline_last_signature[scene_id] = current_signature
-
-    if deps.is_animation_playing():
-        deps.suspend_adaptive_viewport_during_navigation(scene)
-        return
-
-    if previous_signature is None:
-        return
-    if current_signature == previous_signature:
-        return
-    deps.suspend_adaptive_viewport_during_navigation(scene)
 
 
 def sunlight_signature(scene, runtime=None):
@@ -704,11 +519,6 @@ def handle_sunlight_motion_optimization(scene, runtime=None):
     state = ctx.state
     if scene is None:
         return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-        return
 
     scene_id = deps.scene_key(scene)
     signature = sunlight_signature(scene, ctx)
@@ -718,45 +528,6 @@ def handle_sunlight_motion_optimization(scene, runtime=None):
         return
     if signature == previous_signature:
         return
-    deps.suspend_adaptive_viewport_during_navigation(scene)
-
-
-def handle_view_scope_quality_transition(scene, runtime=None):
-    ctx = _coerce_ctx(runtime)
-    deps = ctx.deps
-    state = ctx.state
-    if scene is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if deps.get_earth_object() is None:
-        return
-
-    scene_id = deps.scene_key(scene)
-    current_scope = current_view_scope(scene, ctx)
-    previous_scope = state.viewport_scope_last.get(scene_id)
-    state.viewport_scope_last[scene_id] = current_scope
-    if previous_scope is None or previous_scope == current_scope:
-        return
-
-    if previous_scope != "ACTIVE_VIEW" or current_scope != "CAMERA":
-        return
-    if not bool(getattr(props, "auto_resolve", False)):
-        return
-    if bool(deps.get_auto_resolve_in_flight()):
-        return
-    if deps.is_render_job_active():
-        return
-    if deps.is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
-        return
-
-    now = deps.monotonic()
-    last_transition_resolve = state.viewport_scope_last_resolve_time.get(scene_id, 0.0)
-    if now - float(last_transition_resolve) < 0.2:
-        return
-
-    deps.request_auto_resolve(scene, immediate=True, mark_dirty=True)
 
 
 def earth_radius_blender_units(earth_obj):

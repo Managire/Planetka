@@ -236,8 +236,8 @@ def _surface_collection_names(surface_obj):
 
 def _drain_queued_resolve(state_module, scene, timeout_sec=8.0):
     runtime_status_fn = getattr(state_module, "get_resolve_runtime_status", None)
-    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
-    stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
+    pump_fn = getattr(state_module, "_resolve_pump_timer", None)
+    stop_fn = getattr(state_module, "stop_resolve", None)
     start = time.monotonic()
     last_status = {}
     while True:
@@ -494,7 +494,6 @@ def main():
             "sunlight_seasonal_tilt_deg": 12.0,
             "earth_radius_bu": 3.5,
             "texture_quality_mode": "FULL",
-            "auto_resolve": False,
             "show_earth_preview": False,
             "anim_camera_preset": "ZOOM",
         }
@@ -507,7 +506,6 @@ def main():
         props.sunlight_seasonal_tilt_deg = expected["sunlight_seasonal_tilt_deg"]
         props.earth_radius_bu = expected["earth_radius_bu"]
         props.texture_quality_mode = expected["texture_quality_mode"]
-        props.auto_resolve = expected["auto_resolve"]
         props.show_earth_preview = expected["show_earth_preview"]
         props.anim_camera_preset = expected["anim_camera_preset"]
         result = bpy.ops.planetka.save_startup_setup()

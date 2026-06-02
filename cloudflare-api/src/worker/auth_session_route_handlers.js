@@ -153,15 +153,10 @@ export function createAuthSessionRouteHandlers(deps) {
       `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`,
       [deps.nowIso(), session.id],
     );
-    const accountState = await deps.buildAccountState(db, user, env);
     const accessToken = await deps.createAccessToken(
       env,
       user,
       {
-        plan_code: String(accountState.planCode || ""),
-        user_status: String(accountState.planCode || ""),
-        stored_plan_code: String(accountState.storedPlanCode || ""),
-        quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
         auth_method: String(session.auth_method || "").trim(),
         device_id: String(session.device_id || "").trim(),
         client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
@@ -202,7 +197,6 @@ export function createAuthSessionRouteHandlers(deps) {
         email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
           ? ""
           : user.email,
-        ...deps.serializeAccountState(accountState),
       },
       200,
       env,
@@ -292,8 +286,7 @@ export function createAuthSessionRouteHandlers(deps) {
     if (auth.error) {
       return auth.error;
     }
-    const { db, user } = auth;
-    const accountState = await deps.buildAccountState(db, user, env);
+    const { user } = auth;
 
     return deps.json(
       {
@@ -303,8 +296,6 @@ export function createAuthSessionRouteHandlers(deps) {
         email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
           ? ""
           : user.email,
-        user_status: String(accountState.planCode || ""),
-        ...deps.serializeAccountState(accountState),
       },
       200,
       env,

@@ -243,7 +243,6 @@ def _start_test():
         _ensure_active_camera(scene)
         _purge_existing_planetka_data()
         props = scene.planetka
-        props.auto_resolve = True
         props.show_earth_preview = False
 
         result = bpy.ops.planetka.add_earth()

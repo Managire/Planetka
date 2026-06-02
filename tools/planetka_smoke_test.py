@@ -234,8 +234,8 @@ def _get_subsurf_modifier(surface):
 
 def _drain_queued_resolve(state_module, scene, timeout_sec=8.0):
     runtime_status_fn = getattr(state_module, "get_resolve_runtime_status", None)
-    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
-    stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
+    pump_fn = getattr(state_module, "_resolve_pump_timer", None)
+    stop_fn = getattr(state_module, "stop_resolve", None)
     start = time.monotonic()
     last_status = {}
     while True:

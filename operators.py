@@ -5,11 +5,7 @@ import time
 import bpy
 from bpy.props import BoolProperty, EnumProperty
 
-from .auth import (
-    allows_texture_quality_for_context,
-    texture_quality_not_allowed_message,
-)
-from .planetka_ops.account_ops import (
+from .planetka_ops.update_ops import (
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_UpdateNow,
 )
@@ -49,7 +45,7 @@ from .planetka_ops.earth_lifecycle_helpers import (
     _is_planetka_create_camera,
     _pick_scene_camera,
     _position_planetka_create_camera,
-    _require_authenticated_account,
+    _require_planetka_cloud_session,
     _restore_view_selection,
     _snapshot_camera_state_for_rebuild,
     _snapshot_earth_settings_for_rebuild,
@@ -93,8 +89,6 @@ from .sanity_utils import (
     invalidate_texture_source_health_cache,
 )
 from .r2_source import (
-    get_download_progress,
-    is_download_active,
     is_remote_source_configured,
     texture_file_exists,
 )
@@ -147,8 +141,6 @@ def _wrapped_label(layout, text, icon='NONE', width=58):
 
 
 from .state import (
-    ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
-    _auto_resolve_scope_mode,
     _is_render_job_active,
     _tag_view3d_redraw,
     _initialize_props_from_imported_planetka,
@@ -165,71 +157,7 @@ from .state import (
 from .updater import kickoff_background_update_check
 
 _RECOVERABLE_LOG_COUNTS = {}
-_DOWNLOAD_POPUP_WM_FLAG = "planetka_download_popup_running"
-_POST_CHECKOUT_MONITOR = {}
-_POST_CHECKOUT_MONITOR_REGISTERED = False
-_POST_CHECKOUT_POLL_INTERVAL_SEC = 6.0
-_POST_CHECKOUT_MAX_POLL_INTERVAL_SEC = 24.0
-_POST_CHECKOUT_TIMEOUT_SEC = 300.0
-_REGION_PACK_PURCHASE_MONITOR = {}
-_REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
-_REGION_PACK_PURCHASE_POLL_INTERVAL_SEC = 12.0
-_REGION_PACK_PURCHASE_TIMEOUT_SEC = 180.0
 _LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
-_FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
-_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY = "planetka_suppress_texture_quality_update_auto_resolve"
-
-
-def _signature_token(signature):
-    try:
-        import json
-        return json.dumps(signature, sort_keys=True, separators=(",", ":"), default=str)
-    except (RuntimeError, TypeError, ValueError):
-        return repr(signature)
-
-
-def _store_full_quality_requested_for_camera(scene):
-    if scene is None:
-        return
-    signature = None
-    try:
-        from .planetka_runtime.view_telemetry import camera_signature
-        signature = camera_signature(scene)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        signature = None
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        signature = None
-    try:
-        scene[_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = "FULL"
-        if signature is not None:
-            scene[_FULL_QUALITY_HOLD_SIGNATURE_KEY] = _signature_token(signature)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing pending Full Quality selection", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed storing pending Full Quality selection", exc_info=True)
-
-
-def _clear_full_quality_hold_for_manual_preview(scene):
-    if scene is None:
-        return
-    try:
-        if _FULL_QUALITY_HOLD_SIGNATURE_KEY in scene:
-            del scene[_FULL_QUALITY_HOLD_SIGNATURE_KEY]
-        scene[_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = "PREVIEW"
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed clearing Full Quality hold for Preview", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing Full Quality hold for Preview", exc_info=True)
-
-
-def _is_active_view_resolve_scope(scene):
-    try:
-        scope = str(_auto_resolve_scope_mode(scene) or "CAMERA").strip().upper()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        scope = "CAMERA"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        scope = "CAMERA"
-    return scope == "ACTIVE_VIEW"
 
 
 def _log_recoverable_once(code, message):
@@ -309,7 +237,7 @@ from .planetka_ops.navigation_helpers import (
 class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     bl_idname = "planetka.set_texture_quality_and_resolve"
     bl_label = "Set Quality Level"
-    bl_description = "Set Planetka streaming texture quality and resolve the current view"
+    bl_description = "Set Planetka Quality Level. Press Resolve Planetka to apply it."
 
     texture_quality_mode: EnumProperty(
         name="Quality Level",
@@ -362,54 +290,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         if props is None:
             return {'CANCELLED'}
 
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-                logger=logger,
-            )
-
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
-        if not allows_texture_quality_for_context(prefs, target_mode):
-            return fail(
-                self,
-                texture_quality_not_allowed_message(prefs, target_mode),
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
         try:
             previous_mode = _normalize_startup_texture_quality_mode(
                 getattr(props, "texture_quality_mode", "PREVIEW")
             )
             if previous_mode != target_mode:
-                try:
-                    scene[_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY] = True
-                    props.texture_quality_mode = target_mode
-                finally:
-                    try:
-                        if _SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY in scene:
-                            del scene[_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY]
-                    except (RuntimeError, TypeError, ValueError, AttributeError):
-                        logger.debug("Planetka: failed clearing texture-quality resolve suppression flag", exc_info=True)
-            scope_mode = _auto_resolve_scope_mode(scene)
-            if scope_mode not in {"ACTIVE_VIEW", "CAMERA"}:
-                scope_mode = "CAMERA"
-            queued_result = bpy.ops.planetka.load_textures(
-                scope_mode=scope_mode,
-                skip_render_compatibility=True,
-                defer_download=True,
-                tiles_override_json="",
-                texture_quality_mode_override=target_mode,
-            )
-            if "FINISHED" not in queued_result:
-                return fail(
-                    self,
-                    "Texture quality could not be resolved. Please retry.",
-                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                    logger=logger,
-                )
+                props.texture_quality_mode = target_mode
             _tag_view3d_redraw()
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
@@ -424,108 +311,59 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
-    bl_idname = "planetka.download_status_popup"
-    bl_label = "Planetka Download"
-    bl_description = "Shows active Planetka download progress"
-    bl_options = {'INTERNAL'}
+class PLANETKA_OT_ResolvePlanetka(bpy.types.Operator):
+    bl_idname = "planetka.resolve_planetka"
+    bl_label = "Resolve Planetka"
+    bl_description = (
+        "Manually resolve Planetka for the current camera: calculate required Earth surface tiles, "
+        "download/apply the selected Quality Level, and optimize texture-based and VDB cloud LODs"
+    )
 
-    _timer = None
-
-    @classmethod
-    def poll(cls, context):
-        return context is not None and not bool(getattr(bpy.app, "background", False))
-
-    def _clear_running_flag(self, context):
-        wm = getattr(context, "window_manager", None) if context is not None else None
-        if wm is None:
-            return
-        try:
-            if _DOWNLOAD_POPUP_WM_FLAG in wm:
-                del wm[_DOWNLOAD_POPUP_WM_FLAG]
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            _log_recoverable_once("PKA-OPS-038", "Failed clearing download popup running flag")
-
-    def _finish(self, context):
-        wm = getattr(context, "window_manager", None) if context is not None else None
-        if wm is not None and self._timer is not None:
-            try:
-                wm.event_timer_remove(self._timer)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                _log_recoverable_once("PKA-OPS-039", "Failed removing download popup timer")
-        self._timer = None
-        self._clear_running_flag(context)
-
-    def invoke(self, context, _event):
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
+    def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Resolve Planetka"):
             return {'CANCELLED'}
-
-        try:
-            if bool(wm.get(_DOWNLOAD_POPUP_WM_FLAG, False)):
-                return {'CANCELLED'}
-            wm[_DOWNLOAD_POPUP_WM_FLAG] = True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            _log_recoverable_once("PKA-OPS-040", "Failed setting download popup running flag")
-
-        if not is_download_active():
-            self._clear_running_flag(context)
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
             return {'CANCELLED'}
-
-        try:
-            self._timer = wm.event_timer_add(0.2, window=getattr(context, "window", None))
-            wm.modal_handler_add(self)
-            return wm.invoke_popup(self, width=280)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            self._finish(context)
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
             return {'CANCELLED'}
-
-    def modal(self, context, event):
-        if event.type != 'TIMER':
-            return {'PASS_THROUGH'}
-        if not is_download_active():
-            self._finish(context)
-            return {'FINISHED'}
+        quality_mode = _normalize_startup_texture_quality_mode(
+            getattr(props, "texture_quality_mode", "PREVIEW")
+        )
         try:
-            for window in tuple(getattr(getattr(context, "window_manager", None), "windows", ())):
-                screen = getattr(window, "screen", None)
-                if screen is None:
-                    continue
-                for area in tuple(getattr(screen, "areas", ())):
-                    if str(getattr(area, "type", "")) in {"VIEW_3D", "PROPERTIES"}:
-                        area.tag_redraw()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
-        return {'RUNNING_MODAL'}
-
-    def cancel(self, context):
-        self._finish(context)
-
-    def draw(self, _context):
-        layout = self.layout
-        layout.use_property_split = False
-        layout.use_property_decorate = False
-        progress = get_download_progress()
-        downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
-        total_bytes = int(progress.get("total_bytes", 0) or 0)
-        downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
-        total_mb = float(total_bytes) / (1024.0 * 1024.0)
-
-        row = layout.row()
-        row.alert = True
-        row.label(text="Downloading Planetka data…", icon='IMPORT')
-        if total_bytes > 0:
-            fraction = max(0.0, min(1.0, float(downloaded_bytes) / float(max(1, total_bytes))))
-            if hasattr(layout, "progress"):
-                layout.progress(factor=fraction, type='BAR', text=f"{downloaded_mb:,.2f} / {total_mb:,.2f} MB")
-            else:
-                layout.label(text=f"{downloaded_mb:,.2f} / {total_mb:,.2f} MB")
-        else:
-            if hasattr(layout, "progress"):
-                layout.progress(factor=0.0, type='BAR', text=f"{downloaded_mb:,.2f} MB")
-            else:
-                layout.label(text=f"{downloaded_mb:,.2f} MB")
-        layout.label(text="Window closes automatically when download completes.", icon='INFO')
+            result = bpy.ops.planetka.load_textures(
+                scope_mode="CAMERA",
+                skip_render_compatibility=True,
+                defer_download=True,
+                tiles_override_json="",
+                texture_quality_mode_override=quality_mode,
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                "Resolve Planetka failed. Please retry.",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Resolve Planetka failed",
+            )
+        except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            return fail(
+                self,
+                f"Resolve Planetka failed: {exc}",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+            )
+        if "FINISHED" not in result:
+            return fail(
+                self,
+                "Resolve Planetka could not start. Please retry.",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+            )
+        _tag_view3d_redraw()
+        return {'FINISHED'}
 
 
 class PLANETKA_OT_RebuildEarth(bpy.types.Operator):

@@ -39,7 +39,7 @@ validation.py
 
 # Runtime subpackages
 planetka_ops/__init__.py
-planetka_ops/account_ops.py
+planetka_ops/update_ops.py
 planetka_ops/earth_lifecycle_helpers.py
 planetka_ops/earth_lifecycle_ops.py
 planetka_ops/import_export_ops.py
@@ -50,10 +50,9 @@ planetka_ops/scene_setup_ops.py
 planetka_ops/startup_profile_ops.py
 planetka_runtime/__init__.py
 planetka_runtime/asset_cleanup.py
-planetka_runtime/auto_resolve_context.py
-planetka_runtime/auto_resolve_pipeline.py
-planetka_runtime/auto_resolve_state.py
-planetka_runtime/cache_recovery.py
+planetka_runtime/resolve_context.py
+planetka_runtime/resolve.py
+planetka_runtime/resolve_state.py
 planetka_runtime/handler_runtime.py
 planetka_runtime/handler_runtime_context.py
 planetka_runtime/mesh_lifecycle.py

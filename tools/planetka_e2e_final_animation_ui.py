@@ -220,7 +220,6 @@ def _tick():
             create_earth_and_wait(state_module, scene)
 
             props.show_earth_preview = False
-            props.auto_resolve = True
             props.debug_logging = False
             props.texture_quality_mode = "PREVIEW"
             props.anim_render_persistent_data = bool(CASE.get("render_persistent_data", True))

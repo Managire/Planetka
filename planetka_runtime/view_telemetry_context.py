@@ -19,7 +19,6 @@ class ViewTelemetryDeps:
     write_realtime_view_diagnostics: Any
     camera_inside_earth_warning_key: str
     scene_key: Any
-    suspend_adaptive_viewport_during_navigation: Any
     is_render_job_active: Any
     is_animation_playing: Any
     get_earth_object: Any
@@ -27,8 +26,7 @@ class ViewTelemetryDeps:
     get_streaming_utils: Any
     get_coverage_map: Any
     normalize_texture_quality_mode: Any
-    request_auto_resolve: Any
-    get_auto_resolve_in_flight: Any
+    get_resolve_in_flight: Any
     sunlight_object_name: str
     monotonic: Any
     real_earth_radius_m: float
@@ -46,10 +44,7 @@ class ViewTelemetryState:
     viewport_opt_last_signature: dict = field(default_factory=dict)
     sunlight_last_signature: dict = field(default_factory=dict)
     sunlight_object_name_cache: dict = field(default_factory=dict)
-    viewport_scope_last: dict = field(default_factory=dict)
-    viewport_scope_last_resolve_time: dict = field(default_factory=dict)
     last_realtime_telemetry: dict = field(default_factory=dict)
-    timeline_last_signature: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)

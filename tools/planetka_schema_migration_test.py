@@ -129,7 +129,6 @@ def _scenario_bootstrap_migration(state, scene_schema):
             del scene[key]
 
         props = scene.planetka
-        props.auto_resolve = True
         props.debug_logging = True
 
         state.migrate_scene(scene)
@@ -137,7 +136,6 @@ def _scenario_bootstrap_migration(state, scene_schema):
             int(scene.get(key, 0)) == scene_schema.SCENE_SCHEMA_VERSION,
             "bootstrap migration did not reach latest schema version",
         )
-        _assert(bool(scene["planetka_auto_resolve"]) is True, "auto_resolve idprop mismatch")
         _assert(bool(scene["planetka_debug_logging"]) is True, "debug_logging idprop mismatch")
     finally:
         bpy.data.scenes.remove(scene)
@@ -149,12 +147,10 @@ def _scenario_idempotence(state, scene_schema):
     try:
         key = scene_schema.SCENE_SCHEMA_KEY
         scene[key] = scene_schema.SCENE_SCHEMA_VERSION
-        scene["planetka_auto_resolve"] = False
         scene["planetka_debug_logging"] = False
 
         snapshot = (
             int(scene.get(key, 0)),
-            bool(scene["planetka_auto_resolve"]),
             bool(scene["planetka_debug_logging"]),
         )
 
@@ -162,7 +158,6 @@ def _scenario_idempotence(state, scene_schema):
 
         current = (
             int(scene.get(key, 0)),
-            bool(scene["planetka_auto_resolve"]),
             bool(scene["planetka_debug_logging"]),
         )
         _assert(current == snapshot, "migration changed idprops when schema version was already current")

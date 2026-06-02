@@ -195,7 +195,7 @@ def add_earth_execute(operator, context, deps):
     kickoff_background_update_check = deps["kickoff_background_update_check"]
     _validate_create_earth_texture_source = deps["_validate_create_earth_texture_source"]
     is_remote_source_configured = deps["is_remote_source_configured"]
-    _require_authenticated_account = deps["_require_authenticated_account"]
+    _require_planetka_cloud_session = deps["_require_planetka_cloud_session"]
     invalidate_texture_source_health_cache = deps["invalidate_texture_source_health_cache"]
     ensure_planetka_assets = deps["ensure_planetka_assets"]
     ensure_atmosphere_for_mode = deps.get("ensure_atmosphere_for_mode")
@@ -261,7 +261,7 @@ def add_earth_execute(operator, context, deps):
                 logger=logger,
             )
         )
-    if is_remote_source_configured(normalized) and not _require_authenticated_account(operator, prefs):
+    if is_remote_source_configured(normalized) and not _require_planetka_cloud_session(operator, prefs):
         return _return_with_selection({'CANCELLED'})
     prefs.texture_base_path = normalized
     invalidate_texture_source_health_cache(normalized)
@@ -294,10 +294,9 @@ def add_earth_execute(operator, context, deps):
 
     try:
         props.texture_quality_mode = "PREVIEW"
-        props.auto_resolve_mode = "CAMERA_VIEW"
-        props.auto_resolve = True
+        _sync_idprops_from_props(scene, ("texture_quality_mode",))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed setting default texture quality or auto-resolve mode", exc_info=True)
+        logger.debug("Planetka: failed setting default texture quality", exc_info=True)
     warm_base_sphere_mesh_cache()
 
     new_obj = None
@@ -357,11 +356,9 @@ def add_earth_execute(operator, context, deps):
             logger.debug("Planetka: failed positioning Planetka Camera on Create Earth", exc_info=True)
     try:
         props.texture_quality_mode = "PREVIEW"
-        props.auto_resolve_mode = "CAMERA_VIEW"
-        props.auto_resolve = True
-        _sync_idprops_from_props(scene, ("texture_quality_mode", "auto_resolve_mode", "auto_resolve"))
+        _sync_idprops_from_props(scene, ("texture_quality_mode",))
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed enforcing Create Earth default texture quality or auto-resolve mode", exc_info=True)
+        logger.debug("Planetka: failed enforcing Create Earth default texture quality", exc_info=True)
     if bool(getattr(props, "auto_adjust_clipping_values", True)):
         try:
             camera_before_clip = getattr(scene, "camera", None)
@@ -388,10 +385,6 @@ def add_earth_execute(operator, context, deps):
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         pass
 
-    resolve_result = bpy.ops.planetka.load_textures(
-        skip_render_compatibility=True,
-        defer_download=True,
-    )
     final_surface = get_earth_object() or new_obj
     if final_surface and bool(getattr(props, "show_earth_preview", False)):
         try:
@@ -403,23 +396,34 @@ def add_earth_execute(operator, context, deps):
             logger.debug("Planetka: failed creating preview object", exc_info=True)
             operator.report({'WARNING'}, "Planetka preview object refresh failed.")
 
-    if "FINISHED" not in resolve_result:
-        operator.report({'WARNING'}, "Planetka Earth created, but initial Resolve failed.")
-        return _return_with_selection({'CANCELLED'})
-
     try:
         _apply_startup_setup_for_create_earth(scene, props)
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: post-resolve startup setup re-apply failed", exc_info=True)
     try:
         props.texture_quality_mode = "PREVIEW"
-        props.auto_resolve_mode = "CAMERA_VIEW"
-        props.auto_resolve = True
-        _sync_idprops_from_props(scene, ("texture_quality_mode", "auto_resolve_mode", "auto_resolve"))
+        _sync_idprops_from_props(scene, ("texture_quality_mode",))
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed enforcing post-resolve Create Earth texture quality or auto-resolve mode", exc_info=True)
+        logger.debug("Planetka: failed enforcing post-resolve Create Earth texture quality", exc_info=True)
 
     _earth_graph_rebind(scene=scene, earth_surface=get_earth_object() or new_obj)
+    try:
+        bpy.ops.planetka.load_textures(
+            scope_mode="CAMERA",
+            skip_render_compatibility=True,
+            defer_download=True,
+            tiles_override_json="",
+            texture_quality_mode_override="PREVIEW",
+        )
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS as exc:
+        return _return_with_selection(fail(
+            operator,
+            f"Create Earth failed while starting Planetka Resolve: {exc}",
+            code=ErrorCode.RESOLVE_REFRESH_FAILED,
+            logger=logger,
+            exc=exc,
+            log_message="Planetka add_earth initial resolve failed",
+        ))
     _hide_shot_anchor_in_viewport()
     try:
         if _DEFAULT_SCENE_REMOVED_KEY in scene:

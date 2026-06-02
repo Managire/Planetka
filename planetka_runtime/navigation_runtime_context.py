@@ -26,10 +26,8 @@ class NavigationRuntimeDeps:
     sunlight_object_name: str
     sync_idprops_from_props: Any
     sync_navigation_idprops_from_props: Any
-    suspend_adaptive_viewport_during_navigation: Any
     suspend_navigation_shot_updates: Any
     resume_navigation_shot_updates: Any
-    request_auto_resolve: Any
 
 
 @dataclass(slots=True)
@@ -37,10 +35,6 @@ class NavigationRuntimeState:
     nav_camera_control_last_signature: dict = field(default_factory=dict)
     nav_camera_control_syncing: bool = False
     nav_camera_control_sync_suspend_count: int = 0
-    navigation_adaptive_suspended: Any = None
-    navigation_adaptive_last_touch: float = 0.0
-    navigation_adaptive_timer_running: bool = False
-    navigation_adaptive_idle_sec: float = 0.5
     navigation_shot_update_pending: bool = False
     navigation_shot_update_reentrant: bool = False
     navigation_shot_suspend_count: int = 0

@@ -182,9 +182,8 @@ def _set_quality_and_expect(mode, expected_ok, report_entry):
             raise
         denied_markers = (
             "PKA-RES-003",
-            "Only Preview and Full Quality are available",
-            "not available for this account",
-            "not available for this account tier",
+            "Planetka Cloud",
+            "request limit reached",
         )
         _assert(
             any(marker in error_text for marker in denied_markers),
@@ -243,7 +242,7 @@ def _expected_shader_s2_tiles_for_mode(scene, mode):
 
 
 def _wait_for_shader_quality(state_module, scene, mode, timeout_sec=120.0):
-    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
+    pump_fn = getattr(state_module, "_resolve_pump_timer", None)
     started = time.monotonic()
     last_tiles = []
     expected_tiles = []
@@ -341,7 +340,6 @@ def main():
 
         props = getattr(scene, "planetka", None)
         _assert(props is not None, "scene.planetka is unavailable.")
-        props.auto_resolve = True
         props.show_earth_preview = False
 
         create_earth_and_wait(state, scene)
@@ -418,15 +416,11 @@ def main():
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
         # Streaming quality flow guardrails. This gate is hermetic/offline, so
-        # it validates the full texture path with a synthetic Commercial licence.
+        # it validates the full texture path with a synthetic cloud session.
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before quality flow: {full_globe_result}")
         auth.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
         prefs.auth_access_token = "planetka_core_user_flow_gate_token"
-        prefs.auth_plan_code = "commercial"
-        prefs.auth_plan_name = "Commercial"
-        prefs.auth_stored_plan_code = "commercial"
-        prefs.auth_stored_plan_name = "Commercial"
         auth.is_authenticated = lambda prefs=None: True
         operators_module.is_authenticated = lambda prefs=None: True
         operators_module.allows_texture_quality_for_context = lambda prefs=None, requested_mode=None: True
@@ -437,7 +431,7 @@ def main():
         )
         for mode in ("PREVIEW", "BALANCED", "FULL"):
             entry = {
-                "account": "synthetic_pro_local_fixture",
+                "session": "synthetic_local_fixture",
                 "mode": mode,
                 "expected_ok": True,
             }

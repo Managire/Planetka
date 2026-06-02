@@ -796,12 +796,10 @@ def main():
             prefs.auth_device_id = forced_device_id
         auth_module.ensure_authenticated_session(prefs)
         _assert(auth_module.is_authenticated(prefs), "Planetka session is not active.")
-        auth_module.sync_account_profile(prefs)
-        user_email = str(auth_module.get_connected_email(prefs) or "").strip().lower()
-        plan_code = str(getattr(prefs, "auth_plan_code", "") or "").strip().lower()
+        device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
         if expected_email:
-            _assert(user_email == expected_email, f"Logged-in account mismatch. expected={expected_email} got={user_email}")
-        _log(f"Planetka session: email={user_email} licence={plan_code}")
+            _log("Ignoring expected email; Planetka uses anonymous cloud sessions.")
+        _log(f"Planetka session active: device_id={device_id or 'unknown'}")
 
         scene = bpy.context.scene
         _ensure_active_camera(scene)
@@ -810,7 +808,6 @@ def main():
 
         prefs.texture_base_path = "planetka-remote"
         props = scene.planetka
-        props.auto_resolve = False
         props.show_earth_preview = False
 
         create_result = bpy.ops.planetka.add_earth()
@@ -898,9 +895,8 @@ def main():
                 "avg_downloaded_mb_per_case": round(total_downloaded_mb / max(1, total_cases), 6),
                 "avg_resolve_wall_ms_per_case": round(total_resolve_ms / max(1, total_cases), 6),
             },
-            "account": {
-                "email": user_email,
-                "plan_code": plan_code,
+            "cloud_session": {
+                "device_id": device_id,
             },
             "geonames_db_path": db_path,
             "failures": failures,

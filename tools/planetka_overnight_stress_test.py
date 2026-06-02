@@ -1,8 +1,8 @@
 """
-Planetka overnight stress test runner (personal-licence focused).
+Planetka overnight stress test runner.
 
 Flow:
-1. Enable addon and verify existing logged-in account session.
+1. Enable addon and ensure an anonymous Planetka Cloud session.
 2. Create Earth, set renderer (Cycles or EEVEE), set HD render output.
 3. Run a long case set:
    - 500 random places from GeoNames database
@@ -752,12 +752,11 @@ def main():
 
         prefs = extension_prefs.get_prefs()
         _assert(prefs is not None, "Planetka preferences unavailable.")
-        _assert(auth_module.is_authenticated(prefs), "Account not logged in. Log in before running overnight stress test.")
-        auth_module.sync_account_profile(prefs)
+        auth_module.ensure_authenticated_session(prefs)
+        _assert(auth_module.is_authenticated(prefs), "Planetka Cloud session is not active.")
 
-        user_email = str(auth_module.get_connected_email(prefs) or "").strip().lower()
-        plan_code = str(getattr(prefs, "auth_plan_code", "") or "").strip().lower()
-        _log(f"Authenticated account: email={user_email or 'unknown'} plan={plan_code or 'unknown'}")
+        device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
+        _log(f"Planetka Cloud session active: device_id={device_id or 'unknown'}")
 
         scene = bpy.context.scene
         _ensure_active_camera(scene)
@@ -766,7 +765,6 @@ def main():
 
         prefs.texture_base_path = "planetka-remote"
         props = scene.planetka
-        props.auto_resolve = False
         props.texture_quality_mode = "PREVIEW"
         props.show_earth_preview = False
 
@@ -956,8 +954,7 @@ def main():
         report = {
             "ok": len(failures) == 0,
             "seed": int(run_seed),
-            "account_email": user_email,
-            "licence_code": plan_code,
+            "cloud_session_device_id": device_id,
             "render_dir": render_dir,
             "report_path": report_path,
             "geonames_index_db_path": db_path,

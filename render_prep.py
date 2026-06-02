@@ -20,12 +20,8 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import (
-    allows_texture_quality_for_context,
     ensure_authenticated_session,
     is_authenticated,
-    is_commercial_licence,
-    commercial_licence_required_message,
-    texture_quality_not_allowed_message,
 )
 from .asset_builder import (
     _ensure_surface_elevation_radius_driver,
@@ -47,7 +43,6 @@ from .streaming_utils import (
     prepare_resolve_streaming_for_visible_tiles,
 )
 from .state import (
-    _force_restore_navigation_adaptive_state,
     _clear_camera_inside_earth_warning,
     _estimate_download_bytes_for_visible_tiles,
     _is_animation_playing,
@@ -60,7 +55,7 @@ from .state import (
     ensure_preview_object,
     ensure_planetka_temp_collection,
     logger,
-    mark_auto_resolve_clean_after_resolve,
+    mark_resolve_clean_after_resolve,
     queue_resolve_download,
     remove_object_and_unused_mesh,
     replace_tiles,
@@ -92,8 +87,6 @@ LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seco
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
 _PREFETCH_ACCESS_FAILURE_TOKENS = (
     "request limit reached",
-    "not_allowed_for_tier",
-    "quality_mode_not_allowed",
 )
 
 
@@ -458,15 +451,6 @@ def _clear_resolve_failure_notice(scene):
         logger.debug("Planetka: failed clearing resolve failure notice on scene", exc_info=True)
 
 
-def _restore_navigation_adaptive_state_safe(log_label):
-    try:
-        _force_restore_navigation_adaptive_state()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: %s", str(log_label or "failed restoring adaptive viewport state"), exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: %s", str(log_label or "failed restoring adaptive viewport state"), exc_info=True)
-
-
 def _store_last_resolve_error(scene, message, log_label):
     if scene is None:
         return
@@ -721,7 +705,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         items=(
             ("AUTO", "Auto", ""),
             ("CAMERA", "Camera", ""),
-            ("ACTIVE_VIEW", "Active View", ""),
         ),
         default="AUTO",
         options={'HIDDEN', 'SKIP_SAVE'},
@@ -770,7 +753,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 remove_object_and_unused_mesh(cleanup_obj)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed removing temporary Earth object during resolve abort", exc_info=True)
-        _restore_navigation_adaptive_state_safe("failed restoring adaptive viewport after resolve abort")
         if exc is not None and log_message is not None:
             return fail(
                 self,
@@ -1011,17 +993,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 )
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
-        if not allows_texture_quality_for_context(get_prefs(), texture_quality_mode):
-            return ResolveTileSelectionResult(
-                response=fail(
-                    self,
-                    texture_quality_not_allowed_message(get_prefs(), texture_quality_mode),
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                ),
-                texture_quality_mode=texture_quality_mode,
-                ui_reports=ui_reports,
-            )
         try:
             nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -1128,23 +1099,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
             ui_reports.append(self._ui_report("WARNING", panorama_message))
             return ResolveEarlyResult(response={'CANCELLED'}, ui_reports=ui_reports)
-
-        if panorama_mode and not is_commercial_licence(get_prefs()):
-            message = commercial_licence_required_message()
-            _store_last_resolve_error(
-                scene,
-                with_error_code(ErrorCode.RESOLVE_PRECHECK_FAILED, message),
-                "failed storing panorama account resolve error",
-            )
-            return ResolveEarlyResult(
-                response=fail(
-                    self,
-                    message,
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                ),
-                ui_reports=ui_reports,
-            )
 
         if bool(getattr(self, "defer_download", False)):
             if _is_render_job_active():
@@ -1649,10 +1603,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_post_preview_ms = 0.0
         phase_unaccounted_ms = 0.0
 
-        # Resolve should never leave adaptive subdivision visually suspended from
-        # prior navigation state, even when the current resolve exits early.
-        _restore_navigation_adaptive_state_safe("failed pre-resolve adaptive viewport restore")
-
         prepare_ctx = self._phase_prepare_context(context)
         self._flush_ui_reports(getattr(prepare_ctx, "ui_reports", ()))
         if getattr(prepare_ctx, "response", None) is not None:
@@ -1930,10 +1880,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             logger.debug("Planetka: failed storing last resolved texture quality/success state", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed storing last resolved texture quality/success state", exc_info=True)
-        mark_auto_resolve_clean_after_resolve(scene)
+        mark_resolve_clean_after_resolve(scene)
 
         self._flush_ui_reports(ui_reports)
-        _restore_navigation_adaptive_state_safe("failed post-resolve adaptive viewport restore")
         return {'FINISHED'}
 
 

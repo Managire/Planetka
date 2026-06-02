@@ -130,163 +130,6 @@ def request_next_navigation_apply_behavior(
             runtime_logger.debug("Planetka: failed storing one-shot nav sync-active-view override", exc_info=True)
 
 
-def resolve_navigation_adaptive_modifier(*, get_earth_object):
-    earth = get_earth_object()
-    if earth is None:
-        return None, None
-    modifiers = getattr(earth, "modifiers", None)
-    if modifiers is None:
-        return None, None
-    subsurf = modifiers.get("Adaptive Subdivision")
-    if subsurf is not None and str(getattr(subsurf, "type", "")) == "SUBSURF":
-        return earth, subsurf
-    for modifier in modifiers:
-        if str(getattr(modifier, "type", "")) != "SUBSURF":
-            continue
-        if "Adaptive" in str(getattr(modifier, "name", "")):
-            return earth, modifier
-        if bool(getattr(modifier, "use_adaptive_subdivision", False)):
-            return earth, modifier
-    return None, None
-
-
-def navigation_adaptive_restore_timer(runtime=None, *, bpy=None, recoverable_exceptions=None, logger=None, time_module=time):
-    ctx = _coerce_ctx(runtime)
-    deps = ctx.deps
-    state = ctx.state
-    bpy_module = bpy if bpy is not None else deps.bpy
-    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
-    runtime_logger = logger if logger is not None else deps.logger
-    if (time_module.monotonic() - float(state.navigation_adaptive_last_touch or 0.0)) < float(state.navigation_adaptive_idle_sec or 0.5):
-        return 0.05
-
-    suspended = state.navigation_adaptive_suspended
-    state.navigation_adaptive_suspended = None
-    state.navigation_adaptive_timer_running = False
-    if not suspended:
-        return None
-
-    obj_name, modifier_name, was_viewport_enabled = suspended
-    try:
-        obj = bpy_module.data.objects.get(str(obj_name))
-        if obj is None:
-            return None
-        modifier = obj.modifiers.get(str(modifier_name))
-        if modifier is None or str(getattr(modifier, "type", "")) != "SUBSURF":
-            return None
-        modifier.show_viewport = bool(was_viewport_enabled)
-    except recoverable:
-        runtime_logger.debug("Planetka: failed restoring adaptive viewport state", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        runtime_logger.debug("Planetka: failed restoring adaptive viewport state", exc_info=True)
-    return None
-
-
-def force_restore_navigation_adaptive_state(runtime=None, *, bpy=None, recoverable_exceptions=None, logger=None):
-    ctx = _coerce_ctx(runtime)
-    deps = ctx.deps
-    state = ctx.state
-    bpy_module = bpy if bpy is not None else deps.bpy
-    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
-    runtime_logger = logger if logger is not None else deps.logger
-    suspended = state.navigation_adaptive_suspended
-    state.navigation_adaptive_suspended = None
-    state.navigation_adaptive_timer_running = False
-    if not suspended:
-        return
-
-    obj_name, modifier_name, was_viewport_enabled = suspended
-    try:
-        obj = bpy_module.data.objects.get(str(obj_name))
-        if obj is None:
-            return
-        modifier = obj.modifiers.get(str(modifier_name))
-        if modifier is None or str(getattr(modifier, "type", "")) != "SUBSURF":
-            return
-        modifier.show_viewport = bool(was_viewport_enabled)
-    except recoverable:
-        runtime_logger.debug("Planetka: failed forced restore of adaptive viewport state", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        runtime_logger.debug("Planetka: failed forced restore of adaptive viewport state", exc_info=True)
-
-
-def suspend_adaptive_viewport_during_navigation(
-    runtime,
-    scene,
-    *,
-    bpy=None,
-    recoverable_exceptions=None,
-    logger=None,
-    resolve_navigation_adaptive_modifier=None,
-    force_restore_navigation_adaptive_state_fn=None,
-    navigation_adaptive_restore_timer_fn=None,
-    time_module=time,
-):
-    ctx = _coerce_ctx(runtime)
-    deps = ctx.deps
-    state = ctx.state
-    bpy_module = bpy if bpy is not None else deps.bpy
-    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
-    runtime_logger = logger if logger is not None else deps.logger
-    resolve_modifier = resolve_navigation_adaptive_modifier or globals()["resolve_navigation_adaptive_modifier"]
-    if force_restore_navigation_adaptive_state_fn is not None:
-        restore_state = force_restore_navigation_adaptive_state_fn
-    else:
-        restore_state = lambda: force_restore_navigation_adaptive_state(ctx)
-    if navigation_adaptive_restore_timer_fn is not None:
-        restore_timer = navigation_adaptive_restore_timer_fn
-    else:
-        restore_timer = lambda: navigation_adaptive_restore_timer(ctx)
-    render = getattr(scene, "render", None) if scene else None
-    if str(getattr(render, "engine", "")) != "CYCLES":
-        restore_state()
-        return
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is not None and not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-        restore_state()
-        return
-    if props is not None:
-        try:
-            restore_delay = float(getattr(props, "viewport_opt_subdivision_restore_delay_sec", 0.5))
-        except (TypeError, ValueError):
-            restore_delay = 0.5
-        state.navigation_adaptive_idle_sec = max(0.1, min(2.0, restore_delay))
-
-    try:
-        obj, modifier = resolve_modifier(get_earth_object=deps.get_earth_object)
-    except TypeError:
-        # Compatibility: state facade passes a zero-arg wrapper.
-        obj, modifier = resolve_modifier()
-    if obj is None or modifier is None:
-        return
-
-    if state.navigation_adaptive_suspended is None:
-        state.navigation_adaptive_suspended = (
-            str(getattr(obj, "name", "")),
-            str(getattr(modifier, "name", "")),
-            bool(getattr(modifier, "show_viewport", True)),
-        )
-
-    try:
-        if bool(getattr(modifier, "show_viewport", False)):
-            modifier.show_viewport = False
-    except recoverable:
-        runtime_logger.debug("Planetka: failed suspending adaptive viewport", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        runtime_logger.debug("Planetka: failed suspending adaptive viewport", exc_info=True)
-
-    state.navigation_adaptive_last_touch = time_module.monotonic()
-    if state.navigation_adaptive_timer_running:
-        return
-    state.navigation_adaptive_timer_running = True
-    try:
-        bpy_module.app.timers.register(restore_timer, first_interval=0.05)
-    except recoverable:
-        state.navigation_adaptive_timer_running = False
-    except (RuntimeError, TypeError, ValueError):
-        state.navigation_adaptive_timer_running = False
-
-
 def suspend_navigation_shot_updates(runtime=None):
     ctx = _coerce_ctx(runtime)
     ctx.state.navigation_shot_suspend_count = int(ctx.state.navigation_shot_suspend_count) + 1
@@ -494,21 +337,17 @@ def update_sunlight_controls(
     context,
     *,
     sync_idprops_from_props=None,
-    suspend_adaptive_viewport_during_navigation=None,
-    request_auto_resolve=None,
     apply_sunlight_from_props_fn=None,
     apply_sunlight_strength_from_props_fn=None,
 ):
     ctx = _coerce_ctx(runtime)
     deps = ctx.deps
     sync_idprops = sync_idprops_from_props or deps.sync_idprops_from_props
-    request_resolve = request_auto_resolve or deps.request_auto_resolve
     apply_sunlight = apply_sunlight_from_props_fn or apply_sunlight_from_props
     apply_strength = apply_sunlight_strength_from_props_fn or apply_sunlight_strength_from_props
     scene = getattr(context, "scene", None) if context else None
     if scene:
         sync_idprops(scene, ("sunlight_longitude_deg", "sunlight_seasonal_tilt_deg"))
-        request_resolve(scene, immediate=False)
     apply_sunlight(ctx, scene)
     apply_strength(ctx, scene)
 
@@ -519,7 +358,6 @@ def update_sunlight_strength(
     context,
     *,
     sync_idprops_from_props=None,
-    suspend_adaptive_viewport_during_navigation=None,
     apply_sunlight_strength_from_props_fn=None,
 ):
     ctx = _coerce_ctx(runtime)
@@ -538,8 +376,6 @@ def update_navigation_shot(
     context,
     *,
     sync_navigation_idprops_from_props=None,
-    suspend_adaptive_viewport_during_navigation=None,
-    request_auto_resolve=None,
     apply_navigation_shot_now=None,
     bpy=None,
     recoverable_exceptions=None,
@@ -548,11 +384,6 @@ def update_navigation_shot(
     deps = ctx.deps
     state = ctx.state
     sync_navigation_idprops = sync_navigation_idprops_from_props or deps.sync_navigation_idprops_from_props
-    suspend_viewport = (
-        suspend_adaptive_viewport_during_navigation
-        or deps.suspend_adaptive_viewport_during_navigation
-    )
-    request_resolve = request_auto_resolve or deps.request_auto_resolve
     apply_shot = apply_navigation_shot_now or (lambda: apply_navigation_shot_now_fn(ctx))
     bpy_module = bpy if bpy is not None else deps.bpy
     recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
@@ -565,8 +396,6 @@ def update_navigation_shot(
     if scene:
         state.navigation_user_edit_last_touch = time.monotonic()
         sync_navigation_idprops(scene)
-        suspend_viewport(scene)
-        request_resolve(scene, immediate=False)
     if apply_shot():
         state.navigation_shot_update_pending = False
         return
@@ -587,8 +416,6 @@ def update_navigation_focal_length(
     context,
     *,
     sync_navigation_idprops_from_props=None,
-    suspend_adaptive_viewport_during_navigation=None,
-    request_auto_resolve=None,
     logger=None,
     recoverable_exceptions=None,
 ):
@@ -596,11 +423,6 @@ def update_navigation_focal_length(
     deps = ctx.deps
     state = ctx.state
     sync_navigation_idprops = sync_navigation_idprops_from_props or deps.sync_navigation_idprops_from_props
-    suspend_viewport = (
-        suspend_adaptive_viewport_during_navigation
-        or deps.suspend_adaptive_viewport_during_navigation
-    )
-    request_resolve = request_auto_resolve or deps.request_auto_resolve
     runtime_logger = logger if logger is not None else deps.logger
     recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
     if int(state.navigation_shot_suspend_count) > 0:
@@ -614,7 +436,6 @@ def update_navigation_focal_length(
 
     state.navigation_user_edit_last_touch = time.monotonic()
     sync_navigation_idprops(scene)
-    suspend_viewport(scene)
 
     camera = getattr(scene, "camera", None)
     camera_data = getattr(camera, "data", None) if camera is not None else None
@@ -626,8 +447,6 @@ def update_navigation_focal_length(
             runtime_logger.debug("Planetka: failed applying camera focal length", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
             runtime_logger.debug("Planetka: failed applying camera focal length", exc_info=True)
-
-    request_resolve(scene, immediate=False)
 
 
 def reset_navigation_shot_runtime_state(runtime=None):

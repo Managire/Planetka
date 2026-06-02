@@ -95,10 +95,11 @@ def _make_texture_source_tree(base_dir):
     (base / "PO").mkdir(parents=True, exist_ok=True)
 
 
-def _mark_planetka_images_missing(missing_root):
+def _mark_planetka_images_missing(missing_root, images=None):
     target_root = Path(missing_root)
     forced = 0
-    for image in list(getattr(bpy.data, "images", ())):
+    image_iter = list(images) if images is not None else list(getattr(bpy.data, "images", ()))
+    for image in image_iter:
         if not _is_planetka_tile_image(image):
             continue
         if getattr(image, "packed_file", None) is not None:
@@ -125,9 +126,10 @@ def _mark_planetka_images_missing(missing_root):
     return int(forced)
 
 
-def _count_missing_planetka_tile_images():
+def _count_missing_planetka_tile_images(images=None):
     missing = 0
-    for image in list(getattr(bpy.data, "images", ())):
+    image_iter = list(images) if images is not None else list(getattr(bpy.data, "images", ()))
+    for image in image_iter:
         if not _is_planetka_tile_image(image):
             continue
         if getattr(image, "packed_file", None) is not None:
@@ -142,6 +144,52 @@ def _count_missing_planetka_tile_images():
         if abs_path and not os.path.isfile(abs_path):
             missing += 1
     return int(missing)
+
+
+def _collect_image_nodes(node_tree, out, visited):
+    if node_tree is None:
+        return
+    tree_id = id(node_tree)
+    if tree_id in visited:
+        return
+    visited.add(tree_id)
+    nodes = getattr(node_tree, "nodes", None)
+    if nodes is None:
+        return
+    for node in nodes:
+        if str(getattr(node, "bl_idname", "") or "") == "ShaderNodeTexImage":
+            image = getattr(node, "image", None)
+            if _is_planetka_tile_image(image):
+                out.append(image)
+            continue
+        if str(getattr(node, "type", "") or "") == "GROUP":
+            _collect_image_nodes(getattr(node, "node_tree", None), out, visited)
+
+
+def _active_planetka_tile_images():
+    earth = bpy.data.objects.get("Planetka Earth Surface")
+    materials = []
+    if earth is not None:
+        for slot in getattr(earth, "material_slots", ()) or ():
+            mat = getattr(slot, "material", None)
+            if mat is not None:
+                materials.append(mat)
+    if not materials:
+        mat = bpy.data.materials.get("Planetka Earth Material")
+        if mat is not None:
+            materials.append(mat)
+    images = []
+    seen = set()
+    for material in materials:
+        _collect_image_nodes(getattr(material, "node_tree", None), images, set())
+    active = []
+    for image in images:
+        ident = id(image)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        active.append(image)
+    return tuple(active)
 
 
 def _operator_ok(result):
@@ -190,7 +238,6 @@ def main():
         configure_eevee(scene)
         props = getattr(scene, "planetka", None)
         _assert(props is not None, "scene.planetka unavailable.")
-        props.auto_resolve = True
         props.show_earth_preview = False
 
         create_earth_and_wait(state, scene)
@@ -208,10 +255,15 @@ def main():
         animation_result = bpy.ops.render.render(animation=True, use_viewport=False)
         _assert(_operator_ok(animation_result), f"Animation render failed: {animation_result}")
 
-        forced_missing = _mark_planetka_images_missing(Path(work_root) / "forced_missing" / "planetka_cache")
+        active_before_save = _active_planetka_tile_images()
+        _assert(active_before_save, "No active Planetka tile images were found before save.")
+        forced_missing = _mark_planetka_images_missing(
+            Path(work_root) / "forced_missing" / "planetka_cache",
+            images=active_before_save,
+        )
         _assert(forced_missing > 0, "No Planetka tile images were forced to missing paths before save.")
         report["forced_missing_before_save"] = int(forced_missing)
-        report["missing_before_save"] = int(_count_missing_planetka_tile_images())
+        report["missing_before_save"] = int(_count_missing_planetka_tile_images(active_before_save))
         _assert(report["missing_before_save"] > 0, "Forced missing cache paths were not detected before reopen.")
 
         save_result = bpy.ops.wm.save_as_mainfile(filepath=str(blend_path), copy=False)
@@ -222,6 +274,7 @@ def main():
         _assert(_operator_ok(open_result), f"Open mainfile failed: {open_result}")
 
         base_module = enable_module(required_planetka_attr="add_earth")
+        extension_prefs = import_submodule(base_module, "extension_prefs")
         state = import_submodule(base_module, "state")
         scene = bpy.context.scene
         post_status = dict(drain_queued_resolve(state, scene, timeout_sec=120.0, sleep_sec=0.05) or {})
@@ -234,10 +287,12 @@ def main():
         report["last_manual_tile_count"] = int(scene.get("planetka_last_manual_resolve_tile_count", 0) or 0)
         _assert(report["last_manual_tile_count"] > 0, "Queued recovery resolve did not report loaded tile count.")
 
-        report["missing_after_open"] = int(_count_missing_planetka_tile_images())
+        active_after_open = _active_planetka_tile_images()
+        report["missing_after_open"] = int(_count_missing_planetka_tile_images(active_after_open))
+        report["global_missing_after_open"] = int(_count_missing_planetka_tile_images())
         _assert(
             report["missing_after_open"] == 0,
-            f"Missing Planetka cache images remain after reopen recovery: {report['missing_after_open']}",
+            f"Active Planetka cache images remain missing after reopen recovery: {report['missing_after_open']}",
         )
 
         configure_png_output(

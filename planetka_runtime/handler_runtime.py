@@ -37,7 +37,7 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
     deps = ctx.deps
     state = ctx.state
 
-    deps.clear_auto_resolve_in_flight()
+    deps.clear_resolve_in_flight()
     state.render_job_active = False
     state.render_job_last_ended_epoch = int(state.render_job_epoch)
     ended_at = float(time.monotonic())
@@ -48,24 +48,6 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
 
     deps.reset_navigation_shot_runtime_state()
     deps.reset_navigation_camera_control_runtime_state()
-    deps.force_restore_navigation_adaptive_state()
-
-    target_scene = scene
-    if target_scene is None:
-        target_scene = _safe_context_scene(deps)
-    if target_scene is not None:
-        props = getattr(target_scene, "planetka", None)
-        try:
-            auto_resolve_enabled = bool(getattr(props, "auto_resolve", False)) if props is not None else False
-        except deps.recoverable_exceptions:
-            auto_resolve_enabled = False
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            auto_resolve_enabled = False
-        if auto_resolve_enabled and not bool(cancelled):
-            # Render completion can still be in a transient drawing/read-only state.
-            # Avoid immediate post-render resolve requests to reduce write-state races.
-            deps.mark_auto_resolve_dirty(target_scene, immediate=False)
-            deps.request_auto_resolve(target_scene, immediate=False, mark_dirty=False)
 
 
 def mark_render_job_started(scene=None, ctx=None):
@@ -73,7 +55,6 @@ def mark_render_job_started(scene=None, ctx=None):
         ctx = scene
         scene = None
     ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
     state = ctx.state
 
     if state.render_job_active:
@@ -82,15 +63,9 @@ def mark_render_job_started(scene=None, ctx=None):
         # self-heal churn and epoch flips during segment rendering.
         return int(state.render_job_epoch)
     started_at = float(time.monotonic())
-    target_scene = scene
-    if target_scene is None:
-        target_scene = _safe_context_scene(deps)
-    try:
-        deps.self_heal_missing_cache_images_for_render(target_scene)
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: render self-heal preflight failed", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        deps.logger.debug("Planetka: render self-heal preflight failed", exc_info=True)
+    _ = scene
+    # Render start must not resolve, download, or mutate texture assignments.
+    # Rendering should use the scene exactly as currently prepared.
     state.render_job_epoch = int(state.render_job_epoch) + 1
     state.render_job_active = True
     state.render_job_last_ended_at = 0.0
@@ -337,74 +312,11 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
     if not (deps.is_render_job_active() or deps.is_animation_playing() or keyed_runtime_active or preset_active):
         deps.sync_navigation_controls_from_scene_camera(scene)
 
-    if not deps.can_auto_resolve_run(scene):
-        return
-
-    deps.ensure_auto_resolve_service_running()
-    deps.update_realtime_telemetry(scene)
-
-    if deps.is_resolve_pipeline_busy():
-        return
-
-    trigger_signature = deps.make_depsgraph_trigger_signature(scene)
-    deps.handle_timeline_motion_optimization(scene)
-    deps.handle_viewport_motion_optimization(
-        scene,
-        deps.camera_signature(scene),
-    )
-    deps.handle_sunlight_motion_optimization(scene)
-    deps.mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature)
-
-
-def frame_change_post(scene, _depsgraph=None, ctx=None):
-    ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
-    state = ctx.state
-    target_scene = scene
-    if target_scene is None:
-        target_scene = _safe_context_scene(deps)
-    if target_scene is None:
-        return
-
-    signature = deps.keyed_runtime_signature(target_scene)
-    scene_id = deps.scene_key(target_scene)
-    last_map = state.frame_keyed_runtime_last_signature
-    if signature is None:
-        last_map.pop(scene_id, None)
-        return
-
-    previous = last_map.get(scene_id)
-    if previous == signature:
-        return
-    last_map[scene_id] = signature
-
-    nav_keyed = deps.scene_has_keyed_runtime_path(target_scene, deps.keyed_runtime_nav_prop_paths)
-    focal_keyed = deps.scene_has_keyed_runtime_path(target_scene, deps.keyed_runtime_focal_prop_paths)
-    sun_keyed = deps.scene_has_keyed_runtime_path(target_scene, deps.keyed_runtime_sun_prop_paths)
-    if not (nav_keyed or focal_keyed or sun_keyed):
-        return
-    return
-
 
 def load_post(_dummy, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
-    state = ctx.state
-
-    state.frame_keyed_runtime_last_signature.clear()
     sync_logging_from_scenes(ctx)
-    missing_cache_images, recovered_cache_images = deps.recover_missing_cache_image_paths_to_fallback()
-    if int(missing_cache_images) > 0:
-        deps.logger.warning(
-            "Planetka: detected %d missing cached tile image(s) on file load; redirected %d to fallback placeholders.",
-            int(missing_cache_images),
-            int(recovered_cache_images),
-        )
-        scene = _safe_context_scene(deps)
-        if scene is None:
-            scene = next(iter(deps.iter_scenes()), None)
-        if scene is not None:
-            deps.schedule_load_recovery_resolve(scene)
     try:
         module_name = f"{deps.package_name}.unsupported" if deps.package_name else "unsupported"
         unsupported_module = deps.import_module(module_name)
@@ -415,22 +327,3 @@ def load_post(_dummy, ctx=None):
         deps.logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
         deps.logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)
-    try:
-        auth_module = deps.import_module(f"{deps.package_name}.auth")
-        is_authenticated = getattr(auth_module, deps.auth_is_authenticated_attr)
-        prefs = deps.get_prefs()
-        connected = bool(is_authenticated(prefs))
-    except deps.import_recoverable_exceptions:
-        connected = False
-
-    for scene in deps.iter_scenes():
-        try:
-            if connected:
-                scene[deps.account_panel_default_collapsed_key] = True
-            elif deps.account_panel_default_collapsed_key in scene:
-                del scene[deps.account_panel_default_collapsed_key]
-        except deps.recoverable_exceptions:
-            deps.logger.debug("Planetka: failed syncing account panel default-collapsed state", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            deps.logger.debug("Planetka: failed syncing account panel default-collapsed state", exc_info=True)
-    deps.ensure_auto_resolve_service_running()

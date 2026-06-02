@@ -4,14 +4,11 @@ import bpy
 import datetime
 import json
 import os
-import time
 
 from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
 from .auth import (
     AuthApiError,
     CLOUD_OVERLOADED_MESSAGE,
-    allows_animation_render_for_context,
-    allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
     get_status_message,
@@ -31,10 +28,8 @@ from .animation_tools import (
     ANIMATION_STATS_SEGMENTS_KEY,
 )
 from .state import (
-    ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     ADD_EARTH_BUTTON_SCALE_X,
     ADD_EARTH_BUTTON_SCALE_Y,
-    _auto_resolve_scope_mode,
     _is_render_job_active,
     get_camera_inside_earth_warning,
     is_final_animation_render_active,
@@ -51,16 +46,13 @@ RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
-FULL_QUALITY_DOWNLOAD_SUCCESS_KEY = "planetka_full_quality_download_success"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
 DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
-SIDEBAR_ACCOUNT_REFRESH_INTERVAL_SEC = 20.0
-SIDEBAR_ACCOUNT_REFRESH_INITIAL_DELAY_SEC = 0.35
-_SIDEBAR_ACCOUNT_REFRESH_LAST_AT = 0.0
-_SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = False
+CLOUD_REFRESH_INITIAL_DELAY_SEC = 0.35
+_CLOUD_REFRESH_TIMER_REGISTERED = False
 UPDATER_UI_REDRAW_INTERVAL_SEC = 0.25
 _UPDATER_UI_REDRAW_TIMER_REGISTERED = False
 
@@ -106,11 +98,10 @@ def _tag_view3d_redraw():
         logger.debug("Planetka: failed tagging UI redraw", exc_info=True)
 
 
-def _sidebar_account_refresh_timer():
-    global _SIDEBAR_ACCOUNT_REFRESH_LAST_AT
-    global _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED
+def _cloud_refresh_timer():
+    global _CLOUD_REFRESH_TIMER_REGISTERED
 
-    _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = False
+    _CLOUD_REFRESH_TIMER_REGISTERED = False
     prefs = get_prefs()
     if prefs is None or not is_authenticated(prefs):
         return None
@@ -120,33 +111,28 @@ def _sidebar_account_refresh_timer():
     except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: deferred Planetka Cloud refresh failed", exc_info=True)
 
-    _SIDEBAR_ACCOUNT_REFRESH_LAST_AT = time.time()
     _tag_view3d_redraw()
     return None
 
 
-def _schedule_sidebar_account_refresh(force=False):
-    global _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED
+def _schedule_cloud_refresh(force=False):
+    global _CLOUD_REFRESH_TIMER_REGISTERED
 
     prefs = get_prefs()
     if prefs is None or not is_authenticated(prefs):
         return
-    now_ts = time.time()
     cloud_status = get_cached_cloud_connection_status()
     should_refresh = bool(force) or not bool(cloud_status.get("checked", False))
-    if not should_refresh:
-        elapsed = now_ts - float(_SIDEBAR_ACCOUNT_REFRESH_LAST_AT)
-        should_refresh = elapsed >= float(SIDEBAR_ACCOUNT_REFRESH_INTERVAL_SEC)
-    if not should_refresh or _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED:
+    if not should_refresh or _CLOUD_REFRESH_TIMER_REGISTERED:
         return
     try:
         bpy.app.timers.register(
-            _sidebar_account_refresh_timer,
-            first_interval=float(SIDEBAR_ACCOUNT_REFRESH_INITIAL_DELAY_SEC),
+            _cloud_refresh_timer,
+            first_interval=float(CLOUD_REFRESH_INITIAL_DELAY_SEC),
         )
-        _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = True
+        _CLOUD_REFRESH_TIMER_REGISTERED = True
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed scheduling deferred account refresh", exc_info=True)
+        logger.debug("Planetka: failed scheduling deferred cloud refresh", exc_info=True)
 
 
 def _updater_is_busy(status):
@@ -177,6 +163,12 @@ def _updater_redraw_timer():
 def _schedule_updater_ui_redraw():
     global _UPDATER_UI_REDRAW_TIMER_REGISTERED
     if _UPDATER_UI_REDRAW_TIMER_REGISTERED:
+        return
+    try:
+        if not _updater_is_busy(get_updater_public_status()):
+            return
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        logger.debug("Planetka: failed reading updater status before scheduling redraw", exc_info=True)
         return
     try:
         bpy.app.timers.register(
@@ -471,14 +463,6 @@ def _is_animation_render_running():
     return False
 
 
-def _is_active_view_resolve_scope(scene):
-    try:
-        scope = str(_auto_resolve_scope_mode(scene) or "CAMERA").strip().upper()
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        scope = "CAMERA"
-    return scope == "ACTIVE_VIEW"
-
-
 def _animation_render_status_for_ui(scene):
     text = ""
     icon = "RENDER_ANIMATION"
@@ -661,7 +645,7 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     elif downloaded_bytes > 0:
         progress_text = f"{_fmt_bytes(downloaded_bytes)} downloaded"
     elif animation_waiting_for_download and "LICENC" in animation_status_upper:
-        progress_text = "Confirming licence"
+        progress_text = "Confirming access"
     elif animation_waiting_for_download and "DOWNLOADING" in animation_status_upper:
         progress_text = "Preparing download"
     elif animation_waiting_for_download:
@@ -768,98 +752,6 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
         type='BAR',
         text=str(state.get("progress_text", "") or "Waiting for data"),
     )
-
-
-def _draw_data_control_progress_bar(layout, title, icon, factor, text, alert=False):
-    row = layout.row(align=True)
-    row.alert = bool(alert)
-    row.label(text=str(title or ""), icon=str(icon or "IMPORT"))
-    try:
-        layout.progress(
-            factor=max(0.0, min(1.0, float(factor or 0.0))),
-            type='BAR',
-            text=str(text or ""),
-        )
-    except (AttributeError, TypeError, RuntimeError):
-        fallback = layout.row(align=True)
-        fallback.alert = bool(alert)
-        fallback.label(text=str(text or ""), icon=str(icon or "IMPORT"))
-
-
-def _draw_cloud_data_control_progress(layout_factory, cloud_runtime, title, label_tokens):
-    progress = cloud_runtime.get_cloud_download_progress()
-    progress_label = str(progress.get("label", "") or "")
-    progress_label_upper = progress_label.upper()
-    tokens = tuple(str(token or "").upper() for token in label_tokens if str(token or "").strip())
-    if tokens and not any(token in progress_label_upper for token in tokens):
-        return False
-
-    progress_error = str(progress.get("error", "") or "").strip()
-    active = bool(progress.get("active", False))
-    if not active and not progress_error:
-        return False
-
-    layout = layout_factory()
-    downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
-    total = max(0, int(progress.get("total_bytes", 0) or 0))
-    if progress_error:
-        _draw_data_control_progress_bar(layout, title, "ERROR", 0.0, progress_error, alert=True)
-        return True
-    if total > 0:
-        text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
-        factor = downloaded / float(total)
-    else:
-        text = f"Downloading: {_fmt_bytes(downloaded)}"
-        factor = 0.0
-    _draw_data_control_progress_bar(layout, title, "IMPORT", factor, text)
-    return True
-
-
-def _draw_data_control_download_progress(layout, scene, runtime, runtime_code, runtime_text):
-    rows_box = None
-
-    def ensure_box():
-        nonlocal rows_box
-        if rows_box is None:
-            rows_box = layout.box()
-        return rows_box
-
-    surface_state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
-    surface_runtime_code = str(surface_state.get("runtime_code", "") or "").upper()
-    surface_active = bool(surface_state.get("download_active", False)) or surface_runtime_code in {
-        "QUEUED",
-        "PREPARING",
-        "DOWNLOADING",
-        "FINALIZING",
-        "FINALIZE_QUEUED",
-    }
-    if surface_active or bool(surface_state.get("alert", False)):
-        _draw_data_control_progress_bar(
-            ensure_box(),
-            "Surface Data",
-            str(surface_state.get("status_icon", "IMPORT") or "IMPORT"),
-            float(surface_state.get("factor", 0.0) or 0.0),
-            str(surface_state.get("progress_text", "") or "Waiting for data"),
-            alert=bool(surface_state.get("alert", False)),
-        )
-
-    try:
-        from . import clouds_local as cloud_runtime
-    except (ImportError, ModuleNotFoundError):
-        cloud_runtime = None
-    if cloud_runtime is not None:
-        _draw_cloud_data_control_progress(
-            ensure_box,
-            cloud_runtime,
-            "Texture-Based Cloud Data",
-            ("TEXTURE-BASED", "TEXTURE BASED"),
-        )
-        _draw_cloud_data_control_progress(
-            ensure_box,
-            cloud_runtime,
-            "VDB Cloud Data",
-            ("VDB",),
-        )
 
 
 def _estimate_bytes_for_quality(estimates, mode):
@@ -1093,18 +985,6 @@ def _resolve_failure_message_for_ui(scene=None):
         return ""
 
 
-def _full_quality_download_success_for_ui(scene=None):
-    target_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
-    if target_scene is None:
-        return False
-    try:
-        if not bool(target_scene.get(FULL_QUALITY_DOWNLOAD_SUCCESS_KEY, False)):
-            return False
-        return _normalize_texture_quality_for_ui(target_scene.get(LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY, "")) == "FULL"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return False
-
-
 def _inside_earth_warning_for_ui(scene=None):
     return str(get_camera_inside_earth_warning(scene) or "").strip()
 
@@ -1196,28 +1076,9 @@ def _is_connected():
         return False
     status = get_cached_cloud_connection_status()
     if not bool(status.get("checked", False)):
-        _schedule_sidebar_account_refresh(force=True)
+        _schedule_cloud_refresh(force=True)
         return False
-    _schedule_sidebar_account_refresh(force=False)
     return bool(status.get("online", False))
-
-
-def _account_panel_should_default_collapsed(context=None):
-    prefs = get_prefs()
-    if not is_authenticated(prefs):
-        return False
-    target_scene = getattr(context, "scene", None) if context is not None else getattr(getattr(bpy, "context", None), "scene", None)
-    if target_scene is None:
-        return True
-    try:
-        if ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY in target_scene:
-            return bool(target_scene.get(ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY, True))
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        return True
-    # Missing scene marker happens briefly in newly opened Blender files before
-    # load handlers write persistent UI defaults. Keep the authenticated default
-    # collapsed immediately to avoid a visible open-then-close flash.
-    return True
 
 
 def _is_paid_connected_account():
@@ -1280,7 +1141,7 @@ def _draw_general_account_summary(layout):
             logger.debug("Planetka: automatic anonymous session start failed", exc_info=True)
     authenticated = bool(is_authenticated(prefs))
     if authenticated:
-        _schedule_sidebar_account_refresh(force=False)
+        _schedule_cloud_refresh(force=False)
     cloud_status = (
         get_cached_cloud_connection_status()
         if authenticated
@@ -1304,7 +1165,7 @@ def _draw_general_account_summary(layout):
     status_message = get_status_message(prefs)
 
     account_box = layout.box()
-    account_box.label(text="Planetka Cloud", icon="WORLD")
+    account_box.label(text="Planetka Data", icon="WORLD")
     row = account_box.row()
     row.label(text="Status")
     row.label(text=status_text, icon=status_icon)
@@ -1462,16 +1323,14 @@ def _draw_live_telemetry(layout, scene):
         )
         button_row = quality_box.row(align=True)
         for mode_key, label in qualities:
-            quality_allowed = allows_texture_quality_for_context(prefs, mode_key)
             button_label = label
             mode_col = button_row.column(align=True)
             estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
             operator_row = mode_col.row(align=True)
-            operator_row.enabled = quality_allowed
             operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
             operator_row.operator(
                 "planetka.set_texture_quality_and_resolve",
-                text=(f"{button_label} (Unavailable)" if not quality_allowed else button_label),
+                text=button_label,
                 depress=(selected_auto_quality == mode_key),
             ).texture_quality_mode = mode_key
             _draw_quality_meta_row(
@@ -1482,10 +1341,24 @@ def _draw_live_telemetry(layout, scene):
             error_row = quality_box.row(align=True)
             error_row.alert = True
             error_row.label(text=resolve_failure_message, icon="ERROR")
-        elif _full_quality_download_success_for_ui(scene):
-            success_row = quality_box.row(align=True)
-            success_row.label(text="Full Quality download successful", icon="CHECKMARK")
-        _draw_data_control_download_progress(quality_box, scene, runtime, runtime_code, runtime_text)
+
+        resolve_row = quality_box.row(align=True)
+        resolve_row.scale_y = 1.45
+        resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")
+
+        if runtime_code in {"QUEUED", "PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED"} or bool(runtime.get("running", False)):
+            _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
+        try:
+            from . import clouds_local as cloud_runtime
+            cloud_progress = cloud_runtime.get_cloud_download_progress()
+        except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
+            cloud_progress = {}
+        if bool(cloud_progress.get("active", False)) or str(cloud_progress.get("error", "") or "").strip():
+            progress_label = str(cloud_progress.get("label", "") or "").strip()
+            if "VDB" in progress_label.upper():
+                _draw_cloud_download_progress(quality_box, cloud_runtime, ("VDB",))
+            else:
+                _draw_cloud_download_progress(quality_box, cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"))
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -2400,14 +2273,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 icon="CHECKMARK",
             )
 
-            auto_box = layout.box()
-            auto_box.label(text="Auto-Resolve Options", icon="DRIVER")
-            auto_row = auto_box.row(align=True)
-            auto_row.use_property_split = False
-            auto_row.prop_enum(props, "auto_resolve_mode", "NEVER", text="Never")
-            auto_row.prop_enum(props, "auto_resolve_mode", "CAMERA_VIEW", text="Camera only")
-            auto_row.prop_enum(props, "auto_resolve_mode", "ALWAYS", text="Always")
-
             atmosphere_box = layout.box()
             atmosphere_box.label(text="Atmosphere", icon="WORLD")
             atmosphere_box.prop(
@@ -2877,12 +2742,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         final_render_box = layout.box()
         final_render_box.enabled = bool(earth_workflow_enabled) if animation_render_running else bool(controls_enabled)
         final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
-        selected_final_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
-        final_render_allowed = allows_animation_render_for_context(
-            prefs=get_prefs(),
-            source=props,
-            requested_mode=selected_final_quality,
-        )
         if animation_render_running:
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)
@@ -2898,7 +2757,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 icon="CANCEL",
             )
         else:
-            render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
+            render_button_row.enabled = bool(earth_workflow_enabled)
             render_button_row.operator(
                 "planetka.animation_render",
                 text="Render Animation",

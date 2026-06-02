@@ -28,7 +28,6 @@ from .auth import (
     mark_planetka_cloud_overloaded,
     recover_from_terminal_auth_error,
     refresh_auth_session,
-    sync_account_profile,
 )
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
@@ -327,11 +326,11 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
         if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
             raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
         recover_from_terminal_auth_error(exc, source="r2_authentication_headers")
-        raise RuntimeError("Planetka login expired. Log in again.") from exc
+        raise RuntimeError("Planetka Cloud session expired. Restart Blender and try again.") from exc
 
     auth_header = str(headers.get("Authorization", "") or "").strip()
     if not auth_header:
-        raise RuntimeError("Planetka login expired. Log in again.")
+        raise RuntimeError("Planetka Cloud session expired. Restart Blender and try again.")
 
     if _STREAM_HEALTH_SENTINEL:
         folder, file_name = _STREAM_HEALTH_SENTINEL
@@ -362,19 +361,19 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
                         f"http_{int(getattr(retry_exc, 'code', 0) or 0)}",
                     )
                     recover_from_terminal_auth_error(terminal_error, source="r2_authentication_sentinel_retry")
-                    raise RuntimeError("Planetka login expired. Log in again.") from retry_exc
+                    raise RuntimeError("Planetka Cloud session expired. Restart Blender and try again.") from retry_exc
                 except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as retry_exc:
                     raise RuntimeError(f"Planetka remote source check failed: {retry_exc}") from retry_exc
             if int(getattr(exc, "code", 0)) != 404:
                 if looks_like_planetka_overload(getattr(exc, "code", 0), f"http_{getattr(exc, 'code', 0)}"):
                     mark_planetka_cloud_overloaded(reason=f"http_{getattr(exc, 'code', 0)}")
                     raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
-                raise RuntimeError(f"Planetka could not verify login session: HTTP {exc.code}.") from exc
+                raise RuntimeError(f"Planetka could not verify the cloud session: HTTP {exc.code}.") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             if allow_cached_on_network_error:
                 # Keep already-cached files usable while temporarily offline.
                 return auth_header
-            raise RuntimeError("Planetka could not verify login session. Check internet connection and retry.") from exc
+            raise RuntimeError("Planetka could not verify the cloud session. Check internet connection and retry.") from exc
 
     with _AUTH_CHECK_LOCK:
         _AUTH_LAST_BEARER = auth_header
@@ -1182,7 +1181,7 @@ def set_resolve_request_context(
             _REQUEST_CONTEXT_NAV_ALT_KM = ""
         safe_feature = str(feature or "").strip().lower()
         _REQUEST_CONTEXT_FEATURE = safe_feature if safe_feature in {"panorama", "final_animation_render"} else ""
-        # Tile-session tokens carry the selected texture quality/tier for one
+        # Tile-session tokens carry selected texture quality for one
         # resolve. Reusing one after camera/quality changes can make backend
         # diagnostics and failures point at the wrong request.
         _REQUEST_CONTEXT_TILE_TOKEN = ""
@@ -1286,7 +1285,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
             raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
         recover_from_terminal_auth_error(exc, source="tile_session_headers")
-        raise RuntimeError("Planetka login expired. Log in again.") from exc
+        raise RuntimeError("Planetka Cloud session expired. Restart Blender and try again.") from exc
     except urllib.error.HTTPError as exc:
         error_payload = {}
         raw_error_text = ""
@@ -1319,7 +1318,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as refresh_exc:
                 if isinstance(refresh_exc, AuthApiError):
                     recover_from_terminal_auth_error(refresh_exc, source="tile_session_refresh_failed")
-                raise RuntimeError("Planetka login expired. Log in again.") from exc
+                raise RuntimeError("Planetka Cloud session expired. Restart Blender and try again.") from exc
         if int(getattr(exc, "code", 0)) in {401, 403}:
             terminal_error = AuthApiError(
                 int(getattr(exc, "code", 0) or 0),
@@ -1330,7 +1329,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         if int(getattr(exc, "code", 0)) == 429:
             if error_message:
                 raise RuntimeError(f"Planetka request limit reached: {error_message}") from exc
-            raise RuntimeError("Planetka request limit reached for this account.") from exc
+            raise RuntimeError("Planetka request limit reached.") from exc
         if error_message:
             raise RuntimeError(f"Planetka Full Quality streaming access could not be confirmed: {error_message}") from exc
         raise RuntimeError("Planetka Full Quality streaming access could not be confirmed. Please retry.") from exc
@@ -1678,41 +1677,29 @@ def _r2_request(
                     continue
                 except AuthApiError as refresh_exc:
                     recover_from_terminal_auth_error(refresh_exc, source="r2_request_refresh_failed")
-                    raise RuntimeError("Planetka login expired. Log in again.") from refresh_exc
+                    raise RuntimeError("Planetka Cloud session expired. Restart Blender and try again.") from refresh_exc
             if exc.code == 404:
                 return False
             if exc.code in {402, 429}:
                 combined = f"{error_code} {error_message}".lower()
-                if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
-                    try:
-                        sync_account_profile()
-                    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
-                        logger.debug("Planetka: failed syncing account profile after request-limit response", exc_info=True)
-                    raise RuntimeError(
-                        "Planetka Cloud could not stream the requested texture file."
-                    )
+                if "access_denied" in combined:
+                    raise RuntimeError("Planetka Cloud could not stream the requested texture file.")
                 if error_message:
                     raise RuntimeError(f"Planetka request limit reached: {error_message}")
-                raise RuntimeError("Planetka request limit reached for this account.")
+                raise RuntimeError("Planetka request limit reached.")
             if exc.code == 403:
                 combined = f"{error_code} {error_message}".lower()
-                if "account_blocked" in combined or "account is blocked" in combined:
+                if "session_blocked" in combined or "blocked" in combined:
                     recover_from_terminal_auth_error(
-                        AuthApiError(exc.code, "account_blocked", payload={"error": error_code, "message": error_message}),
-                        source="r2_request_account_blocked",
+                        AuthApiError(exc.code, "session_blocked", payload={"error": error_code, "message": error_message}),
+                        source="r2_request_session_blocked",
                     )
-                    raise RuntimeError("Planetka account is blocked. Contact info@planetka.io.")
-                if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
-                    try:
-                        sync_account_profile()
-                    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
-                        logger.debug("Planetka: failed syncing account profile after access-denied response", exc_info=True)
-                    raise RuntimeError(
-                        "Planetka Cloud could not stream the requested texture file."
-                    )
+                    raise RuntimeError("Planetka Cloud access is blocked. Contact info@planetka.io.")
+                if "access_denied" in combined:
+                    raise RuntimeError("Planetka Cloud could not stream the requested texture file.")
                 if error_message:
-                    raise RuntimeError(f"Planetka account does not have access to remote Earth data: {error_message}")
-                raise RuntimeError("Planetka account does not have access to remote Earth data.")
+                    raise RuntimeError(f"Planetka Cloud could not stream remote Earth data: {error_message}")
+                raise RuntimeError("Planetka Cloud could not stream remote Earth data.")
             last_error = exc
         except AuthApiError as exc:
             if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
@@ -1967,8 +1954,8 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         return any(
             token in text
             for token in (
-                "account blocked",
-                "account_blocked",
+                "session blocked",
+                "session_blocked",
                 "login expired",
                 "log in again",
             )

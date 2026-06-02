@@ -137,9 +137,7 @@ EXTERNAL_SKIPS = {
 }
 
 BOOL_SWEEPS = {
-    "viewport_opt_suspend_subdivision": [False, True],
     "show_earth_preview": [False, True],
-    "auto_resolve": [False, True],
     "auto_adjust_clipping_values": [False, True],
     "lock_resolve_during_animation": [False, True],
     "debug_logging": [False, True],
@@ -147,8 +145,6 @@ BOOL_SWEEPS = {
 }
 
 NUMERIC_SWEEPS = {
-    "viewport_opt_subdivision_restore_delay_sec": [0.1, 0.5, 2.0],
-    "auto_resolve_idle_sec": [0.1, 0.5, 3.0],
     "nav_altitude_km": [30.0, 120.0, 1200.0],
     "nav_azimuth_deg": [0.0, 45.0, 180.0],
     "nav_tilt_deg": [15.0, 45.0, 75.0],
@@ -653,7 +649,6 @@ class OvernightRunner:
             "sunlight_seasonal_tilt_deg": 12.0,
             "earth_radius_bu": 3.5,
             "texture_quality_mode": "PREVIEW",
-            "auto_resolve": False,
             "show_earth_preview": False,
             "anim_camera_preset": "ZOOM",
         }
@@ -663,7 +658,6 @@ class OvernightRunner:
         self.props.sunlight_seasonal_tilt_deg = expected["sunlight_seasonal_tilt_deg"]
         self.props.earth_radius_bu = expected["earth_radius_bu"]
         self.props.texture_quality_mode = expected["texture_quality_mode"]
-        self.props.auto_resolve = expected["auto_resolve"]
         self.props.show_earth_preview = expected["show_earth_preview"]
         self.props.anim_camera_preset = expected["anim_camera_preset"]
         self._call_operator("save_startup_setup")
@@ -682,55 +676,6 @@ class OvernightRunner:
         }
         self.report["notes"].append(f"Startup profile restored values: {restored}")
         self._call_operator("reset_startup_setup_factory")
-
-    def _pick_runtime_cache_image(self):
-        for image in bpy.data.images:
-            raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
-            if not raw_path:
-                continue
-            abs_path = os.path.abspath(bpy.path.abspath(raw_path))
-            if not os.path.isfile(abs_path):
-                continue
-            if "planetka_cache" not in abs_path.replace("\\", "/").lower():
-                continue
-            return image, Path(abs_path)
-        return None, None
-
-    def _run_cache_self_heal_case(self):
-        self._search_and_frame("Singapore", country_hint="SG", nav={"nav_altitude_km": 120.0, "nav_azimuth_deg": 20.0, "nav_tilt_deg": 45.0, "nav_roll_deg": 0.0}, sunlight_preset="MID_AFTERNOON")
-        resolve_textures(self.state, self.scene, texture_quality_mode="FULL")
-        image, original_path = self._pick_runtime_cache_image()
-        if image is None or original_path is None:
-            self.report["rogue_phase"]["cache_self_heal"] = {"status": "skipped", "reason": "No runtime cache image found."}
-            return
-        tampered_path = original_path.with_suffix(original_path.suffix + ".bak")
-        if tampered_path.exists():
-            tampered_path.unlink()
-        os.rename(original_path, tampered_path)
-        try:
-            missing_count, healed_count, failed_count = self.state.self_heal_missing_cache_images_for_render(self.scene)
-            out_path = self.session_dir / "rogue_cache_self_heal.png"
-            configure_eevee(self.scene)
-            configure_png_output(self.scene, output_prefix=out_path, resolution_x=960, resolution_y=540, resolution_percentage=100)
-            render_still(self.scene, out_path)
-            image_analysis = analyze_render_image(out_path)
-            analysis = {
-                "samples": [image_analysis],
-                "has_mostly_black": bool(image_analysis.get("mostly_black")),
-                "has_pink_corrupt": bool(image_analysis.get("pink_corrupt")),
-            }
-            self.report["rogue_phase"]["cache_self_heal"] = {
-                "status": "ok",
-                "missing_count": int(missing_count),
-                "healed_count": int(healed_count),
-                "failed_count": int(failed_count),
-                "render": analysis,
-            }
-        finally:
-            if tampered_path.exists() and not original_path.exists():
-                os.rename(tampered_path, original_path)
-            elif tampered_path.exists():
-                tampered_path.unlink(missing_ok=True)
 
     def _run_object_rename_rebuild_case(self):
         root = bpy.data.objects.get("Planetka Root")
@@ -1052,22 +997,13 @@ class OvernightRunner:
             raise E2EError(f"Visual validation failed for quick preview case {case['id']}")
 
     def _quiesce_runtime_for_final_animation(self):
-        stop_service = getattr(self.state, "stop_auto_resolve_service", None)
-        if callable(stop_service):
-            stop_service()
-        stop_pipeline = getattr(self.state, "stop_auto_resolve_download_pipeline", None)
+        stop_pipeline = getattr(self.state, "stop_resolve", None)
         if callable(stop_pipeline):
             stop_pipeline()
         flush_navigation = getattr(self.state, "_navigation_shot_update_timer", None)
         if callable(flush_navigation):
             try:
                 flush_navigation()
-            except Exception:
-                pass
-        force_restore_navigation = getattr(self.state, "_force_restore_navigation_adaptive_state", None)
-        if callable(force_restore_navigation):
-            try:
-                force_restore_navigation()
             except Exception:
                 pass
         suspend_navigation_updates = getattr(self.state, "suspend_navigation_shot_updates", None)
@@ -1114,13 +1050,9 @@ class OvernightRunner:
         if not access_token or not refresh_token:
             raise E2EError("Current Planetka auth session is incomplete for final animation subprocess.")
         payload = {
-            "email": str(self.auth.get_connected_email(self.prefs) or getattr(self.prefs, "auth_email", "") or "").strip(),
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "licence_code": str(getattr(self.prefs, "auth_plan_code", "") or "").strip(),
-            "plan_code": str(getattr(self.prefs, "auth_plan_code", "") or "").strip(),
-            "plan_name": str(getattr(self.prefs, "auth_plan_name", "") or "").strip(),
-            "licence_code": str(self.auth.get_licence_code(self.prefs) or getattr(self.prefs, "auth_licence_code", "") or "").strip(),
+            "device_id": str(getattr(self.prefs, "auth_device_id", "") or "").strip(),
         }
         target = self.session_dir / "final_animation_auth_payload.json"
         write_json(target, payload)
@@ -1345,7 +1277,6 @@ class OvernightRunner:
         self.props.anim_motion_curve = "EASE_IN_OUT"
         self.props.anim_circle_direction = "CLOCKWISE"
         self.props.anim_render_preset = "SPEED"
-        self.props.auto_resolve = True
         self.props.show_earth_preview = False
         self.props.debug_logging = False
         self.props.earth_radius_bu = 2.0
@@ -1358,7 +1289,6 @@ class OvernightRunner:
         self.props.anim_motion_curve = "EASE_IN_OUT"
         self.props.anim_circle_direction = "CLOCKWISE"
         self.props.anim_render_preset = "SPEED"
-        self.props.auto_resolve = True
         self.props.show_earth_preview = False
         self.props.debug_logging = False
         self.props.earth_radius_bu = 2.0
@@ -1430,10 +1360,7 @@ class OvernightRunner:
 
         self._call_operator("rebuild_earth")
         drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        stop_service = getattr(self.state, "stop_auto_resolve_service", None)
-        if callable(stop_service):
-            stop_service()
-        stop_pipeline = getattr(self.state, "stop_auto_resolve_download_pipeline", None)
+        stop_pipeline = getattr(self.state, "stop_resolve", None)
         if callable(stop_pipeline):
             stop_pipeline()
         purge_planetka_data()
@@ -1443,10 +1370,7 @@ class OvernightRunner:
         self.prefs.texture_base_path = "planetka-remote"
         self._restore_visual_phase_defaults()
         create_earth_and_wait(self.state, self.scene)
-        stop_service = getattr(self.state, "stop_auto_resolve_service", None)
-        if callable(stop_service):
-            stop_service()
-        stop_pipeline = getattr(self.state, "stop_auto_resolve_download_pipeline", None)
+        stop_pipeline = getattr(self.state, "stop_resolve", None)
         if callable(stop_pipeline):
             stop_pipeline()
         self.report["notes"].append("Post-functional phase baseline reset completed.")
@@ -1463,7 +1387,6 @@ class OvernightRunner:
         return SHORT_WAIT_SEC
 
     def _run_rogue_phase(self):
-        self._run_cache_self_heal_case()
         self._run_object_rename_rebuild_case()
         self._run_surface_delete_rebuild_case()
         self._run_material_delete_rebuild_case()

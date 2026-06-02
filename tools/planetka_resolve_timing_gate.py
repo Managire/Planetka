@@ -127,8 +127,8 @@ def _read_diag(diag_module, scene):
 
 def _wait_for_queued_resolve(state_module, scene, *, timeout_sec=90.0, sleep_sec=0.025):
     runtime_fn = getattr(state_module, "get_resolve_runtime_status", None)
-    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
-    stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
+    pump_fn = getattr(state_module, "_resolve_pump_timer", None)
+    stop_fn = getattr(state_module, "stop_resolve", None)
     if not callable(runtime_fn):
         return {
             "settled": False,

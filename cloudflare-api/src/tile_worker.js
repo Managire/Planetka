@@ -1,7 +1,6 @@
 import { corsHeaders, json } from "./worker/responses.js";
 import {
   normalizeQualityMode,
-  normalizeRequestedPlan,
 } from "./worker/entitlements.js";
 import {
   parseNonNegativeInteger,
@@ -191,18 +190,14 @@ async function requireAuthenticatedUserContext(request, env) {
   if (authMethod.toLowerCase() === "anonymous" && tokenIpScope && currentIpScope && tokenIpScope !== currentIpScope) {
     return { error: json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
   }
-  const planCode = normalizeRequestedPlan(access.plan_code || access.user_status || access.plan || "");
-  const qualityAccessPlanCode = normalizeRequestedPlan(access.quality_access_plan_code || access.qualityAccessPlanCode || planCode);
   const result = {
     db: requireDb(env),
     user: {
       id: String(access.sub || "").trim(),
       email: String(access.email || "").trim(),
-      status: planCode,
+      status: "",
     },
     access,
-    planCode,
-    qualityAccessPlanCode: qualityAccessPlanCode || planCode,
     authMethod,
     deviceId: normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || ""),
     tokenSource: "bearer_lightweight",
@@ -228,20 +223,16 @@ async function resolveTileSessionAuth(_request, env, auth) {
   if (!row || !row.id) {
     return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
   }
-  const status = String(row.status || "").trim().toLowerCase();
-  if (status === "blocked") {
-    return { error: json({ ok: false, error: "account_blocked", message: "Planetka account is blocked. Contact info@planetka.io." }, 403, env) };
+  if (String(row.status || "").trim().toLowerCase() === "blocked") {
+    return { error: json({ ok: false, error: "session_blocked", message: "Planetka Cloud access is blocked. Contact info@planetka.io." }, 403, env) };
   }
-  const currentPlan = normalizeRequestedPlan(status);
   return {
     ...auth,
     user: {
       id: String(row.id || "").trim(),
       email: String(row.email || auth.user.email || "").trim(),
-      status: currentPlan,
+      status: "",
     },
-    planCode: currentPlan,
-    qualityAccessPlanCode: currentPlan,
   };
 }
 
@@ -256,8 +247,6 @@ function normalizeResolveId(value) {
 
 async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
   const qualityMode = normalizeQualityMode(requestedQualityMode);
-  const planCode = normalizeRequestedPlan(auth && auth.planCode);
-  const qualityAccessPlanCode = normalizeRequestedPlan(auth && (auth.qualityAccessPlanCode || auth.planCode));
   const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const resolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
@@ -265,9 +254,6 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     type: "tile_session",
     sub: String(auth && auth.user && auth.user.id || "").trim(),
     email: String(auth && auth.user && auth.user.email || "").trim(),
-    plan_code: qualityAccessPlanCode,
-    stored_plan_code: planCode,
-    quality_access_plan_code: qualityAccessPlanCode,
     quality_mode: qualityMode,
     resolve_id: resolveId,
     auth_method: String(auth && auth.authMethod || "").trim(),
@@ -315,9 +301,6 @@ async function readTileSessionClaims(request, env) {
   const claims = {
     userId: String(payload.sub || "").trim(),
     userEmail: String(payload.email || "").trim(),
-    planCode: normalizeRequestedPlan(payload.plan_code || payload.user_status || ""),
-    storedPlanCode: normalizeRequestedPlan(payload.stored_plan_code || payload.storedPlanCode || payload.plan_code || ""),
-    qualityAccessPlanCode: normalizeRequestedPlan(payload.quality_access_plan_code || payload.qualityAccessPlanCode || payload.plan_code || ""),
     qualityMode: normalizeQualityMode(payload.quality_mode || ""),
     resolveId: normalizeResolveId(payload.resolve_id || ""),
     authMethod,
@@ -508,7 +491,6 @@ const TILE_DEPS = {
   json,
   normalizeDeviceId,
   normalizeQualityMode,
-  normalizeRequestedPlan,
   normalizeResolveId,
   nowIso,
   parseJson,

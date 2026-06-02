@@ -3,7 +3,7 @@
 Core responsibilities:
 - sync Scene <-> Planetka properties
 - react to camera/navigation/sunlight changes
-- schedule auto-resolve triggers
+- schedule resolve triggers
 - coordinate background download jobs and resolve finalization
 """
 
@@ -41,23 +41,18 @@ from .planetka_runtime.asset_cleanup import (
     update_show_earth_preview,
     update_atmosphere_enabled,
 )
-from .planetka_runtime import cache_recovery as _cache_recovery
 from .planetka_runtime import navigation_runtime as _navigation_runtime
 from .planetka_runtime import scene_sync as _scene_sync
 from .planetka_runtime import view_telemetry as _view_telemetry
-from .planetka_runtime import auto_resolve_pipeline as _auto_resolve_pipeline
-from .planetka_runtime import auto_resolve_state as _auto_resolve_state
-from .planetka_runtime.auto_resolve_context import (
-    AutoResolveDecisionContext,
-    AutoResolveDecisionDeps,
-    AutoResolveDownloadContext,
-    AutoResolveDownloadDeps,
-    AutoResolveNonCriticalContext,
-    AutoResolveNonCriticalDeps,
-    AutoResolveSettings,
-    AutoResolveStateContext,
-    AutoResolveStateDeps,
-    AutoResolveSharedState,
+from .planetka_runtime import resolve as _resolve
+from .planetka_runtime import resolve_state as _resolve_state
+from .planetka_runtime.resolve_context import (
+    ResolveDownloadContext,
+    ResolveDownloadDeps,
+    ResolveSettings,
+    ResolveStateContext,
+    ResolveStateDeps,
+    ResolveSharedState,
 )
 from .planetka_runtime.view_telemetry_context import (
     ViewTelemetryContext,
@@ -94,8 +89,6 @@ _LOGGING_SYNCING = False
 _FINAL_ANIMATION_RENDER_ACTIVE = False
 
 _SYNC_IDPROP_MAP = {
-    "viewport_opt_suspend_subdivision": "planetka_viewport_opt_suspend_subdivision",
-    "viewport_opt_subdivision_restore_delay_sec": "planetka_viewport_opt_subdivision_restore_delay_sec",
     "show_earth_preview": "planetka_show_earth_preview",
     "atmosphere_enabled": "planetka_atmosphere_enabled",
     "atmosphere_mode": "planetka_atmosphere_mode",
@@ -113,9 +106,6 @@ _SYNC_IDPROP_MAP = {
     "vdb_cloud_preset": "planetka_vdb_cloud_preset",
     "local_cloud_texture": "planetka_local_cloud_texture",
     "vdb_cloud_file": "planetka_vdb_cloud_file",
-    "auto_resolve": "planetka_auto_resolve",
-    "auto_resolve_mode": "planetka_auto_resolve_mode",
-    "auto_resolve_idle_sec": "planetka_auto_resolve_idle_sec",
     "nav_longitude_deg": "planetka_nav_longitude_deg",
     "nav_latitude_deg": "planetka_nav_latitude_deg",
     "nav_altitude_km": "planetka_nav_altitude_km",
@@ -175,8 +165,6 @@ _LEGACY_SCENE_IDPROPS = (
     "planetka_view_elevation",
     "planetka_sampling_grid_density",
     "planetka_mesh_expansion",
-    "planetka_auto_resolve_interval_sec",
-    "planetka_auto_resolve_active_view",
     "planetka_resolve_scope",
     "planetka_nav_look_offset_km",
     "planetka_nav_keep_facing_anchor",
@@ -192,11 +180,7 @@ _LEGACY_SCENE_IDPROPS = (
 _TILE_UTILS_MODULE = None
 _STREAMING_UTILS_MODULE = None
 
-AUTO_RESOLVE_RETRY_DELAY_SEC = 0.25
-AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT = 1.0
-AUTO_RESOLVE_IDLE_SEC_DEFAULT = 0.5
-_AUTO_RESOLVE_TIMER_RUNNING = False
-_AUTO_RESOLVE_IN_FLIGHT = False
+_RESOLVE_IN_FLIGHT = False
 _RENDER_JOB_ACTIVE = False
 _RENDER_JOB_EPOCH = 0
 _RENDER_JOB_LAST_ENDED_EPOCH = 0
@@ -207,29 +191,17 @@ _RENDER_JOB_POST_END_GUARD_SEC = 8.0
 _RENDER_JOB_LAST_PROGRESS_AT = 0.0
 _RENDER_JOB_LAST_FRAME_WRITTEN_AT = 0.0
 _RENDER_JOB_LAST_FRAME_WRITTEN = -1
-_AUTO_RESOLVE_NEXT_DUE_TIME = {}
-_AUTO_RESOLVE_LAST_CAMERA_SIGNATURE = {}
-_AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE = {}
-_AUTO_RESOLVE_LAST_CHANGE_TIME = {}
-_AUTO_RESOLVE_LAST_RESOLVE_TIME = {}
-_AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE = {}
-_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE = {}
-_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE = {}
-_AUTO_RESOLVE_DOWNLOAD_LOCK = threading.Lock()
-_AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
-_AUTO_RESOLVE_DOWNLOAD_THREAD = None
-_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB = None
-_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB = None
-_AUTO_RESOLVE_DOWNLOAD_COMPLETED = None
-_AUTO_RESOLVE_DOWNLOAD_REQUEST_COUNTER = 0
-_AUTO_RESOLVE_DOWNLOAD_EPOCH = 0
-_AUTO_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC = 0.5
-_AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC = 1.5
-_AUTO_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC = 15.0
-_AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
-_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC = 0.25
-_AUTO_RESOLVE_NONCRITICAL_PENDING = {}
-_AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE = {}
+_RESOLVE_DOWNLOAD_LOCK = threading.Lock()
+_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
+_RESOLVE_DOWNLOAD_THREAD = None
+_RESOLVE_DOWNLOAD_ACTIVE_JOB = None
+_RESOLVE_DOWNLOAD_PENDING_JOB = None
+_RESOLVE_DOWNLOAD_COMPLETED = None
+_RESOLVE_DOWNLOAD_REQUEST_COUNTER = 0
+_RESOLVE_DOWNLOAD_EPOCH = 0
+_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC = 0.5
+_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC = 1.5
+_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC = 15.0
 LAST_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
 LAST_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
 LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
@@ -242,8 +214,6 @@ _SUNLIGHT_OBJECT_NAME_CACHE = {}
 _VIEWPORT_SCOPE_LAST = {}
 _VIEWPORT_SCOPE_LAST_RESOLVE_TIME = {}
 _LAST_REALTIME_TELEMETRY = {}
-_TIMELINE_LAST_SIGNATURE = {}
-_FRAME_KEYED_RUNTIME_LAST_SIGNATURE = {}
 _COVERAGE_MAP = None
 _R2_SOURCE_MODULE = None
 _REAL_EARTH_RADIUS_M = 6371000.0
@@ -254,10 +224,6 @@ _LIVE_FALLBACK_MPP_M = 3600.0
 _LIVE_Z_LEVELS = (1, 2, 4, 8, 15, 30, 60, 90, 180, 360)
 _NAVIGATION_SHOT_UPDATE_PENDING = False
 _NAVIGATION_SHOT_UPDATE_REENTRANT = False
-_NAVIGATION_ADAPTIVE_SUSPENDED = None
-_NAVIGATION_ADAPTIVE_LAST_TOUCH = 0.0
-_NAVIGATION_ADAPTIVE_TIMER_RUNNING = False
-_NAVIGATION_ADAPTIVE_IDLE_SEC = 0.5
 _NAVIGATION_SHOT_SUSPEND_COUNT = 0
 _NAVIGATION_USER_EDIT_LAST_TOUCH = 0.0
 _NAV_CAMERA_CONTROL_LAST_SIGNATURE = {}
@@ -273,7 +239,6 @@ _STATUS_NOTICE_KEYS = (
     "planetka_status_radius_sync_notice",
 )
 _STATUS_NOTICE_CLEAR_SKIP_KEY = "planetka_status_notice_clear_skip_count"
-ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY = "planetka_ui_account_default_collapsed"
 _KEYED_RUNTIME_NAV_PROP_PATHS = (
     "planetka.nav_longitude_deg",
     "planetka.nav_latitude_deg",
@@ -297,24 +262,23 @@ _KEYED_RUNTIME_ALL_PROP_PATHS = (
 )
 
 
-SceneAutoResolveState = _auto_resolve_state.SceneAutoResolveState
-AutoResolveDownloadJob = _auto_resolve_state.AutoResolveDownloadJob
+ResolveDownloadJob = _resolve_state.ResolveDownloadJob
 
 
-def _is_auto_resolve_download_job(job):
-    return _auto_resolve_state._is_auto_resolve_download_job(job)
+def _is_resolve_download_job(job):
+    return _resolve_state._is_resolve_download_job(job)
 
 
 def _job_field(job, name, default=None):
-    return _auto_resolve_state._job_field(job, name, default=default)
+    return _resolve_state._job_field(job, name, default=default)
 
 
 def _job_set_field(job, name, value):
-    return _auto_resolve_state._job_set_field(job, name, value)
+    return _resolve_state._job_set_field(job, name, value)
 
 
-def _build_auto_resolve_download_job(*args, **kwargs):
-    return _auto_resolve_state._build_auto_resolve_download_job(*args, ctx=_AUTO_RESOLVE_STATE_CTX, **kwargs)
+def _build_resolve_download_job(*args, **kwargs):
+    return _resolve_state._build_resolve_download_job(*args, ctx=_RESOLVE_STATE_CTX, **kwargs)
 
 
 def _get_r2_source():
@@ -326,33 +290,6 @@ def _get_r2_source():
         except ImportError:
             _R2_SOURCE_MODULE = False
     return _R2_SOURCE_MODULE or None
-
-
-def self_heal_missing_cache_images_for_render(scene=None):
-    return _cache_recovery.self_heal_missing_cache_images_for_render(
-        scene,
-        get_prefs=get_prefs,
-        get_r2_source=_get_r2_source,
-    )
-
-
-def _recover_missing_cache_image_paths_to_fallback():
-    return _cache_recovery.recover_missing_cache_image_paths_to_fallback(_get_r2_source)
-
-
-def _queue_manual_resolve_download_for_scene(scene):
-    return _cache_recovery.queue_manual_resolve_download_for_scene(
-        scene,
-        get_earth_object=get_earth_object,
-        is_render_job_active=_is_render_job_active,
-    )
-
-
-def _schedule_load_recovery_resolve(scene):
-    return _cache_recovery.schedule_load_recovery_resolve(
-        scene,
-        queue_manual_resolve_download_for_scene=_queue_manual_resolve_download_for_scene,
-    )
 
 
 def _resolve_trace(message):
@@ -372,10 +309,6 @@ def _clear_status_notices(scene):
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         logger=logger,
     )
-
-
-def _active_view_signature():
-    return _view_telemetry.active_view_signature(_VIEW_TELEMETRY_CTX)
 
 
 def _get_mesh_utils():
@@ -551,32 +484,6 @@ def request_next_navigation_apply_behavior(scene, *, force_camera_view=None, syn
     )
 
 
-def _resolve_navigation_adaptive_modifier():
-    return _navigation_runtime.resolve_navigation_adaptive_modifier(get_earth_object=get_earth_object)
-
-
-def _navigation_adaptive_restore_timer():
-    return _navigation_runtime.navigation_adaptive_restore_timer(
-        _NAVIGATION_RUNTIME_CTX,
-    )
-
-
-def _force_restore_navigation_adaptive_state():
-    return _navigation_runtime.force_restore_navigation_adaptive_state(
-        _NAVIGATION_RUNTIME_CTX,
-    )
-
-
-def _suspend_adaptive_viewport_during_navigation(scene):
-    return _navigation_runtime.suspend_adaptive_viewport_during_navigation(
-        _NAVIGATION_RUNTIME_CTX,
-        scene,
-        resolve_navigation_adaptive_modifier=_resolve_navigation_adaptive_modifier,
-        force_restore_navigation_adaptive_state_fn=_force_restore_navigation_adaptive_state,
-        navigation_adaptive_restore_timer_fn=_navigation_adaptive_restore_timer,
-    )
-
-
 def suspend_navigation_shot_updates():
     return _navigation_runtime.suspend_navigation_shot_updates(_NAVIGATION_RUNTIME_CTX)
 
@@ -735,7 +642,7 @@ def _is_render_job_active():
         return True
 
     # bpy.app.is_job_running("RENDER") has been observed to get stuck True on some systems after F12
-    # renders, which would permanently disable auto-resolve. Track render state via handlers and
+    # renders, which would permanently disable resolve. Track render state via handlers and
     # prefer that signal.
     if _is_render_handler_job_active():
         return True
@@ -755,7 +662,7 @@ def _is_render_job_active():
     return False
 
 
-def _is_auto_resolve_render_guard_active():
+def _is_resolve_render_guard_active():
     if _is_render_job_active():
         return True
     return _is_render_post_end_guard_active()
@@ -776,10 +683,10 @@ def is_final_animation_render_active():
     return bool(_FINAL_ANIMATION_RENDER_ACTIVE)
 
 
-def _clear_auto_resolve_in_flight():
-    global _AUTO_RESOLVE_IN_FLIGHT
-    _AUTO_RESOLVE_IN_FLIGHT = False
-    shared_state = globals().get("_AUTO_RESOLVE_SHARED_STATE")
+def _clear_resolve_in_flight():
+    global _RESOLVE_IN_FLIGHT
+    _RESOLVE_IN_FLIGHT = False
+    shared_state = globals().get("_RESOLVE_SHARED_STATE")
     if shared_state is not None:
         shared_state.in_flight = False
 
@@ -819,81 +726,31 @@ def _reset_navigation_camera_control_runtime_state():
 
 
 def _scene_key(scene):
-    return _auto_resolve_state._scene_key(scene)
+    return _resolve_state._scene_key(scene)
 
 
 def _scene_from_key(scene_id):
-    return _auto_resolve_state._scene_from_key(scene_id, _AUTO_RESOLVE_STATE_CTX)
+    return _resolve_state._scene_from_key(scene_id, _RESOLVE_STATE_CTX)
 
 
-def _coerce_scene_id(scene_or_id):
-    return _auto_resolve_state._coerce_scene_id(scene_or_id)
+def _is_navigation_user_edit_active(scene=None):
+    del scene
+    return (time.monotonic() - float(_get_navigation_user_edit_last_touch())) < float(_NAV_CAMERA_CONTROL_SYNC_GRACE_SEC)
 
 
-def _set_scene_auto_resolve_map_entry(target_map, scene_id, value):
-    return _auto_resolve_state._set_scene_auto_resolve_map_entry(target_map, scene_id, value)
-
-
-def _read_scene_auto_resolve_state(scene_or_id):
-    return _auto_resolve_state._read_scene_auto_resolve_state(scene_or_id, _AUTO_RESOLVE_STATE_CTX)
-
-
-def _write_scene_auto_resolve_state(state):
-    return _auto_resolve_state._write_scene_auto_resolve_state(state, _AUTO_RESOLVE_STATE_CTX)
-
-
-def mark_auto_resolve_clean_after_resolve(scene):
+def mark_resolve_clean_after_resolve(scene):
     if scene is None:
         return
-    scene_state = _read_scene_auto_resolve_state(scene)
-    if scene_state is None:
-        return
-    now = time.monotonic()
     try:
-        scene_id = _scene_key(scene)
-        active_view_signature = None
-        try:
-            if _auto_resolve_scope_mode(scene) == "ACTIVE_VIEW":
-                active_view_signature = _active_view_signature()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            active_view_signature = None
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            active_view_signature = None
-        camera_signature = _camera_signature(scene)
-        signature = (
-            ("ACTIVE_VIEW", active_view_signature)
-            if active_view_signature is not None
-            else camera_signature
-        )
-        output_signature = _output_resolution_signature(scene)
-        scene_state.last_resolve_time = now
-        scene_state.last_change_time = now
-        scene_state.last_camera_signature = signature
-        scene_state.last_output_signature = output_signature
-        scene_state.last_processed_signature = signature
-        scene_state.pending_output_change = False
-        _write_scene_auto_resolve_state(scene_state)
-        _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[scene_id] = now
+        _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[_scene_key(scene)] = time.monotonic()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed marking auto-resolve state clean after resolve", exc_info=True)
+        logger.debug("Planetka: failed marking resolve timestamp", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed marking auto-resolve state clean after resolve", exc_info=True)
-
-
-def _make_depsgraph_trigger_signature(scene):
-    return _auto_resolve_state._make_depsgraph_trigger_signature(scene, _AUTO_RESOLVE_STATE_CTX)
-
-
-def _depsgraph_trigger_output_signature(signature):
-    return _auto_resolve_state._depsgraph_trigger_output_signature(signature)
-
-
-def _mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature):
-    return _auto_resolve_state._mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature, _AUTO_RESOLVE_STATE_CTX)
+        logger.debug("Planetka: failed marking resolve timestamp", exc_info=True)
 
 
 def get_resolve_runtime_status(scene=None):
-    return _auto_resolve_state.get_resolve_runtime_status(scene=scene, ctx=_AUTO_RESOLVE_STATE_CTX)
+    return _resolve_state.get_resolve_runtime_status(scene=scene, ctx=_RESOLVE_STATE_CTX)
 
 
 def get_camera_inside_earth_warning(scene=None):
@@ -927,8 +784,8 @@ def _camera_signature(scene):
     return _view_telemetry.camera_signature(scene)
 
 
-def _is_resolve_pipeline_busy():
-    return _auto_resolve_state._is_resolve_pipeline_busy(_AUTO_RESOLVE_STATE_CTX)
+def _is_resolve_busy():
+    return _resolve_state._is_resolve_busy(_RESOLVE_STATE_CTX)
 
 
 def _normalize_texture_quality_mode(value):
@@ -943,24 +800,10 @@ def _output_resolution_signature(scene):
     return _view_telemetry.output_resolution_signature(scene, _VIEW_TELEMETRY_CTX)
 
 
-def _current_view_scope(scene):
-    return _view_telemetry.current_view_scope(scene, _VIEW_TELEMETRY_CTX)
-
-
-def _auto_resolve_scope_mode(scene):
-    return _view_telemetry.auto_resolve_scope_mode(scene, _VIEW_TELEMETRY_CTX)
-
-
 def _handle_viewport_motion_optimization(scene, camera_signature):
     return _view_telemetry.handle_viewport_motion_optimization(scene, camera_signature, _VIEW_TELEMETRY_CTX)
 
 
-def _timeline_signature(scene):
-    return _view_telemetry.timeline_signature(scene)
-
-
-def _keyed_runtime_signature(scene):
-    return _view_telemetry.keyed_runtime_signature(scene)
 
 
 def _iter_scene_animation_fcurves(scene):
@@ -971,9 +814,6 @@ def _scene_has_keyed_runtime_path(scene, accepted_paths):
     return _view_telemetry.scene_has_keyed_runtime_path(scene, accepted_paths, _VIEW_TELEMETRY_CTX)
 
 
-def _handle_timeline_motion_optimization(scene):
-    return _view_telemetry.handle_timeline_motion_optimization(scene, _VIEW_TELEMETRY_CTX)
-
 
 def _sunlight_signature(scene):
     return _view_telemetry.sunlight_signature(scene, _VIEW_TELEMETRY_CTX)
@@ -981,10 +821,6 @@ def _sunlight_signature(scene):
 
 def _handle_sunlight_motion_optimization(scene):
     return _view_telemetry.handle_sunlight_motion_optimization(scene, _VIEW_TELEMETRY_CTX)
-
-
-def _handle_view_scope_quality_transition(scene):
-    return _view_telemetry.handle_view_scope_quality_transition(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _earth_radius_blender_units(earth_obj):
@@ -1063,184 +899,32 @@ def _last_resolved_tiles(scene):
     return _view_telemetry.last_resolved_tiles(scene, _VIEW_TELEMETRY_CTX)
 
 
-def _mark_auto_resolve_dirty(*args, **kwargs):
-    return _auto_resolve_pipeline._mark_auto_resolve_dirty(*args, **kwargs)
-
-
-def _auto_resolve_idle_seconds(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_idle_seconds(*args, **kwargs)
-
-
-def _is_navigation_user_edit_active(*args, **kwargs):
-    return _auto_resolve_pipeline._is_navigation_user_edit_active(*args, **kwargs)
-
-
-def _active_view_monitor_interval_seconds(*args, **kwargs):
-    return _auto_resolve_pipeline._active_view_monitor_interval_seconds(*args, **kwargs)
-
-
-def _arm_auto_resolve_timer(*args, **kwargs):
-    return _auto_resolve_pipeline._arm_auto_resolve_timer(*args, **kwargs)
-
-
-def _auto_resolve_download_job_signature(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_download_job_signature(*args, **kwargs)
-
-
-def _arm_auto_resolve_download_timer(*args, **kwargs):
-    return _auto_resolve_pipeline._arm_auto_resolve_download_timer(*args, **kwargs)
-
-
-def _start_auto_resolve_download_thread(*args, **kwargs):
-    return _auto_resolve_pipeline._start_auto_resolve_download_thread(*args, **kwargs)
-
-
-def _show_download_status_popup(*args, **kwargs):
-    return _auto_resolve_pipeline._show_download_status_popup(*args, **kwargs)
-
-
-def _schedule_auto_resolve_download(*args, **kwargs):
-    return _auto_resolve_pipeline._schedule_auto_resolve_download(*args, **kwargs)
-
-
 def queue_resolve_download(*args, **kwargs):
-    return _auto_resolve_pipeline.queue_resolve_download(*args, **kwargs)
+    return _resolve.queue_resolve_download(*args, **kwargs)
 
 
 def _mark_manual_queued_resolve_error(*args, **kwargs):
-    return _auto_resolve_pipeline._mark_manual_queued_resolve_error(*args, **kwargs)
+    return _resolve._mark_manual_queued_resolve_error(*args, **kwargs)
 
 
 def _read_scene_last_resolve_error(*args, **kwargs):
-    return _auto_resolve_pipeline._read_scene_last_resolve_error(*args, **kwargs)
+    return _resolve._read_scene_last_resolve_error(*args, **kwargs)
 
 
 def _store_resolve_summary(*args, **kwargs):
-    return _auto_resolve_pipeline._store_resolve_summary(*args, **kwargs)
+    return _resolve._store_resolve_summary(*args, **kwargs)
 
 
 def _write_last_resolve_summary(*args, **kwargs):
-    return _auto_resolve_pipeline._write_last_resolve_summary(*args, **kwargs)
+    return _resolve._write_last_resolve_summary(*args, **kwargs)
 
 
-def _is_non_retryable_resolve_error(*args, **kwargs):
-    return _auto_resolve_pipeline._is_non_retryable_resolve_error(*args, **kwargs)
+def _resolve_pump_timer(*args, **kwargs):
+    return _resolve._resolve_pump_timer(*args, **kwargs)
 
 
-def _mark_auto_resolve_terminal_failure(*args, **kwargs):
-    return _auto_resolve_pipeline._mark_auto_resolve_terminal_failure(*args, **kwargs)
-
-
-def _handle_auto_resolve_download_failure(*args, **kwargs):
-    return _auto_resolve_pipeline._handle_auto_resolve_download_failure(*args, **kwargs)
-
-
-def _auto_resolve_completion_epoch_state(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_completion_epoch_state(*args, **kwargs)
-
-
-def _auto_resolve_handle_cancel_or_failure(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_handle_cancel_or_failure(*args, **kwargs)
-
-
-def _auto_resolve_log_pending_request_overlap(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_log_pending_request_overlap(*args, **kwargs)
-
-
-def _auto_resolve_prepare_apply_context(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_prepare_apply_context(*args, **kwargs)
-
-
-def _auto_resolve_apply_downloaded_tiles(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_apply_downloaded_tiles(*args, **kwargs)
-
-
-def _auto_resolve_summary_total_bytes(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_summary_total_bytes(*args, **kwargs)
-
-
-def _finalize_auto_resolve_apply(*args, **kwargs):
-    return _auto_resolve_pipeline._finalize_auto_resolve_apply(*args, **kwargs)
-
-
-def _handle_auto_resolve_download_complete(*args, **kwargs):
-    return _auto_resolve_pipeline._handle_auto_resolve_download_complete(*args, **kwargs)
-
-
-def _auto_resolve_download_worker(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_download_worker(*args, **kwargs)
-
-
-def _auto_resolve_download_pump_timer(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_download_pump_timer(*args, **kwargs)
-
-
-def stop_auto_resolve_download_pipeline(*args, **kwargs):
-    return _auto_resolve_pipeline.stop_auto_resolve_download_pipeline(*args, **kwargs)
-
-
-def request_auto_resolve(*args, **kwargs):
-    return _auto_resolve_pipeline.request_auto_resolve(*args, **kwargs)
-
-
-def _can_auto_resolve_run(*args, **kwargs):
-    return _auto_resolve_pipeline._can_auto_resolve_run(*args, **kwargs)
-
-
-def update_auto_resolve(self, context):
-    return _auto_resolve_pipeline.update_auto_resolve(self, context)
-
-
-def _auto_resolve_collect_scope_signatures(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_collect_scope_signatures(*args, **kwargs)
-
-
-def _auto_resolve_sync_state_signatures(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_sync_state_signatures(*args, **kwargs)
-
-
-def _auto_resolve_update_size_estimation(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_update_size_estimation(*args, **kwargs)
-
-
-def _arm_auto_resolve_noncritical_timer(*args, **kwargs):
-    return _auto_resolve_pipeline._arm_auto_resolve_noncritical_timer(*args, **kwargs)
-
-
-def _auto_resolve_enqueue_size_estimation(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_enqueue_size_estimation(*args, **kwargs)
-
-
-def _auto_resolve_noncritical_timer(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_noncritical_timer(*args, **kwargs)
-
-
-def _auto_resolve_detect_change(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_detect_change(*args, **kwargs)
-
-
-def _auto_resolve_plan_job(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_plan_job(*args, **kwargs)
-
-
-def _auto_resolve_dispatch_job(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_dispatch_job(*args, **kwargs)
-
-
-def _auto_resolve_tick_once(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_tick_once(*args, **kwargs)
-
-
-def _auto_resolve_timer(*args, **kwargs):
-    return _auto_resolve_pipeline._auto_resolve_timer(*args, **kwargs)
-
-
-def ensure_auto_resolve_service_running(*args, **kwargs):
-    return _auto_resolve_pipeline.ensure_auto_resolve_service_running(*args, **kwargs)
-
-
-def stop_auto_resolve_service(*args, **kwargs):
-    return _auto_resolve_pipeline.stop_auto_resolve_service(*args, **kwargs)
+def stop_resolve(*args, **kwargs):
+    return _resolve.stop_resolve(*args, **kwargs)
 
 
 def _build_view_telemetry_context():
@@ -1253,7 +937,6 @@ def _build_view_telemetry_context():
         write_realtime_view_diagnostics=write_realtime_view_diagnostics,
         camera_inside_earth_warning_key=CAMERA_INSIDE_EARTH_WARNING_KEY,
         scene_key=_scene_key,
-        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
         is_render_job_active=_is_render_job_active,
         is_animation_playing=_is_animation_playing,
         get_earth_object=get_earth_object,
@@ -1261,8 +944,7 @@ def _build_view_telemetry_context():
         get_streaming_utils=_get_streaming_utils,
         get_coverage_map=_get_coverage_map,
         normalize_texture_quality_mode=_normalize_texture_quality_mode,
-        request_auto_resolve=request_auto_resolve,
-        get_auto_resolve_in_flight=lambda: bool(_AUTO_RESOLVE_SHARED_STATE.in_flight),
+        get_resolve_in_flight=lambda: bool(_RESOLVE_SHARED_STATE.in_flight),
         sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
         monotonic=time.monotonic,
         real_earth_radius_m=_REAL_EARTH_RADIUS_M,
@@ -1278,10 +960,7 @@ def _build_view_telemetry_context():
         viewport_opt_last_signature=_VIEWPORT_OPT_LAST_SIGNATURE,
         sunlight_last_signature=_SUNLIGHT_LAST_SIGNATURE,
         sunlight_object_name_cache=_SUNLIGHT_OBJECT_NAME_CACHE,
-        viewport_scope_last=_VIEWPORT_SCOPE_LAST,
-        viewport_scope_last_resolve_time=_VIEWPORT_SCOPE_LAST_RESOLVE_TIME,
         last_realtime_telemetry=_LAST_REALTIME_TELEMETRY,
-        timeline_last_signature=_TIMELINE_LAST_SIGNATURE,
     )
     return ViewTelemetryContext(
         deps=deps,
@@ -1306,19 +985,13 @@ def _build_navigation_runtime_context():
         sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
         sync_idprops_from_props=_sync_idprops_from_props,
         sync_navigation_idprops_from_props=_sync_navigation_idprops_from_props,
-        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
         suspend_navigation_shot_updates=suspend_navigation_shot_updates,
         resume_navigation_shot_updates=resume_navigation_shot_updates,
-        request_auto_resolve=request_auto_resolve,
     )
     state = NavigationRuntimeState(
         nav_camera_control_last_signature=_NAV_CAMERA_CONTROL_LAST_SIGNATURE,
         nav_camera_control_syncing=_NAV_CAMERA_CONTROL_SYNCING,
         nav_camera_control_sync_suspend_count=_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT,
-        navigation_adaptive_suspended=_NAVIGATION_ADAPTIVE_SUSPENDED,
-        navigation_adaptive_last_touch=_NAVIGATION_ADAPTIVE_LAST_TOUCH,
-        navigation_adaptive_timer_running=_NAVIGATION_ADAPTIVE_TIMER_RUNNING,
-        navigation_adaptive_idle_sec=_NAVIGATION_ADAPTIVE_IDLE_SEC,
         navigation_shot_update_pending=_NAVIGATION_SHOT_UPDATE_PENDING,
         navigation_shot_update_reentrant=_NAVIGATION_SHOT_UPDATE_REENTRANT,
         navigation_shot_suspend_count=_NAVIGATION_SHOT_SUSPEND_COUNT,
@@ -1336,13 +1009,9 @@ def _build_handler_runtime_context():
         logger=logger,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         import_recoverable_exceptions=PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS,
-        clear_auto_resolve_in_flight=_clear_auto_resolve_in_flight,
+        clear_resolve_in_flight=_clear_resolve_in_flight,
         reset_navigation_shot_runtime_state=_reset_navigation_shot_runtime_state,
         reset_navigation_camera_control_runtime_state=_reset_navigation_camera_control_runtime_state,
-        force_restore_navigation_adaptive_state=_force_restore_navigation_adaptive_state,
-        mark_auto_resolve_dirty=_mark_auto_resolve_dirty,
-        request_auto_resolve=request_auto_resolve,
-        self_heal_missing_cache_images_for_render=self_heal_missing_cache_images_for_render,
         iter_scenes=_iter_scenes,
         set_planetka_logging=set_planetka_logging,
         migrate_scene_schema=migrate_scene_schema,
@@ -1358,25 +1027,9 @@ def _build_handler_runtime_context():
         is_animation_playing=_is_animation_playing,
         get_earth_object=get_earth_object,
         sync_navigation_controls_from_scene_camera=_sync_navigation_controls_from_scene_camera,
-        can_auto_resolve_run=_can_auto_resolve_run,
-        ensure_auto_resolve_service_running=ensure_auto_resolve_service_running,
-        update_realtime_telemetry=_update_realtime_telemetry,
-        is_resolve_pipeline_busy=_is_resolve_pipeline_busy,
-        make_depsgraph_trigger_signature=_make_depsgraph_trigger_signature,
-        handle_timeline_motion_optimization=_handle_timeline_motion_optimization,
-        handle_viewport_motion_optimization=_handle_viewport_motion_optimization,
-        camera_signature=_camera_signature,
-        handle_sunlight_motion_optimization=_handle_sunlight_motion_optimization,
-        mark_auto_resolve_from_depsgraph_trigger=_mark_auto_resolve_from_depsgraph_trigger,
-        keyed_runtime_signature=_keyed_runtime_signature,
-        scene_key=_scene_key,
-        recover_missing_cache_image_paths_to_fallback=_recover_missing_cache_image_paths_to_fallback,
-        schedule_load_recovery_resolve=_schedule_load_recovery_resolve,
         import_module=importlib.import_module,
         get_prefs=get_prefs,
-        auth_is_authenticated_attr="is_authenticated",
         package_name=__package__ or "",
-        account_panel_default_collapsed_key=ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     )
     state = HandlerRuntimeState(
         render_job_active=_RENDER_JOB_ACTIVE,
@@ -1388,7 +1041,6 @@ def _build_handler_runtime_context():
         render_job_last_frame_written_at=_RENDER_JOB_LAST_FRAME_WRITTEN_AT,
         render_job_last_frame_written=_RENDER_JOB_LAST_FRAME_WRITTEN,
         logging_syncing=_LOGGING_SYNCING,
-        frame_keyed_runtime_last_signature=_FRAME_KEYED_RUNTIME_LAST_SIGNATURE,
     )
     return HandlerRuntimeContext(
         deps=deps,
@@ -1429,50 +1081,30 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
     return _handler_runtime.depsgraph_update_post(_scene, _depsgraph, _HANDLER_RUNTIME_CTX)
 
 
-@persistent
-def _planetka_frame_change_post(scene, _depsgraph=None):
-    return _handler_runtime.frame_change_post(scene, _depsgraph=_depsgraph, ctx=_HANDLER_RUNTIME_CTX)
-
 
 @persistent
 def _planetka_load_post(_dummy):
     return _handler_runtime.load_post(_dummy, _HANDLER_RUNTIME_CTX)
 
 
-def _build_auto_resolve_contexts():
-    settings = AutoResolveSettings(
-        retry_delay_sec=AUTO_RESOLVE_RETRY_DELAY_SEC,
-        min_interval_sec_default=AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT,
-        idle_sec_default=AUTO_RESOLVE_IDLE_SEC_DEFAULT,
-        download_pump_interval_sec=_AUTO_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC,
-        download_scene_wait_sec=_AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC,
-        download_completed_max_age_sec=_AUTO_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC,
-        noncritical_interval_sec=_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC,
+def _build_resolve_contexts():
+    settings = ResolveSettings(
+        download_pump_interval_sec=_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC,
+        download_scene_wait_sec=_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC,
+        download_completed_max_age_sec=_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC,
     )
-    shared_state = AutoResolveSharedState(
-        in_flight=_AUTO_RESOLVE_IN_FLIGHT,
-        timer_running=_AUTO_RESOLVE_TIMER_RUNNING,
-        download_timer_running=_AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING,
-        download_thread=_AUTO_RESOLVE_DOWNLOAD_THREAD,
-        download_active_job=_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB,
-        download_pending_job=_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB,
-        download_completed=_AUTO_RESOLVE_DOWNLOAD_COMPLETED,
-        download_request_counter=_AUTO_RESOLVE_DOWNLOAD_REQUEST_COUNTER,
-        download_epoch=_AUTO_RESOLVE_DOWNLOAD_EPOCH,
-        download_lock=_AUTO_RESOLVE_DOWNLOAD_LOCK,
-        next_due_time=_AUTO_RESOLVE_NEXT_DUE_TIME,
-        last_camera_signature=_AUTO_RESOLVE_LAST_CAMERA_SIGNATURE,
-        last_output_signature=_AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE,
-        last_change_time=_AUTO_RESOLVE_LAST_CHANGE_TIME,
-        last_resolve_time=_AUTO_RESOLVE_LAST_RESOLVE_TIME,
-        last_processed_signature=_AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE,
-        pending_output_change=_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE,
-        trigger_last_signature=_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE,
-        noncritical_timer_running=_AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING,
-        noncritical_pending=_AUTO_RESOLVE_NONCRITICAL_PENDING,
-        size_estimate_last_signature=_AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE,
+    shared_state = ResolveSharedState(
+        in_flight=_RESOLVE_IN_FLIGHT,
+        download_timer_running=_RESOLVE_DOWNLOAD_TIMER_RUNNING,
+        download_thread=_RESOLVE_DOWNLOAD_THREAD,
+        download_active_job=_RESOLVE_DOWNLOAD_ACTIVE_JOB,
+        download_pending_job=_RESOLVE_DOWNLOAD_PENDING_JOB,
+        download_completed=_RESOLVE_DOWNLOAD_COMPLETED,
+        download_request_counter=_RESOLVE_DOWNLOAD_REQUEST_COUNTER,
+        download_epoch=_RESOLVE_DOWNLOAD_EPOCH,
+        download_lock=_RESOLVE_DOWNLOAD_LOCK,
     )
-    download_deps = AutoResolveDownloadDeps(
+    download_deps = ResolveDownloadDeps(
         bpy=bpy,
         logger=logger,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
@@ -1482,127 +1114,40 @@ def _build_auto_resolve_contexts():
         clear_status_notices=_clear_status_notices,
         scene_key=_scene_key,
         scene_from_key=_scene_from_key,
-        read_scene_auto_resolve_state=_read_scene_auto_resolve_state,
-        write_scene_auto_resolve_state=_write_scene_auto_resolve_state,
-        build_auto_resolve_download_job=_build_auto_resolve_download_job,
-        is_auto_resolve_download_job=_is_auto_resolve_download_job,
+        build_resolve_download_job=_build_resolve_download_job,
+        is_resolve_download_job=_is_resolve_download_job,
         job_field=_job_field,
         job_set_field=_job_set_field,
         normalize_texture_quality_mode=_normalize_texture_quality_mode,
-        enforce_texture_quality_mode_for_account=_enforce_texture_quality_mode_for_account,
         camera_signature=_camera_signature,
         output_resolution_signature=_output_resolution_signature,
         canonical_tiles=_canonical_tiles,
-        is_render_job_active=_is_auto_resolve_render_guard_active,
+        is_render_job_active=_is_resolve_render_guard_active,
         is_animation_playing=_is_animation_playing,
-        mark_manual_queued_resolve_error=_mark_manual_queued_resolve_error,
-        read_scene_last_resolve_error=_read_scene_last_resolve_error,
-        last_resolved_tiles=_last_resolved_tiles,
-        request_auto_resolve=request_auto_resolve,
         estimate_download_bytes_for_visible_tiles=_estimate_download_bytes_for_visible_tiles,
-        update_realtime_telemetry=_update_realtime_telemetry,
         tag_view3d_redraw=_tag_view3d_redraw,
         last_resolve_tile_count_key=LAST_RESOLVE_TILE_COUNT_KEY,
         last_resolve_downloaded_mb_key=LAST_RESOLVE_DOWNLOADED_MB_KEY,
         last_resolve_downloaded_gb_key=LAST_RESOLVE_DOWNLOADED_GB_KEY,
         last_resolve_total_seconds_key=LAST_RESOLVE_TOTAL_SECONDS_KEY,
-        viewport_scope_last_resolve_time=_VIEWPORT_SCOPE_LAST_RESOLVE_TIME,
     )
-    decision_deps = AutoResolveDecisionDeps(
-        bpy=bpy,
-        logger=logger,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        resolve_trace=_resolve_trace,
-        get_navigation_user_edit_last_touch=_get_navigation_user_edit_last_touch,
-        nav_camera_control_sync_grace_sec=_NAV_CAMERA_CONTROL_SYNC_GRACE_SEC,
-        iter_scenes=_iter_scenes,
-        scene_key=_scene_key,
-        read_scene_auto_resolve_state=_read_scene_auto_resolve_state,
-        write_scene_auto_resolve_state=_write_scene_auto_resolve_state,
-        make_depsgraph_trigger_signature=_make_depsgraph_trigger_signature,
-        depsgraph_trigger_output_signature=_depsgraph_trigger_output_signature,
-        camera_signature=_camera_signature,
-        output_resolution_signature=_output_resolution_signature,
-        current_view_scope=_current_view_scope,
-        auto_resolve_scope_mode=_auto_resolve_scope_mode,
-        resolve_scope_altitude_info=_resolve_scope_altitude_info,
-        set_camera_inside_earth_warning=_set_camera_inside_earth_warning,
-        clear_camera_inside_earth_warning=_clear_camera_inside_earth_warning,
-        active_view_signature=_active_view_signature,
-        last_resolved_tiles=_last_resolved_tiles,
-        get_earth_object=get_earth_object,
-        get_tile_utils=_get_tile_utils,
-        canonical_tiles=_canonical_tiles,
-        normalize_texture_quality_mode=_normalize_texture_quality_mode,
-        is_render_job_active=_is_auto_resolve_render_guard_active,
-        is_animation_playing=_is_animation_playing,
-        is_navigation_user_edit_active=_is_navigation_user_edit_active,
-        stop_auto_resolve_download_pipeline=stop_auto_resolve_download_pipeline,
-        schedule_auto_resolve_download=_schedule_auto_resolve_download,
-        arm_auto_resolve_timer=_arm_auto_resolve_timer,
-        enqueue_size_estimation=_auto_resolve_enqueue_size_estimation,
-        update_realtime_telemetry=_update_realtime_telemetry,
-        handle_viewport_motion_optimization=_handle_viewport_motion_optimization,
-        handle_timeline_motion_optimization=_handle_timeline_motion_optimization,
-        handle_sunlight_motion_optimization=_handle_sunlight_motion_optimization,
-        handle_view_scope_quality_transition=_handle_view_scope_quality_transition,
-        keyed_runtime_signature=_keyed_runtime_signature,
-        timeline_signature=_timeline_signature,
-        sunlight_signature=_sunlight_signature,
-        sync_idprops_from_props=_sync_idprops_from_props,
-        force_restore_navigation_adaptive_state=_force_restore_navigation_adaptive_state,
-        viewport_opt_last_signature=_VIEWPORT_OPT_LAST_SIGNATURE,
-        sunlight_last_signature=_SUNLIGHT_LAST_SIGNATURE,
-        viewport_scope_last=_VIEWPORT_SCOPE_LAST,
-        viewport_scope_last_resolve_time=_VIEWPORT_SCOPE_LAST_RESOLVE_TIME,
-        last_realtime_telemetry=_LAST_REALTIME_TELEMETRY,
-        timeline_last_signature=_TIMELINE_LAST_SIGNATURE,
-        frame_keyed_runtime_last_signature=_FRAME_KEYED_RUNTIME_LAST_SIGNATURE,
-        nav_camera_control_last_signature=_NAV_CAMERA_CONTROL_LAST_SIGNATURE,
-        sunlight_object_name_cache=_SUNLIGHT_OBJECT_NAME_CACHE,
-    )
-    noncritical_deps = AutoResolveNonCriticalDeps(
-        bpy=bpy,
-        logger=logger,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        get_prefs=get_prefs,
-        normalize_texture_quality_mode=_normalize_texture_quality_mode,
-        scene_key=_scene_key,
-        scene_from_key=_scene_from_key,
-        update_resolve_size_estimates=update_resolve_size_estimates,
-    )
-    state_deps = AutoResolveStateDeps(
+    state_deps = ResolveStateDeps(
         bpy=bpy,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         iter_scenes=_iter_scenes,
         normalize_texture_quality_mode=_normalize_texture_quality_mode,
-        camera_signature=_camera_signature,
-        auto_resolve_scope_mode=_auto_resolve_scope_mode,
-        active_view_signature=_active_view_signature,
-        output_resolution_signature=_output_resolution_signature,
-        request_auto_resolve=request_auto_resolve,
         get_r2_source=_get_r2_source,
-        is_render_job_active=_is_auto_resolve_render_guard_active,
+        is_render_job_active=_is_resolve_render_guard_active,
     )
     return (
         settings,
         shared_state,
-        AutoResolveDownloadContext(
+        ResolveDownloadContext(
             deps=download_deps,
             state=shared_state,
             settings=settings,
         ),
-        AutoResolveDecisionContext(
-            deps=decision_deps,
-            state=shared_state,
-            settings=settings,
-        ),
-        AutoResolveNonCriticalContext(
-            deps=noncritical_deps,
-            state=shared_state,
-            settings=settings,
-        ),
-        AutoResolveStateContext(
+        ResolveStateContext(
             deps=state_deps,
             state=shared_state,
         ),
@@ -1621,17 +1166,13 @@ _handler_runtime._HANDLER_RUNTIME_CTX = _HANDLER_RUNTIME_CTX
 
 
 (
-    _AUTO_RESOLVE_SETTINGS,
-    _AUTO_RESOLVE_SHARED_STATE,
-    _AUTO_RESOLVE_DOWNLOAD_CTX,
-    _AUTO_RESOLVE_DECISION_CTX,
-    _AUTO_RESOLVE_NONCRITICAL_CTX,
-    _AUTO_RESOLVE_STATE_CTX,
-) = _build_auto_resolve_contexts()
+    _RESOLVE_SETTINGS,
+    _RESOLVE_SHARED_STATE,
+    _RESOLVE_DOWNLOAD_CTX,
+    _RESOLVE_STATE_CTX,
+) = _build_resolve_contexts()
 
-# state.py remains the owner of the singleton auto-resolve contexts; the
-# pipeline module receives them explicitly instead of pulling facade globals.
-_auto_resolve_pipeline._AUTO_RESOLVE_DOWNLOAD_CTX = _AUTO_RESOLVE_DOWNLOAD_CTX
-_auto_resolve_pipeline._AUTO_RESOLVE_DECISION_CTX = _AUTO_RESOLVE_DECISION_CTX
-_auto_resolve_pipeline._AUTO_RESOLVE_NONCRITICAL_CTX = _AUTO_RESOLVE_NONCRITICAL_CTX
-_auto_resolve_state._AUTO_RESOLVE_STATE_CTX = _AUTO_RESOLVE_STATE_CTX
+# state.py remains the owner of the singleton resolve contexts; the runtime
+# modules receive them explicitly instead of pulling facade globals.
+_resolve._RESOLVE_DOWNLOAD_CTX = _RESOLVE_DOWNLOAD_CTX
+_resolve_state._RESOLVE_STATE_CTX = _RESOLVE_STATE_CTX

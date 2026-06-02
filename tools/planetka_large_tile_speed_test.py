@@ -392,10 +392,8 @@ def main():
 
         auth_payload = _load_auth_payload(auth_payload_path)
         if auth_payload:
-            auth_module._apply_auth_payload(prefs, auth_payload, login_state="authenticated")  # noqa: SLF001
-        _assert(auth_module.is_authenticated(prefs), "Planetka account is not authenticated in this Blender profile")
-
-        auth_module.sync_account_profile(prefs)
+            auth_module._apply_auth_payload(prefs, auth_payload)  # noqa: SLF001
+        _assert(auth_module.is_authenticated(prefs), "Planetka Cloud session is not active in this Blender profile")
 
         scene = bpy.context.scene
         props = scene.planetka
@@ -406,7 +404,6 @@ def main():
             except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
-        props.auto_resolve = False
         props.texture_quality_mode = "FULL"
         props.show_earth_preview = False
         scene.render.engine = "CYCLES"

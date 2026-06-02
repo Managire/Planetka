@@ -180,9 +180,8 @@ def ensure_authenticated(auth_module, prefs, payload_path="", api_token="", api_
         auth_module.ensure_authenticated_session(prefs)
     return {
         "bootstrap": "anonymous",
-        "email": str(getattr(prefs, "auth_email", "") or "").strip(),
-        "licence_code": str(auth_module.get_licence_code(prefs) or "").strip(),
-        "login_state": str(getattr(prefs, "auth_login_state", "") or "").strip(),
+        "device_id": str(getattr(prefs, "auth_device_id", "") or "").strip(),
+        "session_active": bool(auth_module.is_authenticated(prefs)),
     }
 
 def ensure_camera(scene, name="Planetka E2E Camera"):
@@ -413,8 +412,8 @@ def read_scene_last_resolve_error(scene):
 
 def drain_queued_resolve(state_module, scene, timeout_sec=60.0, sleep_sec=0.05):
     runtime_fn = getattr(state_module, "get_resolve_runtime_status", None)
-    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
-    stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
+    pump_fn = getattr(state_module, "_resolve_pump_timer", None)
+    stop_fn = getattr(state_module, "stop_resolve", None)
     started = time.monotonic()
     last_status = {}
     baseline_error = read_scene_last_resolve_error(scene)

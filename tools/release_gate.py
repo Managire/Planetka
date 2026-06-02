@@ -523,15 +523,13 @@ def main() -> int:
         if isinstance(coverage, dict):
             account = coverage.get("account", {})
             if isinstance(account, dict):
-                auth_bootstrap = str(account.get("auth_bootstrap", "") or "").strip()
-                account_email = str(account.get("email", "") or "").strip()
-                licence_code = str(account.get("licence_code", "") or "").strip()
+                auth_bootstrap = str(account.get("auth_bootstrap", "") or account.get("bootstrap", "") or "").strip()
+                device_id = str(account.get("device_id", "") or "").strip()
                 if auth_bootstrap:
                     print(
                         "  auth:"
                         f" bootstrap={auth_bootstrap}"
-                        f"{f' email={account_email}' if account_email else ''}"
-                        f"{f' licence={licence_code}' if licence_code else ''}"
+                        f"{f' device_id={device_id}' if device_id else ''}"
                     )
                 if auth_bootstrap == "session":
                     runtime_errors.append(
