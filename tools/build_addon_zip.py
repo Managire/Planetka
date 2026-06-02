@@ -30,9 +30,7 @@ DEFAULT_DIST_DIR = ROOT / "dist"
 FORBIDDEN_STAGE_NAMES = {
     ".ds_store",
 }
-FORBIDDEN_PACKAGE_PATHS = {
-    "Resources/tile_sizes.sqlite.land_stats_build",
-}
+FORBIDDEN_PACKAGE_PATHS = set()
 FORBIDDEN_STAGE_SUFFIXES = {
     ".pyc",
     ".pyo",

@@ -2457,11 +2457,37 @@ def _object_uses_fake_atmosphere_material(obj):
 
 
 def _normalize_eevee_supplement_data_names():
-    material = (
-        bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME)
-        or bpy.data.materials.get(SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME)
-    )
+    fake_obj = bpy.data.objects.get(FAKE_ATMOSPHERE_OBJECT_NAME) or bpy.data.objects.get(FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME)
+
+    material = None
+    materials = getattr(getattr(fake_obj, "data", None), "materials", None) if fake_obj is not None else None
+    if materials:
+        for candidate in materials:
+            if candidate is None:
+                continue
+            name = str(getattr(candidate, "name", "") or "")
+            if (
+                name == FAKE_ATMOSPHERE_MATERIAL_NAME
+                or name.startswith(f"{FAKE_ATMOSPHERE_MATERIAL_NAME}.")
+                or name == SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME
+                or name.startswith(f"{SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME}.")
+            ):
+                material = candidate
+                break
+    if material is None:
+        material = (
+            bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME)
+            or bpy.data.materials.get(SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME)
+        )
     if material is not None and str(getattr(material, "name", "")) != FAKE_ATMOSPHERE_MATERIAL_NAME:
+        existing = bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME)
+        if existing is not None and existing is not material:
+            try:
+                bpy.data.materials.remove(existing, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         try:
             material.name = FAKE_ATMOSPHERE_MATERIAL_NAME
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -2478,13 +2504,182 @@ def _normalize_eevee_supplement_data_names():
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
-    node_group = (
-        bpy.data.node_groups.get(FAKE_ATMOSPHERE_GROUP_NAME)
-        or bpy.data.node_groups.get(SOURCE_FAKE_ATMOSPHERE_GROUP_NAME)
-    )
+    node_group = None
+    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    if node_tree is not None:
+        for node in getattr(node_tree, "nodes", ()):
+            if str(getattr(node, "bl_idname", "") or "") != "ShaderNodeGroup":
+                continue
+            candidate_group = getattr(node, "node_tree", None)
+            candidate_name = str(getattr(candidate_group, "name", "") or "")
+            if (
+                candidate_name == FAKE_ATMOSPHERE_GROUP_NAME
+                or candidate_name.startswith(f"{FAKE_ATMOSPHERE_GROUP_NAME}.")
+                or candidate_name == SOURCE_FAKE_ATMOSPHERE_GROUP_NAME
+                or candidate_name.startswith(f"{SOURCE_FAKE_ATMOSPHERE_GROUP_NAME}.")
+            ):
+                node_group = candidate_group
+                break
+    if node_group is None:
+        node_group = (
+            bpy.data.node_groups.get(FAKE_ATMOSPHERE_GROUP_NAME)
+            or bpy.data.node_groups.get(SOURCE_FAKE_ATMOSPHERE_GROUP_NAME)
+        )
     if node_group is not None and str(getattr(node_group, "name", "")) != FAKE_ATMOSPHERE_GROUP_NAME:
+        existing = bpy.data.node_groups.get(FAKE_ATMOSPHERE_GROUP_NAME)
+        if existing is not None and existing is not node_group:
+            try:
+                bpy.data.node_groups.remove(existing, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         try:
             node_group.name = FAKE_ATMOSPHERE_GROUP_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    if (
+        fake_obj is not None
+        and material is not None
+        and str(getattr(fake_obj, "type", "")) == "MESH"
+        and getattr(getattr(fake_obj, "data", None), "materials", None) is not None
+    ):
+        try:
+            fake_obj.data.materials.clear()
+            fake_obj.data.materials.append(material)
+            for poly in fake_obj.data.polygons:
+                poly.material_index = 0
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    for duplicate in list(bpy.data.materials):
+        name = str(getattr(duplicate, "name", "") or "")
+        if duplicate is material or not name.startswith(f"{FAKE_ATMOSPHERE_MATERIAL_NAME}."):
+            continue
+        try:
+            if int(getattr(duplicate, "users", 0) or 0) <= 0:
+                bpy.data.materials.remove(duplicate, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    for duplicate in list(bpy.data.node_groups):
+        name = str(getattr(duplicate, "name", "") or "")
+        if duplicate is node_group or not name.startswith(f"{FAKE_ATMOSPHERE_GROUP_NAME}."):
+            continue
+        try:
+            if int(getattr(duplicate, "users", 0) or 0) <= 0:
+                bpy.data.node_groups.remove(duplicate, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _normalize_volumetric_atmosphere_data_names(obj=None):
+    if obj is None:
+        obj = _find_volumetric_atmosphere_object() or bpy.data.objects.get(VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME)
+
+    material = None
+    materials = getattr(getattr(obj, "data", None), "materials", None) if obj is not None else None
+    if materials:
+        for candidate in materials:
+            if candidate is None:
+                continue
+            name = str(getattr(candidate, "name", "") or "")
+            if name == VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME or name.startswith(f"{VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME}."):
+                material = candidate
+                break
+    if material is None:
+        material = bpy.data.materials.get(VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME)
+
+    if material is not None and str(getattr(material, "name", "")) != VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME:
+        existing = bpy.data.materials.get(VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME)
+        if existing is not None and existing is not material:
+            try:
+                bpy.data.materials.remove(existing, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        try:
+            material.name = VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    node_group = None
+    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    if node_tree is not None:
+        for node in getattr(node_tree, "nodes", ()):
+            if str(getattr(node, "bl_idname", "") or "") != "ShaderNodeGroup":
+                continue
+            candidate_group = getattr(node, "node_tree", None)
+            candidate_name = str(getattr(candidate_group, "name", "") or "")
+            if candidate_name == VOLUMETRIC_ATMOSPHERE_GROUP_NAME or candidate_name.startswith(f"{VOLUMETRIC_ATMOSPHERE_GROUP_NAME}."):
+                node_group = candidate_group
+                break
+    if node_group is None:
+        node_group = bpy.data.node_groups.get(VOLUMETRIC_ATMOSPHERE_GROUP_NAME)
+
+    if node_group is not None and str(getattr(node_group, "name", "")) != VOLUMETRIC_ATMOSPHERE_GROUP_NAME:
+        existing = bpy.data.node_groups.get(VOLUMETRIC_ATMOSPHERE_GROUP_NAME)
+        if existing is not None and existing is not node_group:
+            try:
+                bpy.data.node_groups.remove(existing, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        try:
+            node_group.name = VOLUMETRIC_ATMOSPHERE_GROUP_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    if (
+        obj is not None
+        and material is not None
+        and str(getattr(obj, "type", "")) == "MESH"
+        and getattr(getattr(obj, "data", None), "materials", None) is not None
+    ):
+        try:
+            obj.data.materials.clear()
+            obj.data.materials.append(material)
+            for poly in obj.data.polygons:
+                poly.material_index = 0
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    for duplicate in list(bpy.data.materials):
+        name = str(getattr(duplicate, "name", "") or "")
+        if duplicate is material or not name.startswith(f"{VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME}."):
+            continue
+        try:
+            if int(getattr(duplicate, "users", 0) or 0) <= 0:
+                bpy.data.materials.remove(duplicate, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    for duplicate in list(bpy.data.node_groups):
+        name = str(getattr(duplicate, "name", "") or "")
+        if duplicate is node_group or not name.startswith(f"{VOLUMETRIC_ATMOSPHERE_GROUP_NAME}."):
+            continue
+        try:
+            if int(getattr(duplicate, "users", 0) or 0) <= 0:
+                bpy.data.node_groups.remove(duplicate, do_unlink=True)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -3077,6 +3272,7 @@ def ensure_volumetric_atmosphere(scene=None, earth_surface=None):
     if atmosphere_obj is None:
         return None
 
+    _normalize_volumetric_atmosphere_data_names(atmosphere_obj)
     _configure_volumetric_atmosphere_object(atmosphere_obj)
     sync_volumetric_atmosphere_density_for_radius(scene=scene)
 

@@ -797,30 +797,6 @@ def canonical_tiles(tiles):
     return tuple(sorted(str(tile) for tile in tiles if tile))
 
 
-def clear_resolve_size_estimates(scene, runtime=None):
-    deps = _coerce_ctx(runtime).deps
-    logger = deps.logger
-    recoverable_exceptions = deps.recoverable_exceptions
-    keys = (
-        deps.resolve_estimate_full_bytes_key,
-        deps.resolve_estimate_preview_bytes_key,
-        "planetka_resolve_estimate_full_available_bytes",
-        "planetka_resolve_estimate_preview_available_bytes",
-        "planetka_resolve_estimate_full_download_bytes",
-        "planetka_resolve_estimate_preview_download_bytes",
-    )
-    if scene is None:
-        return
-    for key in keys:
-        try:
-            if key in scene:
-                del scene[key]
-        except recoverable_exceptions:
-            logger.debug("Planetka: failed clearing resolve-size estimate key '%s'", key, exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed clearing resolve-size estimate key '%s'", key, exc_info=True)
-
-
 def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, texture_quality_mode="PREVIEW"):
     estimate = estimate_download_availability_for_visible_tiles(
         tiles,
@@ -834,7 +810,13 @@ def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, te
         return 0
 
 
-def estimate_download_availability_for_visible_tiles(tiles, base_path, runtime=None, texture_quality_mode="PREVIEW"):
+def estimate_download_availability_for_visible_tiles(
+    tiles,
+    base_path,
+    runtime=None,
+    texture_quality_mode="PREVIEW",
+    allow_remote_probe=False,
+):
     deps = _coerce_ctx(runtime).deps
     logger = deps.logger
     recoverable_exceptions = deps.recoverable_exceptions
@@ -852,7 +834,7 @@ def estimate_download_availability_for_visible_tiles(tiles, base_path, runtime=N
         estimate = estimate_fn(
             safe_tiles,
             str(base_path or ""),
-            allow_remote_probe=False,
+            allow_remote_probe=bool(allow_remote_probe),
             texture_quality_mode=normalized_mode,
         )
     except recoverable_exceptions:
@@ -863,7 +845,7 @@ def estimate_download_availability_for_visible_tiles(tiles, base_path, runtime=N
             estimate = estimate_fn(
                 safe_tiles,
                 str(base_path or ""),
-                allow_remote_probe=False,
+                allow_remote_probe=bool(allow_remote_probe),
             )
         except recoverable_exceptions:
             logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
@@ -905,162 +887,6 @@ def estimate_download_availability_for_visible_tiles(tiles, base_path, runtime=N
         "total_bytes": int(max(0, total_bytes)),
         "available_bytes": int(max(0, min(available_bytes, total_bytes))) if total_bytes > 0 else int(max(0, available_bytes)),
         "download_bytes": int(max(0, min(download_bytes, total_bytes))) if total_bytes > 0 else int(max(0, download_bytes)),
-    }
-
-
-def update_resolve_size_estimates(
-    scene,
-    runtime=None,
-    scope_mode="CAMERA",
-    base_path="",
-    full_tiles_override=None,
-):
-    deps = _coerce_ctx(runtime).deps
-    logger = deps.logger
-    recoverable_exceptions = deps.recoverable_exceptions
-    tile_utils = deps.get_tile_utils()
-    normalize_texture_quality_mode = deps.normalize_texture_quality_mode
-    resolve_estimate_full_bytes_key = deps.resolve_estimate_full_bytes_key
-    resolve_estimate_preview_bytes_key = deps.resolve_estimate_preview_bytes_key
-    if scene is None:
-        return False
-    if tile_utils is None:
-        clear_resolve_size_estimates(scene, runtime)
-        return False
-
-    scope_token = str(scope_mode or "CAMERA").strip().upper()
-    if scope_token not in {"CAMERA", "ACTIVE_VIEW", "AUTO"}:
-        scope_token = "CAMERA"
-
-    try:
-        full_source_tiles = canonical_tiles(full_tiles_override) if full_tiles_override is not None else None
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        full_source_tiles = None
-    if full_source_tiles is None:
-        try:
-            full_source_tiles = canonical_tiles(tile_utils.main(scope_mode=scope_token))
-        except recoverable_exceptions:
-            logger.debug("Planetka: failed computing full source tiles for resolve-size estimate", exc_info=True)
-            clear_resolve_size_estimates(scene, runtime)
-            return False
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed computing full source tiles for resolve-size estimate", exc_info=True)
-            clear_resolve_size_estimates(scene, runtime)
-            return False
-
-    def _compute_mode_tiles(mode):
-        normalized_mode = normalize_texture_quality_mode(mode)
-        try:
-            from ..render_prep import apply_texture_quality_to_full_tiles
-            return canonical_tiles(apply_texture_quality_to_full_tiles(full_source_tiles, normalized_mode))
-        except recoverable_exceptions:
-            logger.debug(
-                "Planetka: failed computing %s tiles for resolve-size estimate",
-                normalized_mode,
-                exc_info=True,
-            )
-            return None
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug(
-                "Planetka: failed computing %s tiles for resolve-size estimate",
-                normalized_mode,
-                exc_info=True,
-            )
-            return None
-
-    full_tiles = _compute_mode_tiles("FULL")
-    balanced_tiles = _compute_mode_tiles("BALANCED")
-    preview_tiles = _compute_mode_tiles("PREVIEW")
-
-    if full_tiles is None or balanced_tiles is None or preview_tiles is None:
-        clear_resolve_size_estimates(scene, runtime)
-        return False
-
-    full_availability = estimate_download_availability_for_visible_tiles(
-        full_tiles,
-        base_path,
-        runtime,
-        texture_quality_mode="FULL",
-    )
-    preview_availability = estimate_download_availability_for_visible_tiles(
-        preview_tiles,
-        base_path,
-        runtime,
-        texture_quality_mode="PREVIEW",
-    )
-    balanced_availability = estimate_download_availability_for_visible_tiles(
-        balanced_tiles,
-        base_path,
-        runtime,
-        texture_quality_mode="BALANCED",
-    )
-    full_bytes = int(max(0, int((full_availability or {}).get("total_bytes", 0) or 0)))
-    balanced_bytes = int(max(0, int((balanced_availability or {}).get("total_bytes", 0) or 0)))
-    preview_bytes = int(max(0, int((preview_availability or {}).get("total_bytes", 0) or 0)))
-    full_available_bytes = int(max(0, int((full_availability or {}).get("available_bytes", 0) or 0)))
-    balanced_available_bytes = int(max(0, int((balanced_availability or {}).get("available_bytes", 0) or 0)))
-    preview_available_bytes = int(max(0, int((preview_availability or {}).get("available_bytes", 0) or 0)))
-    full_download_bytes = int(max(0, int((full_availability or {}).get("download_bytes", 0) or 0)))
-    balanced_download_bytes = int(max(0, int((balanced_availability or {}).get("download_bytes", 0) or 0)))
-    preview_download_bytes = int(max(0, int((preview_availability or {}).get("download_bytes", 0) or 0)))
-    try:
-        scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
-        scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(balanced_bytes)))
-        scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
-        scene["planetka_resolve_estimate_full_available_bytes"] = int(max(0, int(full_available_bytes)))
-        scene["planetka_resolve_estimate_balanced_available_bytes"] = int(max(0, int(balanced_available_bytes)))
-        scene["planetka_resolve_estimate_preview_available_bytes"] = int(max(0, int(preview_available_bytes)))
-        scene["planetka_resolve_estimate_full_download_bytes"] = int(max(0, int(full_download_bytes)))
-        scene["planetka_resolve_estimate_balanced_download_bytes"] = int(max(0, int(balanced_download_bytes)))
-        scene["planetka_resolve_estimate_preview_download_bytes"] = int(max(0, int(preview_download_bytes)))
-    except recoverable_exceptions:
-        logger.debug("Planetka: failed storing resolve-size estimates", exc_info=True)
-        return False
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed storing resolve-size estimates", exc_info=True)
-        return False
-    return True
-
-
-def get_resolve_size_estimates(scene=None, runtime=None):
-    deps = _coerce_ctx(runtime).deps
-    target_scene = scene if scene is not None else _safe_context_scene(deps.bpy)
-    recoverable_exceptions = deps.recoverable_exceptions
-    resolve_estimate_full_bytes_key = deps.resolve_estimate_full_bytes_key
-    resolve_estimate_preview_bytes_key = deps.resolve_estimate_preview_bytes_key
-    if target_scene is None:
-        return {"FULL": None, "BALANCED": None, "PREVIEW": None}
-
-    def _read_int(key):
-        try:
-            if key not in target_scene:
-                return None
-            return int(max(0, int(target_scene.get(key, 0) or 0)))
-        except recoverable_exceptions:
-            return None
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            return None
-
-    def _read_bool(key):
-        try:
-            if key not in target_scene:
-                return False
-            return bool(target_scene.get(key, False))
-        except recoverable_exceptions:
-            return False
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            return False
-
-    return {
-        "FULL": _read_int(resolve_estimate_full_bytes_key),
-        "BALANCED": _read_int("planetka_resolve_estimate_balanced_bytes"),
-        "PREVIEW": _read_int(resolve_estimate_preview_bytes_key),
-        "FULL_AVAILABLE": _read_int("planetka_resolve_estimate_full_available_bytes"),
-        "BALANCED_AVAILABLE": _read_int("planetka_resolve_estimate_balanced_available_bytes"),
-        "PREVIEW_AVAILABLE": _read_int("planetka_resolve_estimate_preview_available_bytes"),
-        "FULL_DOWNLOAD": _read_int("planetka_resolve_estimate_full_download_bytes"),
-        "BALANCED_DOWNLOAD": _read_int("planetka_resolve_estimate_balanced_download_bytes"),
-        "PREVIEW_DOWNLOAD": _read_int("planetka_resolve_estimate_preview_download_bytes"),
     }
 
 

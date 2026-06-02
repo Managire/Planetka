@@ -14,7 +14,7 @@ from ..state import (
     logger,
     mark_navigation_camera_control_signature,
 )
-from .earth_lifecycle_helpers import _ensure_close_clip_limits, _is_planetka_create_camera
+from .earth_lifecycle_helpers import _ensure_close_clip_limits
 
 _RECOVERABLE_LOG_COUNTS = {}
 
@@ -219,26 +219,6 @@ def _clear_radius_sync_notice(scene):
         _log_recoverable_once("PKA-OPS-110", "Failed clearing radius-sync status notice")
 
 
-def _find_planetka_scene_camera(scene):
-    if scene is None:
-        return None
-    scene_camera = getattr(scene, "camera", None)
-    if (
-        scene_camera is not None
-        and str(getattr(scene_camera, "type", "")) == "CAMERA"
-        and _is_planetka_create_camera(scene_camera)
-    ):
-        return scene_camera
-    for obj in tuple(getattr(scene, "objects", ())):
-        if (
-            obj is not None
-            and str(getattr(obj, "type", "")) == "CAMERA"
-            and _is_planetka_create_camera(obj)
-        ):
-            return obj
-    return None
-
-
 def _quantize_navigation_ui_value(value, minimum=None):
     try:
         normalized = float(value)
@@ -412,46 +392,12 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         _log_recoverable_once("PKA-OPS-041", "Failed syncing clouds after Earth radius change")
 
-    # Keep Planetka camera in the same relative navigation shot immediately
-    # after radius change (without requiring a manual UI nudge), regardless
-    # of which scene camera is currently active.
     try:
         scene_for_camera = scene if isinstance(scene, bpy.types.Scene) else getattr(bpy.context, "scene", None)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         scene_for_camera = None
     if scene_for_camera is not None:
         _clear_radius_sync_notice(scene_for_camera)
-        try:
-            props = getattr(scene_for_camera, "planetka", None)
-            planetka_camera = _find_planetka_scene_camera(scene_for_camera)
-            if props is not None and planetka_camera is not None:
-                _apply_navigation_shot(
-                    bpy.context,
-                    scene_for_camera,
-                    props,
-                    switch_viewport_to_camera=False,
-                    sync_active_view_when_not_camera=False,
-                    camera_override=planetka_camera,
-                )
-                mark_navigation_camera_control_signature(scene_for_camera)
-            elif props is not None and planetka_camera is None:
-                _set_radius_sync_notice(
-                    scene_for_camera,
-                    "Planetka Camera not found after Earth Radius change.",
-                )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            _set_radius_sync_notice(
-                scene_for_camera,
-                "Earth Radius changed, but Planetka camera shot reapply failed.",
-            )
-            logger.warning(
-                "Planetka: failed reapplying Planetka camera shot after Earth radius change.",
-                exc_info=True,
-            )
-            _log_recoverable_once(
-                "PKA-OPS-064",
-                "Failed reapplying Planetka camera shot after Earth radius change",
-            )
 
     return bool(changed)
 

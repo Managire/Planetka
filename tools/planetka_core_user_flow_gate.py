@@ -71,6 +71,17 @@ def _camera_signature(camera):
         return None
 
 
+def _camera_local_signature(camera):
+    if camera is None:
+        return None
+    try:
+        loc = tuple(round(float(v), 8) for v in camera.matrix_local.to_translation())
+        rot = tuple(round(float(v), 8) for v in camera.matrix_local.to_euler())
+        return loc + rot
+    except Exception:
+        return None
+
+
 def _wait_for_camera_change(scene, previous_signature, timeout_sec=3.0):
     deadline = time.time() + float(max(0.2, timeout_sec))
     while time.time() < deadline:
@@ -348,13 +359,28 @@ def main():
             camera_after=cam_after_full,
         )
 
-        # Earth radius change must keep scene operational (resolve + render valid).
+        # Earth radius change must not implicitly move Planetka Camera. The user
+        # can still explicitly reapply the navigation shot afterward.
+        radius_camera = getattr(scene, "camera", None)
+        camera_local_before_radius = _camera_local_signature(radius_camera)
         props.earth_radius_bu = 3.5
+        bpy.context.view_layer.update()
+        camera_local_after_radius = _camera_local_signature(radius_camera)
+        _assert(
+            camera_local_before_radius == camera_local_after_radius,
+            f"Earth Radius changed camera local transform: before={camera_local_before_radius} after={camera_local_after_radius}",
+        )
         apply_radius = bpy.ops.planetka.navigation_apply_shot()
         _assert(_operator_ok(apply_radius) or _operator_cancelled(apply_radius), f"navigation_apply_shot failed after radius change: {apply_radius}")
         resolve_textures(state, scene, texture_quality_mode="PREVIEW")
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))
-        record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
+        record_step(
+            "earth_radius_change",
+            earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0),
+            camera_local_before=camera_local_before_radius,
+            camera_local_after=camera_local_after_radius,
+            apply_result=list(apply_radius),
+        )
 
         # Streaming quality flow guardrails. Quality buttons are pure switches;
         # Resolve Planetka is the single path that applies data.

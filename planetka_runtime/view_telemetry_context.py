@@ -35,8 +35,6 @@ class ViewTelemetryDeps:
     live_safety_caution_ratio: float
     live_fallback_mpp_m: float
     live_z_levels: tuple[int, ...]
-    resolve_estimate_full_bytes_key: str
-    resolve_estimate_preview_bytes_key: str
 
 
 @dataclass(slots=True)

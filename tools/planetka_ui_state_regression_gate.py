@@ -62,17 +62,22 @@ def _enable_addon() -> str:
 
 
 def _test_texture_quality_uses_single_status_line() -> dict:
-    """Texture quality buttons must stay static; progress belongs in the status row."""
+    """Texture quality buttons stay static; status/progress belongs under Resolve."""
 
     text = _source_text("ui.py")
     live_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
-        "_draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text)" in live_text,
-        "Data Control must draw the shared resolve status line above Quality Level.",
+        "_draw_data_control_progress_section(quality_box, scene, runtime, runtime_code, runtime_text)" in live_text,
+        "Data Control must draw the fixed status/progress section below Resolve Planetka.",
     )
     _assert(
-        ".progress(" not in live_text,
-        "Quality Level must not draw per-button download progress bars.",
+        'resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")' in live_text,
+        "Data Control must expose the Resolve Planetka button.",
+    )
+    _assert(
+        live_text.find('resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")')
+        < live_text.find("_draw_data_control_progress_section(quality_box, scene, runtime, runtime_code, runtime_text)"),
+        "Status/progress section must be placed directly below Resolve Planetka.",
     )
     _assert(
         "_quality_progress_factor" not in text,

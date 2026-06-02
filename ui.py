@@ -33,7 +33,6 @@ from .state import (
     _is_render_job_active,
     get_camera_inside_earth_warning,
     is_final_animation_render_active,
-    get_resolve_size_estimates,
     get_resolve_runtime_status,
     logger,
 )
@@ -690,54 +689,6 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     }
 
 
-def _draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text):
-    resolve_failure_message = _resolve_failure_message_for_ui(scene)
-    inside_earth_warning = _inside_earth_warning_for_ui(scene)
-    low_altitude_warning = _low_altitude_warning_for_ui(scene)
-    animation_render_running = _is_animation_render_running()
-
-    status_token = str(runtime_code or "").upper()
-    status_text = str(runtime_text or "Idle")
-    status_icon = _status_icon(status_token)
-    alert = False
-
-    if resolve_failure_message:
-        status_text = resolve_failure_message
-        status_icon = "ERROR"
-        alert = True
-    elif inside_earth_warning:
-        status_text = "Below Earth's surface"
-        status_icon = "INFO"
-    elif low_altitude_warning:
-        status_text = low_altitude_warning
-        status_icon = "INFO"
-    elif animation_render_running:
-        status_text, status_icon = _animation_render_status_for_ui(scene)
-    elif status_token == "PREPARING":
-        status_text = "Preparing Download"
-    elif status_token == "DOWNLOADING":
-        progress = get_download_progress()
-        downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
-        total_bytes = int(progress.get("total_bytes", 0) or 0)
-        downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
-        total_mb = float(total_bytes) / (1024.0 * 1024.0)
-        if total_bytes > 0:
-            status_text = f"Downloading ({downloaded_mb:.2f} / {total_mb:.2f} MB)"
-        else:
-            status_text = f"Downloading ({downloaded_mb:.2f} MB)"
-    elif status_token in {"", "IDLE", "MONITORING"}:
-        status_text = "Idle"
-        status_icon = "CHECKMARK"
-
-    suffix = _status_activity_suffix(runtime.get("running", False))
-    if status_token == "DOWNLOADING" or resolve_failure_message or inside_earth_warning or low_altitude_warning:
-        suffix = ""
-
-    status_row = layout.row()
-    status_row.alert = bool(alert)
-    status_row.label(text=f"{status_text}{suffix}", icon=status_icon)
-
-
 def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runtime_text):
     state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
     box = layout.box()
@@ -750,42 +701,112 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     )
 
 
-def _estimate_bytes_for_quality(estimates, mode):
-    mode_key = str(mode or "").upper()
+def _cloud_progress_bar_state(cloud_runtime, label_tokens):
+    progress = cloud_runtime.get_cloud_download_progress()
+    progress_label = str(progress.get("label", "") or "")
+    progress_label_upper = progress_label.upper()
+    tokens = tuple(str(token or "").upper() for token in label_tokens if str(token or "").strip())
+    matches = bool(not tokens or any(token in progress_label_upper for token in tokens))
+    if not matches:
+        return {"active": False, "error": "", "factor": 0.0, "text": "Ready"}
+
+    progress_error = str(progress.get("error", "") or "").strip()
+    if progress_error:
+        return {"active": False, "error": progress_error, "factor": 0.0, "text": progress_error}
+    if bool(progress.get("active", False)):
+        downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
+        total = max(0, int(progress.get("total_bytes", 0) or 0))
+        if total > 0:
+            return {
+                "active": True,
+                "error": "",
+                "factor": min(1.0, max(0.0, downloaded / float(total))),
+                "text": f"{_fmt_bytes(downloaded)} / {_fmt_bytes(total)}",
+            }
+        return {
+            "active": True,
+            "error": "",
+            "factor": 0.0,
+            "text": f"Downloading: {_fmt_bytes(downloaded)}",
+        }
+    return {"active": False, "error": "", "factor": 0.0, "text": "Ready"}
+
+
+def _combine_progress_status(status_text, progress_text, runtime_code=""):
+    status = str(status_text or "").strip()
+    progress = str(progress_text or "").strip()
+    token = str(runtime_code or "").strip().upper()
+    if token == "PREPARING":
+        return "Preparing Download"
+    if token == "DOWNLOADING":
+        return f"Downloading: {progress}" if progress else "Downloading"
+    if token in {"FINALIZING", "APPLYING"}:
+        return "Download finished, applying"
+    if not status:
+        return progress or "Ready"
+    if not progress or progress == "Ready":
+        return status
+    if progress.lower() == status.lower() or progress.lower().startswith(status.lower()):
+        return progress
+    if status.lower().startswith(progress.lower()):
+        return status
+    return f"{status}: {progress}"
+
+
+def _draw_data_control_progress_section(layout, scene, runtime, runtime_code, runtime_text):
+    state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
+    box = layout.box()
+    box.alert = bool(state.get("alert", False))
+
+    bar_label = "Surface Textures"
+    bar_text = _combine_progress_status(
+        state.get("status_text", ""),
+        state.get("progress_text", ""),
+        state.get("runtime_code", ""),
+    )
+    bar_factor = float(state.get("factor", 0.0) or 0.0)
+    bar_active = bool(state.get("active", False))
+    bar_error = bool(state.get("alert", False))
+    surface_download_active = bool(state.get("download_active", False))
+
     try:
-        value = estimates.get(mode_key)
-    except (AttributeError, TypeError, ValueError):
-        value = None
-    if value is None:
-        return None
+        from . import clouds_local as cloud_runtime
+        texture_state = _cloud_progress_bar_state(cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"))
+        vdb_state = _cloud_progress_bar_state(cloud_runtime, ("VDB",))
+    except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
+        texture_state = {"active": False, "error": "", "factor": 0.0, "text": "Ready"}
+        vdb_state = {"active": False, "error": "", "factor": 0.0, "text": "Ready"}
+
+    texture_progress_visible = bool(texture_state.get("active", False)) or str(texture_state.get("error", "") or "").strip()
+    vdb_progress_visible = bool(vdb_state.get("active", False)) or str(vdb_state.get("error", "") or "").strip()
+    if texture_progress_visible and not surface_download_active:
+        bar_label = "Texture-Based Clouds"
+        bar_text = str(texture_state.get("text", "") or "Ready")
+        bar_factor = float(texture_state.get("factor", 0.0) or 0.0)
+        bar_active = bool(texture_state.get("active", False))
+        bar_error = bool(str(texture_state.get("error", "") or "").strip())
+    elif vdb_progress_visible and not surface_download_active:
+        bar_label = "VDB Clouds"
+        bar_text = str(vdb_state.get("text", "") or "Ready")
+        bar_factor = float(vdb_state.get("factor", 0.0) or 0.0)
+        bar_active = bool(vdb_state.get("active", False))
+        bar_error = bool(str(vdb_state.get("error", "") or "").strip())
+    elif not bar_active and not bar_error:
+        bar_text = _combine_progress_status(state.get("status_text", ""), "Ready", state.get("runtime_code", ""))
+
+    if bar_active and not str(bar_text).startswith("Downloading"):
+        bar_text = f"Downloading: {bar_text}"
+
+    progress_row = box.row(align=True)
+    progress_row.alert = bool(bar_error)
     try:
-        return int(max(0, round(float(value))))
-    except (TypeError, ValueError):
-        return None
-
-
-def _draw_quality_meta_row(layout, progress_text, usage_label=""):
-    if not str(usage_label or "").strip():
-        row = layout.row(align=True)
-        row.alignment = 'CENTER'
-        row.label(text=str(progress_text or "-"))
-        return
-    row = layout.split(factor=0.68, align=True)
-    left = row.row(align=True)
-    left.alignment = 'CENTER'
-    left.label(text=str(progress_text or "-"))
-    right = row.row(align=True)
-    right.alignment = 'RIGHT'
-    right.label(text=str(usage_label or ""))
-
-
-def _quality_total_size_label(estimate_bytes):
-    if estimate_bytes is None:
-        return "Calculating size"
-    try:
-        return _fmt_bytes(int(max(0, int(estimate_bytes))))
-    except (TypeError, ValueError):
-        return "Calculating size"
+        progress_row.progress(
+            factor=max(0.0, min(1.0, float(bar_factor))),
+            type='BAR',
+            text=f"{bar_label}: {bar_text}",
+        )
+    except (AttributeError, TypeError, RuntimeError):
+        progress_row.label(text=f"{bar_label}: {bar_text}", icon="IMPORT" if bool(bar_active) else "CHECKMARK")
 
 
 def _earth_radius_bu_for_ui(scene):
@@ -1282,10 +1303,7 @@ def _draw_live_telemetry(layout, scene):
         notice_row.label(text=radius_sync_notice, icon="ERROR")
 
     if props is not None and is_authenticated(prefs):
-        estimates = get_resolve_size_estimates(scene)
-
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
-        _draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text)
         quality_box = layout.box()
         header_row = quality_box.row(align=True)
         header_row.use_property_split = False
@@ -1306,7 +1324,6 @@ def _draw_live_telemetry(layout, scene):
         for mode_key, label in qualities:
             button_label = label
             mode_col = button_row.column(align=True)
-            estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
             operator_row = mode_col.row(align=True)
             operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
             operator_row.operator(
@@ -1314,10 +1331,6 @@ def _draw_live_telemetry(layout, scene):
                 text=button_label,
                 depress=(selected_auto_quality == mode_key),
             ).texture_quality_mode = mode_key
-            _draw_quality_meta_row(
-                mode_col,
-                _quality_total_size_label(estimate_bytes),
-            )
         if resolve_failure_message:
             error_row = quality_box.row(align=True)
             error_row.alert = True
@@ -1327,19 +1340,7 @@ def _draw_live_telemetry(layout, scene):
         resolve_row.scale_y = 1.45
         resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")
 
-        if runtime_code in {"PREPARING", "DOWNLOADING", "FINALIZING", "APPLYING"} or bool(runtime.get("running", False)):
-            _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
-        try:
-            from . import clouds_local as cloud_runtime
-            cloud_progress = cloud_runtime.get_cloud_download_progress()
-        except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
-            cloud_progress = {}
-        if bool(cloud_progress.get("active", False)) or str(cloud_progress.get("error", "") or "").strip():
-            progress_label = str(cloud_progress.get("label", "") or "").strip()
-            if "VDB" in progress_label.upper():
-                _draw_cloud_download_progress(quality_box, cloud_runtime, ("VDB",))
-            else:
-                _draw_cloud_download_progress(quality_box, cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"))
+        _draw_data_control_progress_section(quality_box, scene, runtime, runtime_code, runtime_text)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():

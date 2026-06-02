@@ -33,8 +33,8 @@ from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVE
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
-    is_indexed_tile_asset,
     is_remote_source_configured,
+    remote_tile_asset_exists,
     retain_recent_resolve_cache,
 )
 from .sanity_utils import _normalize_texture_source_path, validate_known_good_texture_source
@@ -1340,7 +1340,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     if not ext_value:
                         ext_value = ".exr"
                     file_name = f"{prefix_value}_{tile_value}{ext_value}"
-                    if not is_indexed_tile_asset(folder_value, file_name):
+                    if not remote_tile_asset_exists(folder_value, file_name):
                         continue
                     required_missing_details.append(entry)
             required_missing_count = int(len(required_missing_details))
