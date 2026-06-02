@@ -78,12 +78,12 @@ _TERMINAL_AUTH_ERROR_CODES = {
 }
 
 
-def _auth_error_code(error):
+def _cloud_session_error_code(error):
     return str(getattr(error, "error", error) or "").strip().lower()
 
 
-def is_terminal_auth_error(error):
-    code = _auth_error_code(error)
+def is_terminal_cloud_session_error(error):
+    code = _cloud_session_error_code(error)
     try:
         status = int(getattr(error, "status", 0) or 0)
     except (TypeError, ValueError):
@@ -107,31 +107,31 @@ def is_terminal_auth_error(error):
 
 def _critical_disconnect_status_message(primary_error=None, secondary_error=None):
     if primary_error is not None:
-        message = describe_auth_error(primary_error)
+        message = describe_cloud_session_error(primary_error)
         if message:
             return message
     if secondary_error is not None:
-        message = describe_auth_error(secondary_error)
+        message = describe_cloud_session_error(secondary_error)
         if message:
             return message
     return SESSION_EXPIRED_MESSAGE
 
 
-def _report_critical_disconnect(prefs, source, primary_error=None, secondary_error=None):
+def _report_critical_cloud_disconnect(prefs, source, primary_error=None, secondary_error=None):
     logger.error(
-        "Planetka critical auth disconnect: source=%s primary_error=%s primary_status=%s "
+        "Planetka critical cloud session disconnect: source=%s primary_error=%s primary_status=%s "
         "secondary_error=%s secondary_status=%s device_id=%s",
         str(source or "").strip() or "unknown",
-        _auth_error_code(primary_error),
+        _cloud_session_error_code(primary_error),
         int(getattr(primary_error, "status", 0) or 0) if primary_error is not None else 0,
-        _auth_error_code(secondary_error),
+        _cloud_session_error_code(secondary_error),
         int(getattr(secondary_error, "status", 0) or 0) if secondary_error is not None else 0,
-        str(getattr(prefs, "auth_device_id", "") or "").strip(),
+        str(getattr(prefs, "cloud_install_id", "") or "").strip(),
     )
 
 
-def describe_auth_error(error):
-    message = str(getattr(error, "error", error) or "login_failed")
+def describe_cloud_session_error(error):
+    message = str(getattr(error, "error", error) or "session_failed")
     payload = getattr(error, "payload", {})
     payload_text = ""
     if isinstance(payload, dict):
@@ -170,24 +170,24 @@ def describe_auth_error(error):
     return f"Planetka Cloud session failed: {message.replace('_', ' ')}."
 
 
-def recover_from_terminal_auth_error(error, prefs=None, source=""):
+def recover_from_terminal_cloud_session_error(error, prefs=None, source=""):
     """Clear stale local auth after backend-confirmed terminal auth failures.
 
     Network outages and Planetka Cloud overloads must not log the user out. This is
     only for definitive auth/session failures such as revoked or expired saved
     sessions.
     """
-    if not is_terminal_auth_error(error):
+    if not is_terminal_cloud_session_error(error):
         return False
     prefs = prefs or get_prefs()
     if prefs is None:
         return False
-    _report_critical_disconnect(
+    _report_critical_cloud_disconnect(
         prefs,
-        str(source or "terminal_auth_error").strip() or "terminal_auth_error",
+        str(source or "terminal_cloud_session_error").strip() or "terminal_cloud_session_error",
         primary_error=error,
     )
-    _clear_auth_session_preserve_device_id(
+    _clear_cloud_session_preserve_install_id(
         prefs,
         state="logged_out",
         status_message=_critical_disconnect_status_message(error),
@@ -230,7 +230,7 @@ def mark_planetka_cloud_overloaded(prefs=None, reason=""):
     _CLOUD_CONNECTION_CACHE["message"] = CLOUD_OVERLOADED_MESSAGE
     prefs = prefs or get_prefs()
     if prefs is not None and is_authenticated(prefs):
-        _set_auth_status_message(prefs, CLOUD_OVERLOADED_MESSAGE)
+        _set_cloud_session_status_message(prefs, CLOUD_OVERLOADED_MESSAGE)
     _tag_ui_redraw()
 
 
@@ -244,15 +244,15 @@ def _is_cloud_offline_status_message(message):
     )
 
 
-def _set_auth_status_message(prefs, message):
+def _set_cloud_session_status_message(prefs, message):
     if prefs is None:
         return
     try:
-        prefs.auth_status_message = str(message or "")
+        prefs.cloud_session_status_message = str(message or "")
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing auth connection status", exc_info=True)
+        logger.debug("Planetka: failed storing cloud session connection status", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed storing auth connection status", exc_info=True)
+        logger.debug("Planetka: failed storing cloud session connection status", exc_info=True)
 
 
 def mark_planetka_cloud_online(prefs=None):
@@ -262,7 +262,7 @@ def mark_planetka_cloud_online(prefs=None):
     _CLOUD_CONNECTION_CACHE["message"] = ""
     prefs = prefs or get_prefs()
     if prefs is not None and _is_cloud_offline_status_message(get_status_message(prefs)):
-        _set_auth_status_message(prefs, "")
+        _set_cloud_session_status_message(prefs, "")
     _tag_ui_redraw()
 
 
@@ -277,7 +277,7 @@ def mark_planetka_cloud_offline(reason="", prefs=None):
     _CLOUD_CONNECTION_CACHE["message"] = message
     prefs = prefs or get_prefs()
     if prefs is not None and is_authenticated(prefs):
-        _set_auth_status_message(prefs, message)
+        _set_cloud_session_status_message(prefs, message)
     _tag_ui_redraw()
 
 
@@ -293,7 +293,7 @@ def _mark_planetka_cloud_http_unavailable(status, detail="", prefs=None):
     _CLOUD_CONNECTION_CACHE["online"] = False
     _CLOUD_CONNECTION_CACHE["message"] = message
     if prefs is not None and is_authenticated(prefs):
-        _set_auth_status_message(prefs, message)
+        _set_cloud_session_status_message(prefs, message)
     _tag_ui_redraw()
     return message
 
@@ -380,10 +380,10 @@ def _tag_ui_redraw():
                 if area.type == "VIEW_3D":
                     area.tag_redraw()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed triggering auth UI redraw", exc_info=True)
+        logger.debug("Planetka: failed triggering cloud session UI redraw", exc_info=True)
         return
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed triggering auth UI redraw", exc_info=True)
+        logger.debug("Planetka: failed triggering cloud session UI redraw", exc_info=True)
         return
 
 
@@ -392,27 +392,27 @@ def _save_user_prefs():
     return False
 
 
-def clear_auth_session(prefs=None, state="logged_out", status_message=""):
+def clear_cloud_session(prefs=None, state="logged_out", status_message=""):
     del state
     prefs = prefs or get_prefs()
     if prefs is None:
         return
 
-    prefs.auth_access_token = ""
-    prefs.auth_refresh_token = ""
-    prefs.auth_status_message = str(status_message or "")
+    prefs.cloud_session_access_token = ""
+    prefs.cloud_session_refresh_token = ""
+    prefs.cloud_session_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
 
 
-def _clear_auth_session_preserve_device_id(prefs=None, state="logged_out", status_message=""):
+def _clear_cloud_session_preserve_install_id(prefs=None, state="logged_out", status_message=""):
     prefs = prefs or get_prefs()
     if prefs is None:
         return
-    device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
-    clear_auth_session(prefs=prefs, state=state, status_message=status_message)
+    device_id = str(getattr(prefs, "cloud_install_id", "") or "").strip()
+    clear_cloud_session(prefs=prefs, state=state, status_message=status_message)
     if device_id:
-        prefs.auth_device_id = device_id
+        prefs.cloud_install_id = device_id
     _save_user_prefs()
     _tag_ui_redraw()
 
@@ -422,25 +422,25 @@ def is_authenticated(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         return False
-    return bool(str(getattr(prefs, "auth_access_token", "") or "").strip())
+    return bool(str(getattr(prefs, "cloud_session_access_token", "") or "").strip())
 
 
 def get_status_message(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
-    return str(getattr(prefs, "auth_status_message", "") or "").strip()
+    return str(getattr(prefs, "cloud_session_status_message", "") or "").strip()
 
 
-def _ensure_device_id(prefs=None):
+def _ensure_cloud_install_id(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
-    current = str(getattr(prefs, "auth_device_id", "") or "").strip()
+    current = str(getattr(prefs, "cloud_install_id", "") or "").strip()
     if current:
         return current
     generated = str(uuid.uuid4())
-    prefs.auth_device_id = generated
+    prefs.cloud_install_id = generated
     _save_user_prefs()
     return generated
 
@@ -544,9 +544,9 @@ def _read_local_addon_version():
 
 
 def _apply_auth_payload(prefs, payload, status_message=""):
-    prefs.auth_access_token = str(payload.get("access_token", "") or "").strip()
-    prefs.auth_refresh_token = str(payload.get("refresh_token", "") or "").strip()
-    prefs.auth_status_message = str(status_message or "")
+    prefs.cloud_session_access_token = str(payload.get("access_token", "") or "").strip()
+    prefs.cloud_session_refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    prefs.cloud_session_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
 
@@ -556,7 +556,7 @@ def connect_anonymous(prefs=None):
     if prefs is None:
         raise AuthApiError(0, "prefs_unavailable")
 
-    device_id = _ensure_device_id(prefs)
+    device_id = _ensure_cloud_install_id(prefs)
     headers = {}
     if device_id:
         headers["X-Planetka-Device-Id"] = device_id
@@ -585,20 +585,20 @@ def ensure_authenticated_session(prefs=None):
     return True
 
 
-def refresh_auth_session(prefs=None):
+def refresh_cloud_session(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         raise AuthApiError(0, "prefs_unavailable")
 
-    refresh_token = str(getattr(prefs, "auth_refresh_token", "") or "").strip()
+    refresh_token = str(getattr(prefs, "cloud_session_refresh_token", "") or "").strip()
     if not refresh_token:
         connect_anonymous(prefs)
-        return str(getattr(prefs, "auth_access_token", "") or "").strip()
+        return str(getattr(prefs, "cloud_session_access_token", "") or "").strip()
 
     _status = None
     payload = None
     try:
-        device_id = _ensure_device_id(prefs)
+        device_id = _ensure_cloud_install_id(prefs)
         headers = {}
         if device_id:
             headers["X-Planetka-Device-Id"] = device_id
@@ -614,30 +614,30 @@ def refresh_auth_session(prefs=None):
     except AuthApiError as refresh_error:
         try:
             connect_anonymous(prefs)
-            return str(getattr(prefs, "auth_access_token", "") or "").strip()
+            return str(getattr(prefs, "cloud_session_access_token", "") or "").strip()
         except AuthApiError:
-            if is_terminal_auth_error(refresh_error):
-                _report_critical_disconnect(
+            if is_terminal_cloud_session_error(refresh_error):
+                _report_critical_cloud_disconnect(
                     prefs,
-                    "refresh_auth_session_refresh_failed",
+                    "refresh_cloud_session_refresh_failed",
                     primary_error=refresh_error,
                 )
-                _clear_auth_session_preserve_device_id(
+                _clear_cloud_session_preserve_install_id(
                     prefs,
                     state="logged_out",
                     status_message=_critical_disconnect_status_message(refresh_error),
                 )
             else:
                 logger.warning(
-                    "Planetka: transient auth refresh failure; preserving local session "
+                    "Planetka: transient session refresh failure; preserving local session "
                     "(refresh_error=%s refresh_status=%s).",
-                    _auth_error_code(refresh_error),
+                    _cloud_session_error_code(refresh_error),
                     int(getattr(refresh_error, "status", 0) or 0),
                 )
             raise refresh_error
 
     _apply_auth_payload(prefs, payload)
-    return str(getattr(prefs, "auth_access_token", "") or "").strip()
+    return str(getattr(prefs, "cloud_session_access_token", "") or "").strip()
 
 
 def get_access_token(prefs=None, allow_refresh=True):
@@ -645,15 +645,15 @@ def get_access_token(prefs=None, allow_refresh=True):
     if prefs is None:
         return ""
 
-    access_token = str(getattr(prefs, "auth_access_token", "") or "").strip()
+    access_token = str(getattr(prefs, "cloud_session_access_token", "") or "").strip()
     if access_token and not _token_expires_soon(access_token):
         return access_token
     if access_token and not allow_refresh:
         return access_token
-    if not str(getattr(prefs, "auth_refresh_token", "") or "").strip():
+    if not str(getattr(prefs, "cloud_session_refresh_token", "") or "").strip():
         connect_anonymous(prefs)
-        return str(getattr(prefs, "auth_access_token", "") or "").strip()
-    return refresh_auth_session(prefs)
+        return str(getattr(prefs, "cloud_session_access_token", "") or "").strip()
+    return refresh_cloud_session(prefs)
 
 
 def get_authorized_headers(prefs=None, allow_refresh=True):
@@ -662,7 +662,7 @@ def get_authorized_headers(prefs=None, allow_refresh=True):
     if not token:
         raise AuthApiError(401, "session_not_connected")
     headers = {"Authorization": f"Bearer {token}"}
-    device_id = _ensure_device_id(prefs)
+    device_id = _ensure_cloud_install_id(prefs)
     if device_id:
         headers["X-Planetka-Device-Id"] = device_id
     addon_version = _read_local_addon_version()

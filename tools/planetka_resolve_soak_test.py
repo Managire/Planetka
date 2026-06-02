@@ -793,10 +793,10 @@ def main():
         prefs = extension_prefs.get_prefs()
         _assert(prefs is not None, "Planetka preferences unavailable.")
         if forced_device_id:
-            prefs.auth_device_id = forced_device_id
+            prefs.cloud_install_id = forced_device_id
         auth_module.ensure_authenticated_session(prefs)
         _assert(auth_module.is_authenticated(prefs), "Planetka session is not active.")
-        device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
+        device_id = str(getattr(prefs, "cloud_install_id", "") or "").strip()
         if expected_email:
             _log("Ignoring expected email; Planetka uses anonymous cloud sessions.")
         _log(f"Planetka session active: device_id={device_id or 'unknown'}")

@@ -35,14 +35,14 @@ Access control:
 Tracked telemetry:
 
 - per-tile request events: user, tile key, status code, bytes served, cache hit/miss, request duration, country, ray id, optional resolve id
-- active users (5/15/60 min)
+- active cloud_installs (5/15/60 min)
 - live tile event rate (last 10 seconds)
-- top users, top tiles, recent failures
+- top cloud_installs, top tiles, recent failures
 
 ## Deploy these code changes
 
 From:
-`/Users/tomasgriger/Library/Application Support/Blender/5.0/extensions/user_default/Planetka`
+`/Installs/tomasgriger/Library/Application Support/Blender/5.0/extensions/user_default/Planetka`
 
 1. Deploy the split Workers explicitly
    - `cd cloudflare-api`

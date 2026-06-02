@@ -330,14 +330,14 @@ def _cloud_lod_signature(scene):
     return (bool(local_enabled), bool(vdb_enabled), tuple(sorted(entries)))
 
 
-def _ctx_enforce_texture_quality_mode_for_account(ctx, scene, requested_mode):
+def _ctx_enforce_texture_quality_mode(ctx, scene, requested_mode):
     del ctx
     mode = normalize_texture_quality_mode(requested_mode)
     return mode
 
 
-def enforce_texture_quality_mode_for_account(scene, requested_mode, ctx=None):
-    return _ctx_enforce_texture_quality_mode_for_account(_coerce_ctx(ctx), scene, requested_mode)
+def enforce_texture_quality_mode(scene, requested_mode, ctx=None):
+    return _ctx_enforce_texture_quality_mode(_coerce_ctx(ctx), scene, requested_mode)
 
 
 def _ctx_output_resolution_signature(ctx, scene):
@@ -347,7 +347,7 @@ def _ctx_output_resolution_signature(ctx, scene):
     props = getattr(scene, "planetka", None) if scene is not None else None
     texture_quality_mode = "PREVIEW"
     try:
-        texture_quality_mode = enforce_texture_quality_mode_for_account(
+        texture_quality_mode = enforce_texture_quality_mode(
             scene,
             getattr(props, "texture_quality_mode", "PREVIEW"),
             ctx,

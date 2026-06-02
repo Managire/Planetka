@@ -11,7 +11,7 @@ The Worker checks these metrics and sends email to `SECURITY_ALERT_EMAIL` when t
 - `Tile miss burst` (`tile_not_found`)
 - `Tile error burst` (`status_code >= 500` or `internal_error`)
 
-Alert controls are defined in [CLOUD_API_ENV_VARS.md](/Users/tomasgriger/Library/Application%20Support/Blender/5.0/extensions/user_default/Planetka/Documentation/Developer/CLOUD_API_ENV_VARS.md).
+Alert controls are defined in [CLOUD_API_ENV_VARS.md](/Installs/tomasgriger/Library/Application%20Support/Blender/5.0/extensions/user_default/Planetka/Documentation/Developer/CLOUD_API_ENV_VARS.md).
 
 ## Immediate Response
 
@@ -20,7 +20,7 @@ Alert controls are defined in [CLOUD_API_ENV_VARS.md](/Users/tomasgriger/Library
 2. Open analytics dashboard:
    [https://api.planetka.io/admin/analytics](https://api.planetka.io/admin/analytics)
 3. Check blast radius:
-   top users, top tiles, and recent failures for the same window.
+   top cloud_installs, top tiles, and recent failures for the same window.
 4. Classify:
    platform issue, abusive traffic, or data gap.
 
@@ -28,10 +28,10 @@ Alert controls are defined in [CLOUD_API_ENV_VARS.md](/Users/tomasgriger/Library
 
 ### HTTP 403 spike
 
-1. Verify account blocks and auth failures in recent failures table.
+1. Verify session blocks and session failures in recent failures table.
 2. Check if failures cluster by one email/IP/device.
-3. If abusive, keep account blocked or tighten policy/rate limits.
-4. If legitimate users are affected, inspect API-key/auth changes.
+3. If abusive, keep session blocked or tighten policy/rate limits.
+4. If legitimate cloud_installs are affected, inspect API-key/auth changes.
 
 ### HTTP 429 spike
 

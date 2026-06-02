@@ -61,9 +61,11 @@ def _is_dynamic_texture_loading_group_name(name):
     token = str(name or "").strip()
     if not token:
         return False
+    blender_suffix = f"{TEXTURE_LOADING_GROUP_NAME}."
     return bool(
         token == TEXTURE_LOADING_GROUP_NAME
         or token.startswith(f"{TEXTURE_LOADING_GROUP_NAME}_")
+        or (token.startswith(blender_suffix) and token[len(blender_suffix):].isdigit())
     )
 
 

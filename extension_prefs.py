@@ -11,10 +11,10 @@ EARTH_ROLE_KEY = "planetka_role"
 EARTH_ROLE_VALUE = "earth_preview"
 FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
-FALLBACK_AUTH_DEVICE_ID_KEY = "planetka_auth_device_id"
-FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
-FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
-FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
+FALLBACK_CLOUD_INSTALL_ID_KEY = "planetka_cloud_install_id"
+FALLBACK_CLOUD_SESSION_ACCESS_TOKEN_KEY = "planetka_cloud_session_access_token"
+FALLBACK_CLOUD_SESSION_REFRESH_TOKEN_KEY = "planetka_cloud_session_refresh_token"
+FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY = "planetka_cloud_session_status_message"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
 FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_preflight_seen_version"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
@@ -40,10 +40,10 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         options={'HIDDEN'},
     )
 
-    auth_device_id: StringProperty(name="Auth Device ID", default="", options={'HIDDEN'})
-    auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
-    auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
-    auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
+    cloud_install_id: StringProperty(name="Cloud Install ID", default="", options={'HIDDEN'})
+    cloud_session_access_token: StringProperty(name="Cloud Session Access Token", default="", options={'HIDDEN'})
+    cloud_session_refresh_token: StringProperty(name="Cloud Session Refresh Token", default="", options={'HIDDEN'})
+    cloud_session_status_message: StringProperty(name="Cloud Session Status Message", default="", options={'HIDDEN'})
     startup_setup_profile_json: StringProperty(
         name="Startup Setup Profile",
         default="",
@@ -151,21 +151,21 @@ def get_prefs():
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 
-        auth_device_id = property(
-            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_ID_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_ID_KEY, value),
+        cloud_install_id = property(
+            lambda self: self._get_value(FALLBACK_CLOUD_INSTALL_ID_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_CLOUD_INSTALL_ID_KEY, value),
         )
-        auth_access_token = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ACCESS_TOKEN_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ACCESS_TOKEN_KEY, value),
+        cloud_session_access_token = property(
+            lambda self: self._get_value(FALLBACK_CLOUD_SESSION_ACCESS_TOKEN_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_ACCESS_TOKEN_KEY, value),
         )
-        auth_refresh_token = property(
-            lambda self: self._get_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, value),
+        cloud_session_refresh_token = property(
+            lambda self: self._get_value(FALLBACK_CLOUD_SESSION_REFRESH_TOKEN_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_REFRESH_TOKEN_KEY, value),
         )
-        auth_status_message = property(
-            lambda self: self._get_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, value),
+        cloud_session_status_message = property(
+            lambda self: self._get_value(FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY, value),
         )
         startup_setup_profile_json = property(
             lambda self: self._get_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, ""),

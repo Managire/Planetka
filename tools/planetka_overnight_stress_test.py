@@ -755,7 +755,7 @@ def main():
         auth_module.ensure_authenticated_session(prefs)
         _assert(auth_module.is_authenticated(prefs), "Planetka Cloud session is not active.")
 
-        device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
+        device_id = str(getattr(prefs, "cloud_install_id", "") or "").strip()
         _log(f"Planetka Cloud session active: device_id={device_id or 'unknown'}")
 
         scene = bpy.context.scene

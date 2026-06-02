@@ -1,11 +1,11 @@
 export function createAuthCore(deps) {
-  async function createAccessToken(env, user, extraClaims = {}) {
+  async function createAccessToken(env, install, extraClaims = {}) {
     const secret = deps.requireSecret(env, "JWT_SIGNING_SECRET");
     const exp = Math.floor(Date.now() / 1000) + (60 * 60);
     const basePayload = {
       type: "access",
-      sub: user.id,
-      email: user.email,
+      sub: install.id,
+      email: install.email,
       exp,
     };
     const payload = { ...basePayload };
@@ -44,8 +44,8 @@ export function createAuthCore(deps) {
     const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
     const payload = {
       type: "tile_session",
-      sub: String(auth && auth.user && auth.user.id || "").trim(),
-      email: String(auth && auth.user && auth.user.email || "").trim(),
+      sub: String(auth && ((auth.install && auth.install.id)) || "").trim(),
+      email: String(auth && ((auth.install && auth.install.email)) || "").trim(),
       quality_mode: safeQualityMode,
       resolve_id: safeResolveId,
       auth_method: String(auth && auth.authMethod || "").trim(),
@@ -100,8 +100,8 @@ export function createAuthCore(deps) {
     if (String(payload && payload.type || "").trim() !== "tile_session") {
       return { error: deps.json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
     }
-    const userId = String(payload && payload.sub || "").trim();
-    if (!userId) {
+    const installId = String(payload && payload.sub || "").trim();
+    if (!installId) {
       return { error: deps.json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
     }
     const authMethod = String(payload && payload.auth_method || "").trim();
@@ -112,7 +112,8 @@ export function createAuthCore(deps) {
     const qualityMode = deps.normalizeQualityMode(payload && payload.quality_mode || "");
     const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
     const claims = {
-      userId,
+      installId,
+      userId: installId,
       userEmail: String(payload && payload.email || "").trim(),
       qualityMode,
       resolveId,
@@ -130,7 +131,7 @@ export function createAuthCore(deps) {
     return { claims };
   }
 
-  async function createRefreshSession(db, userId, expiresAtOverride = "", metadata = {}) {
+  async function createRefreshSession(db, installId, expiresAtOverride = "", metadata = {}) {
     await deps.ensureRefreshSessionColumns(db);
     const refreshToken = deps.randomToken(48);
     const refreshHash = await deps.sha256Hex(refreshToken);
@@ -143,7 +144,7 @@ export function createAuthCore(deps) {
     await deps.dbRun(
       db,
       `
-        INSERT INTO refresh_sessions (
+        INSERT INTO cloud_session_refresh_tokens (
           id,
           user_id,
           refresh_token_hash,
@@ -156,7 +157,7 @@ export function createAuthCore(deps) {
       `,
       [
         refreshSessionId,
-        userId,
+        installId,
         refreshHash,
         expiresAt,
         createdAt,

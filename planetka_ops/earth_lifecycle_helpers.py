@@ -4,7 +4,7 @@ import bpy
 
 from ..auth import (
     AuthApiError,
-    describe_auth_error,
+    describe_cloud_session_error,
     get_cloud_connection_status,
     ensure_authenticated_session,
     is_authenticated,
@@ -64,7 +64,7 @@ def _require_planetka_cloud_session(operator, prefs):
         except AuthApiError as exc:
             fail(
                 operator,
-                describe_auth_error(exc),
+                describe_cloud_session_error(exc),
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
                 exc=exc,

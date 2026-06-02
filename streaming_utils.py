@@ -36,8 +36,8 @@ _STAGED_PREFETCH_LOCK = threading.Lock()
 _STAGED_PREFETCH = {}
 _STAGED_PREFETCH_TTL_SECONDS = 60.0
 _AUTH_DISCONNECT_TOKENS = (
-    "account not connected",
-    "account_not_connected",
+    "cloud session not connected",
+    "cloud_session_not_connected",
     "login expired",
     "session expired",
     "log in again",
@@ -346,8 +346,8 @@ def prefetch_resolve_plan(
     # Resolve integrity:
     # - no post-prefetch fallback fetches here (shader fallback images handle EL/WT/PO misses)
     # - only missing S2 is fatal; missing EL/WT/PO proceeds with fallback images
-    # - texture quality only changes which S2 level is requested; account plan
-    #   access is decided by the active tile session.
+    # - texture quality only changes which S2 level is requested; access is
+    #   decided by the active Planetka Cloud tile session.
     resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=not use_remote)
     unresolved_s2_required = sum(
         1
@@ -367,8 +367,8 @@ def prefetch_resolve_plan(
         if not str(prefetch_result.get("fatal_error", "") or "").strip():
             if _prefetch_result_indicates_auth_disconnect(prefetch_result):
                 prefetch_result["fatal_error"] = (
-                    "Planetka Cloud is not connected. "
-                    "Reconnect your account and retry Resolve."
+                    "Planetka Cloud session is not connected. "
+                    "Restart Blender or retry Resolve."
                 )
             else:
                 prefetch_result["fatal_error"] = (

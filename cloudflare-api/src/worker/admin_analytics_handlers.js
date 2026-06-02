@@ -22,7 +22,7 @@ const ANALYTICS_TILE_COLOR = "#60a5fa";
 
 function snapshotHasTopLineTotals(snapshot) {
   const topLine = snapshot && snapshot.top_line && typeof snapshot.top_line === "object" ? snapshot.top_line : {};
-  return ["users", "resolves", "tile_requests", "gb_served"].every((key) => {
+  return ["installs", "resolves", "tile_requests", "gb_served"].every((key) => {
     const section = topLine[key] && typeof topLine[key] === "object" ? topLine[key] : {};
     return Object.prototype.hasOwnProperty.call(section, "total");
   });
@@ -41,35 +41,35 @@ function parseLiveMapTile(tileKey) {
   return { x, y, z, d };
 }
 
-function filterAnalyticsUsersRows(rows, query) {
+function filterAnalyticsInstallsRows(rows, query) {
   const safeRows = Array.isArray(rows) ? rows : [];
   const needle = String(query || "").trim().toLowerCase();
   if (!needle) {
     return safeRows.slice();
   }
   return safeRows.filter((row) => {
-    const email = String(row && row.user_email || "").trim().toLowerCase();
-    const userId = String(row && row.user_id || "").trim().toLowerCase();
-    return email.includes(needle) || userId.includes(needle);
+    const email = String(row && row.install_email || "").trim().toLowerCase();
+    const installId = String(row && row.install_id || "").trim().toLowerCase();
+    return email.includes(needle) || installId.includes(needle);
   });
 }
 
-function analyticsUsersSortValue(row, sortBy) {
+function analyticsInstallsSortValue(row, sortBy) {
   if (sortBy === "total_resolves") return Number(row && row.total_resolve_count || row && row.resolve_count || 0);
   if (sortBy === "data_downloaded") return Number(row && row.data_downloaded_bytes || 0);
   if (sortBy === "last_seen") return Date.parse(String(row && row.last_seen_at || "")) || 0;
   return Number(row && row.data_downloaded_bytes || 0);
 }
 
-function sortAnalyticsUsersRows(rows, sortBy, sortDir) {
+function sortAnalyticsInstallsRows(rows, sortBy, sortDir) {
   const safeRows = Array.isArray(rows) ? rows.slice() : [];
   const direction = String(sortDir || "desc").trim().toLowerCase() === "asc" ? 1 : -1;
   safeRows.sort((left, right) => {
-    const primary = analyticsUsersSortValue(left, sortBy) - analyticsUsersSortValue(right, sortBy);
+    const primary = analyticsInstallsSortValue(left, sortBy) - analyticsInstallsSortValue(right, sortBy);
     if (primary !== 0) {
       return primary * direction;
     }
-    return String(left && left.user_email || "").localeCompare(String(right && right.user_email || "")) * direction;
+    return String(left && left.install_email || "").localeCompare(String(right && right.install_email || "")) * direction;
   });
   return safeRows;
 }
@@ -83,7 +83,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
-  const { db, user } = auth;
+  const { db, install } = auth;
   const windowMinutes = deps.sanitizeAnalyticsMinutes(url.searchParams.get("minutes"), deps.DEFAULT_ANALYTICS_WINDOW_MINUTES);
   const tileMapMinutes = deps.sanitizeLiveTileMapMinutes(
     url.searchParams.get("tile_map_minutes"),
@@ -106,7 +106,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
     return deps.json(
       {
         ok: true,
-        admin_email: String(user.email || ""),
+        admin_email: String(install.email || ""),
         ...snapshot,
       },
       200,
@@ -118,8 +118,8 @@ export async function handleAdminAnalyticsData(request, env, deps) {
       "planetka.admin.analytics.data_failed",
       JSON.stringify({
         error: message,
-        user_id: String(user && user.id || ""),
-        user_email: String(user && user.email || ""),
+        install_id: String(install && install.id || ""),
+        install_email: String(install && install.email || ""),
         access_status_filter: "all",
         window_minutes: windowMinutes,
         tile_map_minutes: tileMapMinutes,
@@ -168,7 +168,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
-  const { user, tokenSource } = auth;
+  const { install, tokenSource } = auth;
   let initialSnapshot = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
@@ -194,8 +194,8 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
       "planetka.admin.analytics.page_snapshot_failed",
       JSON.stringify({
         error: String(error && error.message || "analytics_page_snapshot_failed"),
-        user_id: String(user && user.id || ""),
-        user_email: String(user && user.email || ""),
+        install_id: String(install && install.id || ""),
+        install_email: String(install && install.email || ""),
       }),
     );
   }
@@ -203,20 +203,20 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   const snapshotSummary = initialSnapshot && initialSnapshot.summary ? initialSnapshot.summary : {};
   const snapshotLiveMap = initialSnapshot && initialSnapshot.live_tile_map ? initialSnapshot.live_tile_map : {};
   const snapshotLiveRows = Array.isArray(snapshotLiveMap && snapshotLiveMap.rows) ? snapshotLiveMap.rows : [];
-  const snapshotActiveUsers10m = Array.isArray(initialSnapshot && initialSnapshot.active_users_10m)
-    ? initialSnapshot.active_users_10m
+  const snapshotActiveInstalls10m = Array.isArray(initialSnapshot && initialSnapshot.active_installs_10m)
+    ? initialSnapshot.active_installs_10m
     : [];
-  const snapshotHeavyUsers = Array.isArray(initialSnapshot && initialSnapshot.heavy_users_30d)
-    ? initialSnapshot.heavy_users_30d
+  const snapshotHeavyInstalls = Array.isArray(initialSnapshot && initialSnapshot.heavy_installs_30d)
+    ? initialSnapshot.heavy_installs_30d
     : [];
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
-  const serverActiveUsersRowsHtml = snapshotActiveUsers10m.map((row) => {
-    const email = deps.escapeHtml(String(row && row.user_email || ""));
+  const serverActiveInstallsRowsHtml = snapshotActiveInstalls10m.map((row) => {
+    const email = deps.escapeHtml(String(row && row.install_email || ""));
     return `<tr><td>${email}</td><td>${fmtInt(row && row.request_count)}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(row && row.bytes_served)}</td><td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td></tr>`;
   }).join("");
-  const serverHeavyRowsHtml = snapshotHeavyUsers.slice(0, 20).map((row) => {
-    const email = deps.escapeHtml(String(row && row.user_email || ""));
+  const serverHeavyRowsHtml = snapshotHeavyInstalls.slice(0, 20).map((row) => {
+    const email = deps.escapeHtml(String(row && row.install_email || ""));
     const lastSeen = Number.isFinite(Number(row && row.last_event_unix))
       ? new Date(Number(row.last_event_unix) * 1000).toISOString()
       : "";
@@ -246,7 +246,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   const htmlContent = buildAdminAnalyticsPageHtml({
     escapeHtml: deps.escapeHtml,
     encodeURIComponent,
-    user,
+    install,
     tokenSource,
     buildStamp,
     snapshotGeneratedAt,
@@ -255,7 +255,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     snapshotTopLine,
     snapshotSummary,
     snapshotLiveMap,
-    serverActiveUsersRowsHtml,
+    serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
   });
@@ -278,7 +278,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   return deps.html(htmlContent, 200, env);
 }
 
-export async function handleAdminAnalyticsUsersPage(request, env, deps) {
+export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
   const url = new URL(request.url);
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
     return deps.json({ ok: false, error: "query_token_not_allowed" }, 400, env);
@@ -287,16 +287,16 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
-  const { db, user } = auth;
+  const { db, install } = auth;
   const query = String(url.searchParams.get("q") || "").trim();
-  const sortBy = deps.parseAnalyticsUsersSort(url.searchParams.get("sort"));
-  const sortDir = deps.parseAnalyticsUsersSortDirection(url.searchParams.get("dir"));
-  let usersSnapshot = await deps.loadAnalyticsUsersSnapshot(env);
-  if (!usersSnapshot || deps.isAnalyticsSnapshotStale(usersSnapshot)) {
-    usersSnapshot = await deps.buildAnalyticsUsersSnapshot(db, env);
+  const sortBy = deps.parseAnalyticsInstallsSort(url.searchParams.get("sort"));
+  const sortDir = deps.parseAnalyticsInstallsSortDirection(url.searchParams.get("dir"));
+  let installsSnapshot = await deps.loadAnalyticsInstallsSnapshot(env);
+  if (!installsSnapshot || deps.isAnalyticsSnapshotStale(installsSnapshot)) {
+    installsSnapshot = await deps.buildAnalyticsInstallsSnapshot(db, env);
   }
-  const rows = sortAnalyticsUsersRows(
-    filterAnalyticsUsersRows(usersSnapshot && usersSnapshot.rows, query),
+  const rows = sortAnalyticsInstallsRows(
+    filterAnalyticsInstallsRows(installsSnapshot && installsSnapshot.rows, query),
     sortBy,
     sortDir,
   );
@@ -308,26 +308,26 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     params.set("sort", key);
     const nextDir = (sortBy === key && sortDir === "desc") ? "asc" : "desc";
     params.set("dir", nextDir);
-    return `/admin/analytics/users?${params.toString()}`;
+    return `/admin/analytics/installs?${params.toString()}`;
   };
   const sortMarker = (key) => (sortBy === key ? (sortDir === "desc" ? " ▼" : " ▲") : "");
   const rowsHtml = (Array.isArray(rows) ? rows : []).map((row) => {
-    const userIdRaw = String(row && row.user_id || "");
-    const userEmailRaw = String(row && row.user_email || "");
-    const userEmail = deps.escapeHtml(userEmailRaw);
-    const status = String(row && row.user_status || "").trim().toLowerCase();
-    const accountState = status === "blocked" ? "blocked" : "active";
-    const accountStateLabel = accountState === "blocked" ? "Blocked" : "Active";
+    const installIdRaw = String(row && row.install_id || "");
+    const installEmailRaw = String(row && row.install_email || "");
+    const installEmail = deps.escapeHtml(installEmailRaw);
+    const status = String(row && row.install_status || "").trim().toLowerCase();
+    const installState = status === "blocked" ? "blocked" : "active";
+    const installStateLabel = installState === "blocked" ? "Blocked" : "Active";
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn warn" data-action="unblock" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn danger" data-action="block" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
-      <td>${userEmail}</td>
-      <td><code>${deps.escapeHtml(userIdRaw)}</code></td>
-      <td><span class="access_status-pill ${deps.escapeHtml(accountState)}">${deps.escapeHtml(accountStateLabel)}</span></td>
+      <td><code>${deps.escapeHtml(installIdRaw)}</code></td>
+      <td>${installEmail || '<span class="muted">Anonymous install</span>'}</td>
+      <td><span class="access_status-pill ${deps.escapeHtml(installState)}">${deps.escapeHtml(installStateLabel)}</span></td>
       <td>${fmtInt(row && (row.total_resolve_count ?? row.resolve_count))}</td>
       <td>${fmtMb(row && row.data_downloaded_bytes)} MB</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
@@ -340,7 +340,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Planetka Analytics - All users</title>
+  <title>Planetka Analytics - All Installs</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 20px; background: #0b1020; color: #e5e7eb; }
     h1 { margin: 0 0 8px; font-size: 24px; }
@@ -361,27 +361,27 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   </style>
 </head>
 <body>
-  <h1>All users</h1>
-  <div class="muted">Signed in as ${deps.escapeHtml(String(user.email || ""))}</div>
+  <h1>All Installs</h1>
+  <div class="muted">Signed in as ${deps.escapeHtml(String(install.email || ""))}</div>
   <div class="controls">
     <a href="/admin/analytics" style="color:#93c5fd; text-decoration:none;">Back to analytics</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
-  <form class="controls" method="GET" action="/admin/analytics/users">
-    <label for="q">Search user:</label>
-    <input id="q" name="q" type="text" value="${deps.escapeHtml(query)}" placeholder="email or Planetka user id" />
+  <form class="controls" method="GET" action="/admin/analytics/installs">
+    <label for="q">Search install:</label>
+    <input id="q" name="q" type="text" value="${deps.escapeHtml(query)}" placeholder="email or Planetka install id" />
     <input type="hidden" name="sort" value="${deps.escapeHtml(sortBy)}" />
     <input type="hidden" name="dir" value="${deps.escapeHtml(sortDir)}" />
     <button type="submit">Search</button>
-    <span class="muted">${fmtInt(Array.isArray(rows) ? rows.length : 0)} users shown</span>
+    <span class="muted">${fmtInt(Array.isArray(rows) ? rows.length : 0)} installs shown</span>
   </form>
   <div id="status" class="muted">Ready</div>
   <table>
     <thead>
       <tr>
         <th>Email</th>
-        <th>Planetka User ID</th>
-        <th>Account</th>
+        <th>Planetka Install ID</th>
+        <th>Status</th>
         <th><a href="${buildSortHref("total_resolves")}">Total Resolves${sortMarker("total_resolves")}</a></th>
         <th><a href="${buildSortHref("data_downloaded")}">Data Downloaded${sortMarker("data_downloaded")}</a></th>
         <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
@@ -407,25 +407,25 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         tbody.appendChild(tr);
       }
     }
-    async function performUserAction(action, userId, userEmail) {
+    async function performInstallAction(action, installId, installEmail) {
       const safeAction = String(action || "").trim();
-      const safeUserId = String(userId || "").trim();
-      const safeUserEmail = String(userEmail || "").trim();
+      const safeInstallId = String(installId || "").trim();
+      const safeInstallEmail = String(installEmail || "").trim();
       const endpointByAction = {
-        block: "/admin/users/block",
-        unblock: "/admin/users/unblock",
-        "hard-block": "/admin/users/hard-block",
+        block: "/admin/installs/block",
+        unblock: "/admin/installs/unblock",
+        "hard-block": "/admin/installs/hard-block",
       };
       const confirmation = {
-        block: "Block this user account now?",
-        unblock: "Unblock this user account now?",
-        "hard-block": "Hard block this user and block same-computer attempts?",
+        block: "Block this install now?",
+        unblock: "Unblock this install now?",
+        "hard-block": "Hard block this install and block same-computer attempts?",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
-      const payload = { email: safeUserEmail };
-      if (safeUserId) payload.user_id = safeUserId;
+      const payload = { email: safeInstallEmail };
+      if (safeInstallId) payload.install_id = safeInstallId;
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
       try {
@@ -439,7 +439,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         if (!res.ok || !data.ok) {
           throw new Error((data && (data.message || data.error)) || ("HTTP " + res.status));
         }
-        statusEl.textContent = "Action applied: " + safeAction + " (" + safeUserEmail + ")";
+        statusEl.textContent = "Action applied: " + safeAction + " (" + safeInstallEmail + ")";
         statusEl.className = "muted";
         window.location.reload();
       } catch (error) {
@@ -452,9 +452,9 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (!button) return;
       const action = String(button.getAttribute("data-action") || "").trim();
       if (!action) return;
-      const userId = decodeDataValue(button.getAttribute("data-user-id"));
-      const userEmail = decodeDataValue(button.getAttribute("data-user-email"));
-      performUserAction(action, userId, userEmail);
+      const installId = decodeDataValue(button.getAttribute("data-install-id"));
+      const installEmail = decodeDataValue(button.getAttribute("data-install-email"));
+      performInstallAction(action, installId, installEmail);
     });
   </script>
 </body>

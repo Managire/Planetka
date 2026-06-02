@@ -18,7 +18,7 @@ export function analyticsSnapshotKey(env, minutes, access_statusFilter, tileMapM
 }
 
 export function analyticsUsersSnapshotKey(env) {
-  return r2KeyWithPrefix(env, "Admin/analytics_snapshots/users.json");
+  return r2KeyWithPrefix(env, "Admin/analytics_snapshots/cloud_installs.json");
 }
 
 async function readJsonSnapshot(env, key) {

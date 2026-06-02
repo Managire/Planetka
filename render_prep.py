@@ -59,6 +59,7 @@ from .state import (
     start_resolve_download,
     remove_object_and_unused_mesh,
     replace_tiles,
+    sync_atmosphere_mode_to_render_engine,
     _store_resolve_summary,
 )
 
@@ -846,6 +847,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             # Keep the resolve hot path local. The background fetch of the
             # requested assets is the authoritative remote health/access check.
         prefs.texture_base_path = normalized
+
+        try:
+            sync_atmosphere_mode_to_render_engine(scene)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed syncing atmosphere mode during resolve", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed syncing atmosphere mode during resolve", exc_info=True)
 
         try:
             force_empty_once = bool(scene.get(FORCE_EMPTY_RESOLVE_ONCE_KEY, False))

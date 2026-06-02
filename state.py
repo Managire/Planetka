@@ -730,13 +730,6 @@ def _camera_control_sync_signature(scene):
     return _navigation_runtime.camera_control_sync_signature(scene)
 
 
-def _sync_navigation_controls_from_scene_camera(scene):
-    return _navigation_runtime.sync_navigation_controls_from_scene_camera(
-        _NAVIGATION_RUNTIME_CTX,
-        scene,
-    )
-
-
 def _camera_signature(scene):
     return _view_telemetry.camera_signature(scene)
 
@@ -749,8 +742,8 @@ def _normalize_texture_quality_mode(value):
     return _view_telemetry.normalize_texture_quality_mode(value)
 
 
-def _enforce_texture_quality_mode_for_account(scene, requested_mode):
-    return _view_telemetry.enforce_texture_quality_mode_for_account(scene, requested_mode, _VIEW_TELEMETRY_CTX)
+def _enforce_texture_quality_mode(scene, requested_mode):
+    return _view_telemetry.enforce_texture_quality_mode(scene, requested_mode, _VIEW_TELEMETRY_CTX)
 
 
 def _output_resolution_signature(scene):
@@ -948,15 +941,9 @@ def _build_handler_runtime_context():
         set_planetka_logging=set_planetka_logging,
         sync_idprops_from_props=_sync_idprops_from_props,
         is_navigation_user_edit_active=_is_navigation_user_edit_active,
-        scene_has_keyed_runtime_path=_scene_has_keyed_runtime_path,
-        keyed_runtime_all_prop_paths=_KEYED_RUNTIME_ALL_PROP_PATHS,
-        keyed_runtime_nav_prop_paths=_KEYED_RUNTIME_NAV_PROP_PATHS,
-        keyed_runtime_focal_prop_paths=_KEYED_RUNTIME_FOCAL_PROP_PATHS,
-        keyed_runtime_sun_prop_paths=_KEYED_RUNTIME_SUN_PROP_PATHS,
         is_render_job_active=_is_render_job_active,
         is_animation_playing=_is_animation_playing,
         get_earth_object=get_earth_object,
-        sync_navigation_controls_from_scene_camera=_sync_navigation_controls_from_scene_camera,
         import_module=importlib.import_module,
         get_prefs=get_prefs,
         package_name=__package__ or "",
@@ -1005,6 +992,10 @@ def _initialize_props_from_imported_planetka(scene):
 @persistent
 def _planetka_depsgraph_update_post(_scene, _depsgraph):
     return _handler_runtime.depsgraph_update_post(_scene, _depsgraph, _HANDLER_RUNTIME_CTX)
+
+
+def sync_atmosphere_mode_to_render_engine(scene=None):
+    return _handler_runtime.sync_atmosphere_mode_to_render_engine(scene, _HANDLER_RUNTIME_CTX)
 
 
 

@@ -40,7 +40,7 @@ export function readBearerToken(request) {
   return token;
 }
 
-export async function readBearerUser(request, env, deps) {
+export async function readBearerInstall(request, env, deps) {
   const token = readBearerToken(request);
   if (!token) {
     return null;
@@ -53,7 +53,7 @@ export async function readBearerUser(request, env, deps) {
   return payload;
 }
 
-export async function requireAuthenticatedUserContext(request, env, options = {}, deps) {
+export async function requireCloudSessionContext(request, env, options = {}, deps) {
   const db = deps.requireDb(env);
   const allowCookieToken = deps.parseBooleanFlag(options.allowCookieToken);
   const requireAdmin = deps.parseBooleanFlag(options.requireAdmin);
@@ -81,7 +81,7 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   }
   try {
     if (!access) {
-      access = await readBearerUser(request, env, deps);
+      access = await readBearerInstall(request, env, deps);
       if (access) {
         tokenSource = "bearer";
       }
@@ -122,7 +122,7 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     access.device_id || request.headers.get("X-Planetka-Device-Id") || "",
   );
   const tokenAccessStatusRaw = String(
-    access.access_status_code || access.user_status || access.access_status || access.accessStatus || access.userStatus || "",
+    access.access_status_code || access.install_status || access.access_status || access.accessStatus || access.installStatus || "",
   ).trim();
   const tokenAccessStatus = tokenAccessStatusRaw && typeof deps.normalizeAccessStatusStrict === "function"
     ? deps.normalizeAccessStatusStrict(tokenAccessStatusRaw)
@@ -149,7 +149,7 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     }
     return {
       db,
-        user: {
+        install: {
           id: String(access.sub || "").trim(),
           email: String(access.email || "").trim(),
           status: tokenAccessStatus,
@@ -163,26 +163,26 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     };
   }
 
-  let user = await deps.findUserById(db, access.sub);
-  if (!user) {
-    return { error: deps.json({ ok: false, error: "user_not_found" }, 404, env) };
+  let install = await deps.findInstallById(db, access.sub);
+  if (!install) {
+    return { error: deps.json({ ok: false, error: "cloud_install_not_found" }, 404, env) };
   }
-  if (deps.isBlockedStatus(user.status)) {
-    return { error: deps.blockedAccountResponse(env) };
+  if (deps.isBlockedStatus(install.status)) {
+    return { error: deps.blockedCloudSessionResponse(env) };
   }
-  user = await deps.enforceUserAccessStatusPolicy(db, user, env);
-  if (!user) {
-    return { error: deps.json({ ok: false, error: "user_not_found" }, 404, env) };
+  install = await deps.enforceInstallAccessStatusPolicy(db, install, env);
+  if (!install) {
+    return { error: deps.json({ ok: false, error: "cloud_install_not_found" }, 404, env) };
   }
-  const qualityAccess = await deps.resolveUserQualityAccessState(db, user, env);
+  const qualityAccess = await deps.resolveInstallQualityAccessState(db, install, env);
   const accessStatus = qualityAccess.storedAccessStatus;
   const qualityAccessStatus = qualityAccess.qualityAccessStatus;
-  if (requireAdmin && !deps.isAnalyticsAdmin(user, env)) {
+  if (requireAdmin && !deps.isAnalyticsAdmin(install, env)) {
     return { error: deps.json({ ok: false, error: "admin_access_required" }, 403, env) };
   }
   return {
     db,
-    user,
+    install,
     access,
     accessStatus,
     qualityAccessStatus,
@@ -193,7 +193,7 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
 }
 
 export async function requireAnalyticsAdmin(request, env, deps) {
-  const auth = await requireAuthenticatedUserContext(
+  const auth = await requireCloudSessionContext(
     request,
     env,
     { requireAdmin: true, allowCookieToken: true },
@@ -202,7 +202,7 @@ export async function requireAnalyticsAdmin(request, env, deps) {
   if (auth && auth.error) {
     return auth;
   }
-  if (!deps.isPrimaryAnalyticsAdmin(auth && auth.user, env)) {
+  if (!deps.isPrimaryAnalyticsAdmin(auth && auth.install, env)) {
     return { error: deps.json({ ok: false, error: "primary_admin_required" }, 403, env) };
   }
   return auth;

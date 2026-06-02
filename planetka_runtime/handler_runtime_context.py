@@ -22,15 +22,9 @@ class HandlerRuntimeDeps:
     set_planetka_logging: Any
     sync_idprops_from_props: Any
     is_navigation_user_edit_active: Any
-    scene_has_keyed_runtime_path: Any
-    keyed_runtime_all_prop_paths: Any
-    keyed_runtime_nav_prop_paths: Any
-    keyed_runtime_focal_prop_paths: Any
-    keyed_runtime_sun_prop_paths: Any
     is_render_job_active: Any
     is_animation_playing: Any
     get_earth_object: Any
-    sync_navigation_controls_from_scene_camera: Any
     import_module: Any
     get_prefs: Any
     package_name: str

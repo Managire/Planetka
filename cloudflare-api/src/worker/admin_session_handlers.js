@@ -190,7 +190,7 @@ export async function handleAdminSessionStart(request, env, deps) {
   if (!token) {
     return deps.json({ ok: false, error: "missing_bearer_token" }, 401, env);
   }
-  const auth = await deps.requireAuthenticatedUserContext(
+  const auth = await deps.requireCloudSessionContext(
     request,
     env,
     { requireAdmin: true, allowCookieToken: false, enforceApiKeyDevicePolicy: true },
@@ -285,14 +285,14 @@ export async function handleAdminPasswordLogin(request, env, deps) {
     return deps.json({ ok: false, error: "admin_login_email_misconfigured" }, 500, env);
   }
 
-  let user = await deps.upsertUserByEmail(
+  let user = await deps.upsertCloudInstallByEmail(
     db,
     adminEmail,
     deps.ACCESS_STATUS_ACTIVE,
     {},
     env,
   );
-  user = await deps.enforceUserAccessStatusPolicy(db, user, env);
+  user = await deps.enforceCloudInstallAccessStatusPolicy(db, user, env);
   if (!user || !deps.isAnalyticsAdmin(user, env)) {
     return deps.json({ ok: false, error: "admin_access_required" }, 403, env);
   }

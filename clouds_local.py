@@ -1981,6 +1981,71 @@ def _append_from_reference(object_names=(), material_names=(), blend_path=None):
 
         data_to.objects = object_targets
         data_to.materials = material_targets
+    _sanitize_cloud_reference_images()
+    _remove_unlinked_sample_cloud_materials()
+
+
+def _image_path_is_usable(image):
+    path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip() if image else ""
+    if not path:
+        return False
+    try:
+        resolved = bpy.path.abspath(path)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        resolved = path
+    try:
+        return bool(os.path.isfile(resolved) and int(os.path.getsize(resolved)) > 0)
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _sanitize_cloud_reference_images():
+    cloud_material_prefixes = (
+        GLOBAL_CLOUD_MATERIAL_NAME,
+        LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME,
+        "Planetka Texture-Based Cloud Shader",
+        VDB_CLOUD_MATERIAL_TEMPLATE_NAME,
+    )
+    for material in tuple(getattr(bpy.data, "materials", ())):
+        material_name = str(getattr(material, "name", "") or "")
+        if not any(material_name == prefix or material_name.startswith(f"{prefix}.") or material_name.startswith(f"{prefix} No ") for prefix in cloud_material_prefixes):
+            continue
+        node_tree = getattr(material, "node_tree", None)
+        if node_tree is None:
+            continue
+        for node in tuple(getattr(node_tree, "nodes", ())):
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeTexImage":
+                continue
+            image = getattr(node, "image", None)
+            if image is None or _image_path_is_usable(image):
+                continue
+            try:
+                node.image = None
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed clearing invalid reference image node", exc_info=True)
+
+    for image in tuple(getattr(bpy.data, "images", ())):
+        if int(getattr(image, "users", 0) or 0) != 0:
+            continue
+        if _image_path_is_usable(image):
+            continue
+        try:
+            bpy.data.images.remove(image)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed removing unused invalid reference image", exc_info=True)
+
+
+def _remove_unlinked_sample_cloud_materials():
+    for material in tuple(getattr(bpy.data, "materials", ())):
+        name = str(getattr(material, "name", "") or "")
+        if not name.startswith("Planetka Texture-Based Cloud Shader No "):
+            continue
+        if int(getattr(material, "users", 0) or 0) > 0:
+            continue
+        try:
+            bpy.data.materials.remove(material)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed removing unlinked sample texture-cloud material", exc_info=True)
 
 
 def _unlink_object_from_all_collections(obj):

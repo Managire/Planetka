@@ -372,7 +372,7 @@ class OvernightRunner:
             "session_dir": str(self.session_dir),
             "seed": self.seed,
             "smoke_mode": bool(self.smoke_mode),
-            "account": {},
+            "cloud_session": {},
             "skipped_external_ops": dict(EXTERNAL_SKIPS),
             "operator_results": [],
             "property_sweeps": [],
@@ -1046,13 +1046,13 @@ class OvernightRunner:
 
     def _write_subprocess_auth_payload(self):
         access_token = str(self.auth.get_access_token(self.prefs, allow_refresh=True) or "").strip()
-        refresh_token = str(getattr(self.prefs, "auth_refresh_token", "") or "").strip()
+        refresh_token = str(getattr(self.prefs, "cloud_session_refresh_token", "") or "").strip()
         if not access_token or not refresh_token:
             raise E2EError("Current Planetka auth session is incomplete for final animation subprocess.")
         payload = {
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "device_id": str(getattr(self.prefs, "auth_device_id", "") or "").strip(),
+            "device_id": str(getattr(self.prefs, "cloud_install_id", "") or "").strip(),
         }
         target = self.session_dir / "final_animation_auth_payload.json"
         write_json(target, payload)
@@ -1074,7 +1074,7 @@ class OvernightRunner:
         report_path = self.session_dir / f"{case_id}_report.json"
         env = dict(os.environ)
         env["PLANETKA_AUTH_PAYLOAD"] = str(auth_payload_path)
-        device_id = str(getattr(self.prefs, "auth_device_id", "") or "").strip()
+        device_id = str(getattr(self.prefs, "cloud_install_id", "") or "").strip()
         if device_id:
             env["PLANETKA_AUTH_DEVICE_ID"] = device_id
         env["PLANETKA_E2E_FINAL_CASE_JSON"] = json.dumps(case, separators=(",", ":"))
@@ -1221,7 +1221,7 @@ class OvernightRunner:
         self._refresh_available_engines()
         if self.props is None:
             raise E2EError("scene.planetka is unavailable.")
-        self.report["account"] = ensure_authenticated(
+        self.report["cloud_session"] = ensure_authenticated(
             self.auth,
             self.prefs,
             payload_path=str(os.environ.get("PLANETKA_AUTH_PAYLOAD") or "").strip(),

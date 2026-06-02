@@ -416,8 +416,8 @@ def main() -> int:
         retention_markers = [
             "CLEANUP_TILE_EVENT_RETENTION_DAYS",
             "DELETE FROM tile_request_events",
-            "DELETE FROM tile_request_rollup_hourly_account",
-            "DELETE FROM tile_request_rollup_daily_account",
+            "DELETE FROM tile_request_rollup_hourly_install",
+            "DELETE FROM tile_request_rollup_daily_install",
             "runScheduledMaintenanceJobs(",
             "async scheduled(",
         ]
@@ -521,7 +521,7 @@ def main() -> int:
     if isinstance(payload, dict):
         coverage = payload.get("coverage", {})
         if isinstance(coverage, dict):
-            account = coverage.get("account", {})
+            account = coverage.get("cloud_session", {})
             if isinstance(account, dict):
                 auth_bootstrap = str(account.get("auth_bootstrap", "") or account.get("bootstrap", "") or "").strip()
                 device_id = str(account.get("device_id", "") or "").strip()

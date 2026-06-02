@@ -362,8 +362,8 @@ def register():
     if not hasattr(bpy.types.Scene, "planetka"):
         bpy.types.Scene.planetka = PointerProperty(type=PlanetkaProperties)
     try:
-        from .auth import _ensure_device_id
-        _ensure_device_id()
+        from .auth import _ensure_cloud_install_id
+        _ensure_cloud_install_id()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed initializing anonymous install id during register", exc_info=True)
 

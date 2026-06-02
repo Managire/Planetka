@@ -200,7 +200,7 @@ def _send_bug_report_via_api(
 ):
     prefs = get_prefs()
     if not is_authenticated(prefs):
-        return False, "Account is not connected."
+        return False, "Planetka Cloud is not connected."
 
     url = f"{get_api_base_url()}/support/bug-report"
     payload = {

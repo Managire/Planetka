@@ -12,7 +12,7 @@ Recommended usage:
 
 What it covers:
 - enable addon
-- verify authenticated cloud account
+- verify automatic Planetka Cloud session
 - Create Earth
 - Place Search
 - Navigation + Sunlight
@@ -112,7 +112,7 @@ def main():
         ensure_camera(scene, name="Planetka Short E2E Camera")
         prefs.texture_base_path = "planetka-remote"
 
-        payload["coverage"]["account"] = auth_info
+        payload["coverage"]["cloud_session"] = auth_info
         payload["coverage"]["engine"] = configure_eevee(scene)
         configure_png_output(
             scene,

@@ -2,7 +2,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const {
     escapeHtml,
     encodeURIComponent,
-    user,
+    install,
     tokenSource,
     buildStamp,
     snapshotGeneratedAt,
@@ -11,13 +11,13 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     snapshotTopLine,
     snapshotSummary,
     snapshotLiveMap,
-    serverActiveUsersRowsHtml,
+    serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
-  const topLineUsers = safeTopLine.users && typeof safeTopLine.users === "object" ? safeTopLine.users : {};
+  const topLineInstalls = safeTopLine.installs && typeof safeTopLine.installs === "object" ? safeTopLine.installs : {};
   const topLineResolves = safeTopLine.resolves && typeof safeTopLine.resolves === "object" ? safeTopLine.resolves : {};
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
@@ -28,7 +28,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     return `<span class="metric-total">${escapeHtml(String(valueFormatter(total)))}</span>`;
   };
 
-  const topUsersHtml = renderTotalValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
+  const topInstallsHtml = renderTotalValue(topLineInstalls, (value) => fmtIntLocal(value), topLineInstalls.total);
   const topResolvesHtml = renderTotalValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
   const topTileRequestsHtml = renderTotalValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
   const fmtWholeGbLocal = (value) => `${Math.round(Number(value || 0) / (1024 * 1024 * 1024)).toLocaleString("en-US")} GB`;
@@ -66,15 +66,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     th { color:#93c5fd; font-weight:600; }
     .section { margin-top: 20px; }
     .error { color: #fca5a5; }
-    .user-filter-active { outline: 1px solid #60a5fa; outline-offset: -1px; }
+    .install-filter-active { outline: 1px solid #60a5fa; outline-offset: -1px; }
     .subvalue { color:#9ca3af; font-size:12px; line-height:1.35; margin-top:4px; }
   </style>
 </head>
 <body>
   <h1>Planetka Analytics</h1>
-  <div class="muted">Signed in as ${escapeHtml(String(user.email || ""))}. Session source: ${escapeHtml(String(tokenSource || "unknown"))}. Auto-refresh every 15 seconds. Build: ${escapeHtml(buildStamp)}</div>
+  <div class="muted">Signed in as ${escapeHtml(String(install.email || ""))}. Session source: ${escapeHtml(String(tokenSource || "unknown"))}. Auto-refresh every 15 seconds. Build: ${escapeHtml(buildStamp)}</div>
   <div class="controls">
-    <a href="/admin/analytics/users" style="color:#93c5fd; text-decoration:none;">All users</a>
+    <a href="/admin/analytics/installs" style="color:#93c5fd; text-decoration:none;">All Installs</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
 	  <div class="controls">
@@ -96,7 +96,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
 	  <div class="grid">
-    <div class="card"><div class="label">Users</div><div id="topUsersSplit" class="value">${topUsersHtml}</div></div>
+    <div class="card"><div class="label">Installs</div><div id="topInstallsSplit" class="value">${topInstallsHtml}</div></div>
     <div class="card"><div class="label">Resolves</div><div id="topResolvesSplit" class="value">${topResolvesHtml}</div></div>
     <div class="card"><div class="label">Tile Requests</div><div id="topRequestsSplit" class="value">${topTileRequestsHtml}</div></div>
     <div class="card"><div class="label">GB Served</div><div id="topGbSplit" class="value">${topGbServedHtml}</div></div>
@@ -108,38 +108,38 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <div class="card"><div class="label" id="authRefreshFailuresLabel">Refresh Failures (7d)</div><div id="authRefreshFailures" class="value">-</div></div>
     <div class="card"><div class="label">Refresh Failure Rate</div><div id="authRefreshFailureRate" class="value">-</div></div>
     <div class="card"><div class="label">Critical Disconnects (7d)</div><div id="authRefreshCriticalFailures" class="value">-</div></div>
-    <div class="card"><div class="label">Critical Affected Users (7d)</div><div id="authRefreshCriticalUsers" class="value">-</div></div>
+    <div class="card"><div class="label">Critical Affected Installs (7d)</div><div id="authRefreshCriticalInstalls" class="value">-</div></div>
   </div>
 
   <div class="section">
-    <h3>Active Users (Last 10 min)</h3>
-    <table id="activeUsersTable"><thead><tr><th>Email</th><th>Requests</th><th>Resolves</th><th>GB</th><th>Last seen</th></tr></thead><tbody>${serverActiveUsersRowsHtml}</tbody></table>
+    <h3>Active Installs (Last 10 min)</h3>
+    <table id="activeInstallsTable"><thead><tr><th>Install</th><th>Requests</th><th>Resolves</th><th>GB</th><th>Last seen</th></tr></thead><tbody>${serverActiveInstallsRowsHtml}</tbody></table>
   </div>
   <div class="section">
     <h3>Live Tile Activity Map</h3>
-    <div class="muted" id="tileMapMeta">Window: ${escapeHtml(String(snapshotLiveMap.window_seconds || 60))}s | Active users: ${escapeHtml(fmtIntLocal(snapshotLiveMap.users_active))} | Active tiles: ${escapeHtml(fmtIntLocal(snapshotLiveMap.tiles_active))}</div>
-    <div class="muted" id="tileMapFilterState">Showing all active users.</div>
+    <div class="muted" id="tileMapMeta">Window: ${escapeHtml(String(snapshotLiveMap.window_seconds || 60))}s | Active installs: ${escapeHtml(fmtIntLocal(snapshotLiveMap.installs_active))} | Active tiles: ${escapeHtml(fmtIntLocal(snapshotLiveMap.tiles_active))}</div>
+    <div class="muted" id="tileMapFilterState">Showing all active installs.</div>
     <div class="map-shell">
       <img class="map-bg" src="/admin/analytics/world-map.jpg" alt="World map"/>
       <svg class="map-svg" viewBox="0 0 720 360" preserveAspectRatio="none" aria-hidden="true">${serverMapRectsSvg}</svg>
       <canvas id="tileMapCanvas" class="map-canvas" width="720" height="360"></canvas>
     </div>
-    <table id="tileMapUsersTable" style="max-width: 980px;"><thead><tr><th>User</th><th>Tiles (window)</th><th>Requests (window)</th><th>GB (window)</th><th>Map</th></tr></thead><tbody></tbody></table>
+    <table id="tileMapInstallsTable" style="max-width: 980px;"><thead><tr><th>Install</th><th>Tiles (window)</th><th>Requests (window)</th><th>GB (window)</th><th>Map</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="section">
     <h3 id="authRefreshHeading">Auth Refresh Health (7d)</h3>
-    <table id="authRefreshUsersTable"><thead><tr><th>User</th><th>Failure Count</th><th>Last Failure</th></tr></thead><tbody></tbody></table>
+    <table id="authRefreshInstallsTable"><thead><tr><th>Install</th><th>Failure Count</th><th>Last Failure</th></tr></thead><tbody></tbody></table>
     <table id="authRefreshErrorsTable"><thead><tr><th>Error</th><th>Count</th></tr></thead><tbody></tbody></table>
     <h3 style="margin-top: 14px;">Critical Disconnects (7d)</h3>
-    <table id="authRefreshCriticalUsersTable"><thead><tr><th>User</th><th>Critical Count</th><th>Last Critical</th></tr></thead><tbody></tbody></table>
+    <table id="authRefreshCriticalInstallsTable"><thead><tr><th>Install</th><th>Critical Count</th><th>Last Critical</th></tr></thead><tbody></tbody></table>
     <table id="authRefreshCriticalErrorsTable"><thead><tr><th>Critical Error</th><th>Count</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="section">
     <h3>Recent Failures</h3>
-    <table id="failsTable"><thead><tr><th>Time</th><th>User</th><th>Status</th><th>Error</th><th>Tile</th><th>Cache</th><th>ms</th></tr></thead><tbody></tbody></table>
+    <table id="failsTable"><thead><tr><th>Time</th><th>Install</th><th>Status</th><th>Error</th><th>Tile</th><th>Cache</th><th>ms</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="section">
-    <h3>Heavy Users (Top 20 by Lifetime GB)</h3>
+    <h3>Heavy Installs (Top 20 by Lifetime GB)</h3>
     <table id="heavyTable"><thead><tr><th>Email</th><th>Resolves</th><th>Lifetime GB</th><th>Last Seen</th></tr></thead><tbody>${serverHeavyRowsHtml}</tbody></table>
   </div>
   <script>
@@ -222,16 +222,16 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     let tileMapBaseImage = null;
     let tileMapBaseImageState = "idle";
     let tileMapLastPayload = null;
-    let tileMapSelectedUserKey = "";
-    function activeUserColor() {
+    let tileMapSelectedInstallKey = "";
+    function activeInstallColor() {
       return TILE_COLOR_ACTIVE;
     }
-    function userKeyForRow(row) {
-      return String((row && row.user_id) || (row && row.user_email) || "").trim();
+    function installKeyForRow(row) {
+      return String((row && row.install_id) || (row && row.install_email) || "").trim();
     }
-    function setTileMapUserFilter(selectedUserKey) {
-      const normalized = String(selectedUserKey || "").trim();
-      tileMapSelectedUserKey = (tileMapSelectedUserKey && tileMapSelectedUserKey === normalized) ? "" : normalized;
+    function setTileMapInstallFilter(selectedInstallKey) {
+      const normalized = String(selectedInstallKey || "").trim();
+      tileMapSelectedInstallKey = (tileMapSelectedInstallKey && tileMapSelectedInstallKey === normalized) ? "" : normalized;
       if (tileMapLastPayload) {
         renderLiveTileMap(tileMapLastPayload);
       }
@@ -340,21 +340,21 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const rows = Array.isArray(tileMapData && tileMapData.rows) ? tileMapData.rows : [];
       const scaleX = width / 360.0;
       const scaleY = height / 180.0;
-      const userStats = new Map();
+      const installStats = new Map();
       let plotted = 0;
-      const seenByUserTile = new Set();
+      const seenByInstallTile = new Set();
       const preparedRows = [];
       for (const row of rows) {
         const parsed = parseTileKey(row && row.tile_key);
         if (!parsed) continue;
         if (shouldExcludeTileFromMap(parsed)) continue;
-        const userId = String(row && row.user_id || "").trim();
-        const userEmail = String(row && row.user_email || "").trim();
-        const userKey = userId || userEmail || "unknown";
-        if (tileMapSelectedUserKey && userKey !== tileMapSelectedUserKey) {
+        const installId = String(row && row.install_id || "").trim();
+        const installEmail = String(row && row.install_email || "").trim();
+        const installKey = installId || installEmail || "unknown";
+        if (tileMapSelectedInstallKey && installKey !== tileMapSelectedInstallKey) {
           continue;
         }
-        preparedRows.push({ row, parsed, userKey });
+        preparedRows.push({ row, parsed, installKey });
       }
       // Draw larger/coarser tiles first, then finer tiles on top.
       preparedRows.sort((left, right) => {
@@ -366,10 +366,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       for (const item of preparedRows) {
         const row = item.row;
         const parsed = item.parsed;
-        const userId = String(row && row.user_id || "").trim();
-        const userEmail = String(row && row.user_email || "").trim();
-        const userKey = String(item.userKey || userId || userEmail || "unknown");
-        const userColor = activeUserColor();
+        const installId = String(row && row.install_id || "").trim();
+        const installEmail = String(row && row.install_email || "").trim();
+        const installKey = String(item.installKey || installId || installEmail || "unknown");
+        const installColor = activeInstallColor();
         const alpha = tileAlphaByD(parsed);
         const x = parsed.x * scaleX;
         const y = (180 - (parsed.y + parsed.z)) * scaleY;
@@ -381,27 +381,27 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         if ((x + w) <= 0 || (y + h) <= 0 || x >= width || y >= height) {
           continue;
         }
-        ctx.fillStyle = scaledColor(userColor, 1, alpha);
-        ctx.strokeStyle = scaledColor(userColor, 1, 1);
+        ctx.fillStyle = scaledColor(installColor, 1, alpha);
+        ctx.strokeStyle = scaledColor(installColor, 1, 1);
         ctx.lineWidth = 0.5;
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
         plotted += 1;
 
-        const dedupeKey = userKey + "::" + parsed.x + ":" + parsed.y + ":" + parsed.z;
-        let stat = userStats.get(userKey);
+        const dedupeKey = installKey + "::" + parsed.x + ":" + parsed.y + ":" + parsed.z;
+        let stat = installStats.get(installKey);
         if (!stat) {
           stat = {
-            userKey,
-            email: userEmail || userKey,
+            installKey,
+            email: installEmail || installKey,
             tileCount: 0,
             requestCount: 0,
             bytesServed: 0,
           };
-          userStats.set(userKey, stat);
+          installStats.set(installKey, stat);
         }
-        if (!seenByUserTile.has(dedupeKey)) {
-          seenByUserTile.add(dedupeKey);
+        if (!seenByInstallTile.has(dedupeKey)) {
+          seenByInstallTile.add(dedupeKey);
           stat.tileCount += 1;
         }
         stat.requestCount += Number(row && row.request_count || 0);
@@ -409,33 +409,33 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       }
 
       const windowSeconds = Number(tileMapData && tileMapData.window_seconds || 60);
-      const usersActive = Number(tileMapData && tileMapData.users_active || userStats.size || 0);
+      const installsActive = Number(tileMapData && tileMapData.installs_active || installStats.size || 0);
       const tilesActive = Number(tileMapData && tileMapData.tiles_active || 0);
       const generatedAt = String(tileMapData && tileMapData.generated_at || "");
       const generatedLabel = generatedAt ? new Date(generatedAt).toLocaleTimeString() : "-";
       const filterStateEl = document.getElementById("tileMapFilterState");
       if (filterStateEl) {
-        filterStateEl.textContent = tileMapSelectedUserKey
-          ? ("Filtered user: " + tileMapSelectedUserKey)
-          : "Showing all active users.";
+        filterStateEl.textContent = tileMapSelectedInstallKey
+          ? ("Filtered install: " + tileMapSelectedInstallKey)
+          : "Showing all active installs.";
       }
       metaEl.textContent =
         "Window: " + windowSeconds + "s | " +
-        "Active users: " + fmtInt(usersActive) + " | " +
+        "Active installs: " + fmtInt(installsActive) + " | " +
         "Active tiles: " + fmtInt(tilesActive) + " | " +
         "Plotted rectangles: " + fmtInt(plotted) + " | " +
         "Updated: " + generatedLabel;
 
-      const userRows = Array.from(userStats.values())
+      const installRows = Array.from(installStats.values())
         .sort((a, b) => (b.bytesServed - a.bytesServed) || (b.requestCount - a.requestCount))
         .slice(0, 50);
-      renderRows("tileMapUsersTable", userRows, (row) => ({
+      renderRows("tileMapInstallsTable", installRows, (row) => ({
         html: \`<td>\${row.email || ""}</td>
         <td>\${fmtInt(row.tileCount)}</td>
         <td>\${fmtInt(row.requestCount)}</td>
         <td>\${fmtGb(row.bytesServed)}</td>
-        <td><button class="action-btn" data-action="map-filter-user" data-user-key="\${encodeDataValue(row.userKey || "")}">\${tileMapSelectedUserKey && tileMapSelectedUserKey === row.userKey ? "Show All" : "Show"}</button></td>\`,
-        rowClass: tileMapSelectedUserKey && tileMapSelectedUserKey === row.userKey ? "user-filter-active" : "",
+        <td><button class="action-btn" data-action="map-filter-install" data-install-key="\${encodeDataValue(row.installKey || "")}">\${tileMapSelectedInstallKey && tileMapSelectedInstallKey === row.installKey ? "Show All" : "Show"}</button></td>\`,
+        rowClass: tileMapSelectedInstallKey && tileMapSelectedInstallKey === row.installKey ? "install-filter-active" : "",
       }));
     }
     async function loadAnalytics() {
@@ -457,7 +457,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         }
         const s = data.summary || {};
         const topLine = data.top_line || {};
-        renderTotalMetric("topUsersSplit", topLine.users || {}, false, Number(topLine && topLine.users && topLine.users.total || 0));
+        renderTotalMetric("topInstallsSplit", topLine.installs || {}, false, Number(topLine && topLine.installs && topLine.installs.total || 0));
         renderTotalMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
         renderTotalMetric("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));
         renderTotalMetric("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
@@ -470,29 +470,29 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const refreshTotal = Number(refreshHealth.total_count || 0);
         const refreshFailures = Number(refreshHealth.failure_count || 0);
         const refreshCriticalFailures = Number(refreshHealth.critical_failure_count || 0);
-        const refreshCriticalUsers = Number(refreshHealth.critical_failed_user_count || 0);
+        const refreshCriticalInstalls = Number(refreshHealth.critical_failed_install_count || 0);
         const refreshFailureRate = refreshTotal > 0 ? (100 * refreshFailures / refreshTotal) : 0;
         setText("authRefreshTotal", fmtInt(refreshTotal));
         setText("authRefreshFailures", fmtInt(refreshFailures));
         setText("authRefreshFailureRate", refreshFailureRate.toFixed(2) + "%");
         setText("authRefreshCriticalFailures", fmtInt(refreshCriticalFailures));
-        setText("authRefreshCriticalUsers", fmtInt(refreshCriticalUsers));
-        renderRows("activeUsersTable", data.active_users_10m, (row) => {
-          return \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
+        setText("authRefreshCriticalInstalls", fmtInt(refreshCriticalInstalls));
+        renderRows("activeInstallsTable", data.active_installs_10m, (row) => {
+          return \`<td>\${row.install_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
         });
-        renderRows("heavyTable", data.heavy_users_30d || [], (row) => {
+        renderRows("heavyTable", data.heavy_installs_30d || [], (row) => {
           const lastSeen = Number.isFinite(Number(row.last_event_unix))
             ? new Date(Number(row.last_event_unix) * 1000).toISOString()
             : "";
           const lifetimeBytes = (row && (row.lifetime_bytes ?? row.bytes_served_lifetime ?? row.bytes_served_30d ?? row.month_bytes));
-          return \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(lifetimeBytes)}</td><td>\${lastSeen}</td>\`;
+          return \`<td>\${row.install_email || ""}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(lifetimeBytes)}</td><td>\${lastSeen}</td>\`;
         });
         renderLiveTileMap(data.live_tile_map || {});
-        renderRows("authRefreshUsersTable", refreshHealth.top_failure_users || [], (row) => \`<td>\${row.user_email || row.user_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
+        renderRows("authRefreshInstallsTable", refreshHealth.top_failure_installs || [], (row) => \`<td>\${row.install_email || row.install_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
         renderRows("authRefreshErrorsTable", refreshHealth.error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
-        renderRows("authRefreshCriticalUsersTable", refreshHealth.top_critical_failure_users || [], (row) => \`<td>\${row.user_email || row.user_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
+        renderRows("authRefreshCriticalInstallsTable", refreshHealth.top_critical_failure_installs || [], (row) => \`<td>\${row.install_email || row.install_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
         renderRows("authRefreshCriticalErrorsTable", refreshHealth.critical_error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
-        renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
+        renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.install_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
         if (statusEl) {
           statusEl.textContent = "Updated " + new Date().toLocaleTimeString();
           statusEl.className = "muted";
@@ -527,9 +527,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       if (!action) {
         return;
       }
-      if (action === "map-filter-user") {
-        const selected = decodeDataValue(button.getAttribute("data-user-key"));
-        setTileMapUserFilter(selected);
+      if (action === "map-filter-install") {
+        const selected = decodeDataValue(button.getAttribute("data-install-key"));
+        setTileMapInstallFilter(selected);
         return;
       }
     });

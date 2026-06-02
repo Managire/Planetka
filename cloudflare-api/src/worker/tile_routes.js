@@ -54,14 +54,14 @@ function isPublicCloudAssetFolder(folder) {
 
 export async function handleTileSessionStart(request, env, deps) {
   const {
-    requireAuthenticatedUserContext,
+    requireCloudSessionContext,
     parseJson,
     issueTileSessionToken,
     normalizeQualityMode,
     json: jsonResponse,
   } = deps;
 
-  let auth = await requireAuthenticatedUserContext(
+  let auth = await requireCloudSessionContext(
     request,
     env,
     { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },
@@ -117,11 +117,11 @@ export async function handleResolveSummary(request, env, deps) {
     normalizeResolveId,
     parseJson,
     recordResolveSummaryEvent,
-    requireAuthenticatedUserContext,
+    requireCloudSessionContext,
     requireDb,
   } = deps;
 
-  const auth = await requireAuthenticatedUserContext(
+  const auth = await requireCloudSessionContext(
     request,
     env,
     { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },
@@ -157,8 +157,8 @@ export async function handleResolveSummary(request, env, deps) {
   const result = await recordResolveSummaryEvent(requireDb(env), {
     created_at: deps.nowIso(),
     created_at_unix: Math.floor(Date.now() / 1000),
-    user_id: String(auth && auth.user && auth.user.id || ""),
-    user_email: String(auth && auth.user && auth.user.email || ""),
+    user_id: String(auth && ((auth.install && auth.install.id)) || ""),
+    user_email: String(auth && ((auth.install && auth.install.email)) || ""),
     resolve_id: resolveId,
     quality_mode: qualityMode,
     bytes_served: bytesServed,
@@ -175,7 +175,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     clampNonNegativeInt,
     normalizeQualityMode,
     readTileSessionClaims,
-    requireAuthenticatedUserContext,
+    requireCloudSessionContext,
     resolveTileCacheControl,
   } = deps;
 
@@ -210,7 +210,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     if (request.method !== "HEAD") {
       return json({ ok: false, error: "missing_tile_session_token" }, 401, env);
     }
-    const auth = await requireAuthenticatedUserContext(
+    const auth = await requireCloudSessionContext(
       request,
       env,
       { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },

@@ -13,7 +13,7 @@ from .auth import (
     get_authorized_headers,
     get_status_message,
     is_authenticated,
-    refresh_auth_session,
+    refresh_cloud_session,
 )
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
@@ -167,10 +167,10 @@ def _ensure_remote_auth_ready_for_final_render(operator, prefs, base_path):
         return False
 
     try:
-        refresh_auth_session(prefs)
+        refresh_cloud_session(prefs)
         headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
     except AuthApiError as exc:
-        detail = str(describe_auth_error(exc) or "").strip()
+        detail = str(describe_cloud_session_error(exc) or "").strip()
         message = "Planetka Cloud is not connected. Retry Animation Render after the cloud session reconnects."
         if detail:
             message = f"{message} {detail}"

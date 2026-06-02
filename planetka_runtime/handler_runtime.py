@@ -263,6 +263,23 @@ def _sync_atmosphere_mode_to_render_engine(scene, deps):
         deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
 
 
+def sync_atmosphere_mode_to_render_engine(scene=None, ctx=None):
+    """Explicitly sync Planetka atmosphere mode to the active render engine.
+
+    This is intentionally called from Planetka-controlled operations such as
+    Resolve/Create Earth instead of depsgraph updates. Renderer changes alone
+    should not mutate the scene until the user runs Resolve Planetka.
+    """
+    ctx = _coerce_ctx(ctx)
+    deps = ctx.deps
+    target_scene = scene
+    if target_scene is None:
+        target_scene = _safe_context_scene(deps)
+    if target_scene is None:
+        return
+    _sync_atmosphere_mode_to_render_engine(target_scene, deps)
+
+
 def depsgraph_update_post(_scene, _depsgraph, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
@@ -274,28 +291,9 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
         return
 
     _enforce_planetka_earth_surface_displacement_mode(scene, deps)
-    _sync_atmosphere_mode_to_render_engine(scene, deps)
 
     if deps.is_navigation_user_edit_active(scene):
         return
-
-    keyed_runtime_active = deps.scene_has_keyed_runtime_path(scene, deps.keyed_runtime_all_prop_paths)
-    props = getattr(scene, "planetka", None)
-    preset_active = False
-    if props is not None:
-        try:
-            preset_token = str(getattr(props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
-        except deps.recoverable_exceptions:
-            preset_token = "NONE"
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            preset_token = "NONE"
-        if preset_token in {"PUSH_IN", "PULL_BACK"}:
-            preset_token = "ZOOM"
-        elif preset_token in {"ARC_LEFT", "ARC_RIGHT"}:
-            preset_token = "ARC"
-        preset_active = preset_token not in {"", "NONE"}
-    if not (deps.is_render_job_active() or deps.is_animation_playing() or keyed_runtime_active or preset_active):
-        deps.sync_navigation_controls_from_scene_camera(scene)
 
 
 def load_post(_dummy, ctx=None):

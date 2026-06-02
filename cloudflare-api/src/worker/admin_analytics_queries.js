@@ -46,9 +46,9 @@ const AUTH_REFRESH_CRITICAL_ERROR_CODES = new Set([
   "invalid_refresh_token",
   "refresh_token_revoked",
   "refresh_token_expired",
-  "account_blocked",
-  "invalid_user_status",
-  "account_not_connected",
+  "session_blocked",
+  "invalid_install_status",
+  "cloud_session_not_connected",
 ]);
 
 
@@ -626,12 +626,12 @@ export async function collectAnalyticsSnapshot(
     [windowStartUnix, ...eventEmailFilter.bindings],
   );
 
-  const topLineUsers = await deps.dbGet(
+  const topLineInstalls = await deps.dbGet(
     db,
     `
       SELECT
-        COUNT(*) AS total_users
-      FROM users
+        COUNT(*) AS total_installs
+      FROM cloud_installs
       WHERE 1 = 1
       ${userEmailFilter.condition ? `AND ${userEmailFilter.condition}` : ""}
     `,
@@ -644,8 +644,8 @@ export async function collectAnalyticsSnapshot(
       SELECT
         COALESCE(SUM(r.request_count), 0) AS total_requests,
         COALESCE(SUM(r.bytes_served), 0) AS total_bytes
-      FROM tile_request_rollup_daily_account r
-      LEFT JOIN users u ON u.id = r.user_id
+      FROM tile_request_rollup_daily_install r
+      LEFT JOIN cloud_installs u ON u.id = r.user_id
       WHERE 1 = 1
       ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
     `,
@@ -660,7 +660,7 @@ export async function collectAnalyticsSnapshot(
           e.user_id,
           e.resolve_id
         FROM tile_request_events e
-        LEFT JOIN users u ON u.id = e.user_id
+        LEFT JOIN cloud_installs u ON u.id = e.user_id
         WHERE
           e.resolve_id IS NOT NULL
           AND e.resolve_id != ''
@@ -683,7 +683,7 @@ export async function collectAnalyticsSnapshot(
   const activeWindow1wStartUnix = Math.max(0, nowUnix - (7 * 86400));
   const activeWindow1dStartUnix = Math.max(0, nowUnix - 86400);
   const activeWindow1hStartUnix = Math.max(0, nowUnix - 3600);
-  const activeUserRows = await deps.dbAll(
+  const activeInstallRows = await deps.dbAll(
     db,
     `
       SELECT
@@ -691,7 +691,7 @@ export async function collectAnalyticsSnapshot(
         MAX(e.created_at_unix) AS last_seen_unix,
         NULLIF(TRIM(LOWER(u.status)), '') AS access_status_norm
       FROM tile_request_events e
-      LEFT JOIN users u ON u.id = e.user_id
+      LEFT JOIN cloud_installs u ON u.id = e.user_id
       WHERE
         e.created_at_unix >= ?
         AND e.user_id IS NOT NULL
@@ -711,22 +711,22 @@ export async function collectAnalyticsSnapshot(
     total: 0,
   });
   const activeWindows = {
-    users_6m: makeActiveCounts(),
-    users_3m: makeActiveCounts(),
-    users_1m: makeActiveCounts(),
-    users_1w: makeActiveCounts(),
-    users_1d: makeActiveCounts(),
-    users_1h: makeActiveCounts(),
+    installs_6m: makeActiveCounts(),
+    installs_3m: makeActiveCounts(),
+    installs_1m: makeActiveCounts(),
+    installs_1w: makeActiveCounts(),
+    installs_1d: makeActiveCounts(),
+    installs_1h: makeActiveCounts(),
   };
   const activeThresholds = [
-    ["users_6m", activeWindow6mStartUnix],
-    ["users_3m", activeWindow3mStartUnix],
-    ["users_1m", activeWindow1mStartUnix],
-    ["users_1w", activeWindow1wStartUnix],
-    ["users_1d", activeWindow1dStartUnix],
-    ["users_1h", activeWindow1hStartUnix],
+    ["installs_6m", activeWindow6mStartUnix],
+    ["installs_3m", activeWindow3mStartUnix],
+    ["installs_1m", activeWindow1mStartUnix],
+    ["installs_1w", activeWindow1wStartUnix],
+    ["installs_1d", activeWindow1dStartUnix],
+    ["installs_1h", activeWindow1hStartUnix],
   ];
-  for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
+  for (const row of (Array.isArray(activeInstallRows) ? activeInstallRows : [])) {
     const lastSeenUnix = deps.clampNonNegativeInt(row && row.last_seen_unix);
     if (lastSeenUnix <= 0) {
       continue;
@@ -743,9 +743,9 @@ export async function collectAnalyticsSnapshot(
   }
 
 
-  let activeUsers10m = [];
+  let activeInstalls10m = [];
   try {
-    activeUsers10m = await deps.dbAll(
+    activeInstalls10m = await deps.dbAll(
       db,
       `
         SELECT
@@ -757,7 +757,7 @@ export async function collectAnalyticsSnapshot(
           COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
           MAX(e.created_at) AS last_seen_at
         FROM tile_request_events e
-        LEFT JOIN users u ON u.id = e.user_id
+        LEFT JOIN cloud_installs u ON u.id = e.user_id
         WHERE
           e.created_at_unix >= ?
           AND e.status_code < 400
@@ -775,12 +775,12 @@ export async function collectAnalyticsSnapshot(
     );
   } catch (error) {
     console.warn(
-      "planetka.analytics.active_users_10m_query_failed",
+      "planetka.analytics.active_installs_10m_query_failed",
       JSON.stringify({
-        error: String(error && error.message || "active_users_10m_query_failed"),
+        error: String(error && error.message || "active_installs_10m_query_failed"),
       }),
     );
-    activeUsers10m = [];
+    activeInstalls10m = [];
   }
 
   const activeNow = await deps.dbGet(
@@ -794,7 +794,7 @@ export async function collectAnalyticsSnapshot(
     [Math.max(0, nowUnix - 10), ...eventEmailFilter.bindings],
   );
 
-  const topUsers = await deps.dbAll(
+  const topInstalls = await deps.dbAll(
     db,
     `
         SELECT
@@ -807,7 +807,7 @@ export async function collectAnalyticsSnapshot(
           COALESCE(SUM(CASE WHEN e.status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
         MAX(e.created_at) AS last_seen_at
       FROM tile_request_events e
-      LEFT JOIN users u ON u.id = e.user_id
+      LEFT JOIN cloud_installs u ON u.id = e.user_id
       WHERE e.created_at_unix >= ?
       ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       GROUP BY e.user_id, e.user_email, NULLIF(TRIM(LOWER(u.status)), '')
@@ -840,7 +840,7 @@ export async function collectAnalyticsSnapshot(
         COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status
       FROM tile_request_events e
-      LEFT JOIN users u ON u.id = e.user_id
+      LEFT JOIN cloud_installs u ON u.id = e.user_id
       WHERE
         e.created_at_unix >= ?
         AND e.status_code < 400
@@ -863,14 +863,14 @@ export async function collectAnalyticsSnapshot(
     ],
   );
 
-  const activeTileUsersSet = new Set();
+  const activeTileInstallsSet = new Set();
   const activeTileKeysSet = new Set();
   const normalizedTileMapRows = Array.isArray(tileMapRows) ? tileMapRows.map((row) => {
     const userId = String(row && row.user_id || "").trim();
     const userEmail = deps.normalizeEmail(row && row.user_email || "");
     const userKey = userId || userEmail;
     if (userKey) {
-      activeTileUsersSet.add(userKey);
+      activeTileInstallsSet.add(userKey);
     }
     const tileKey = String(row && row.tile_key || "").trim();
     if (tileKey) {
@@ -933,7 +933,7 @@ export async function collectAnalyticsSnapshot(
     `,
     [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
   );
-  const authRefreshTopFailureUsers = await deps.dbAll(
+  const authRefreshTopFailureInstalls = await deps.dbAll(
     db,
     `
       SELECT
@@ -969,7 +969,7 @@ export async function collectAnalyticsSnapshot(
     `,
     [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
   );
-  const authRefreshTopCriticalFailureUsers = await deps.dbAll(
+  const authRefreshTopCriticalFailureInstalls = await deps.dbAll(
     db,
     `
       SELECT
@@ -1017,15 +1017,15 @@ export async function collectAnalyticsSnapshot(
         COALESCE(SUM(error_count), 0) AS error_count,
         COALESCE(SUM(cache_hit_count), 0) AS cache_hit_count,
         COALESCE(SUM(tagged_request_count), 0) AS tagged_request_count,
-        COUNT(DISTINCT user_id) AS active_users
-      FROM tile_request_rollup_daily_account
+        COUNT(DISTINCT user_id) AS active_installs
+      FROM tile_request_rollup_daily_install
       WHERE day_start_unix >= ?
       ${rollupEmailFilter.condition ? `AND ${rollupEmailFilter.condition}` : ""}
     `,
     [rollupStart30d, ...rollupEmailFilter.bindings],
   );
 
-  const topAccounts30d = await deps.dbAll(
+  const topInstalls30d = await deps.dbAll(
     db,
     `
       SELECT
@@ -1035,7 +1035,7 @@ export async function collectAnalyticsSnapshot(
         COALESCE(SUM(bytes_served), 0) AS bytes_served,
         COALESCE(SUM(error_count), 0) AS error_count,
         MAX(last_event_unix) AS last_event_unix
-      FROM tile_request_rollup_daily_account
+      FROM tile_request_rollup_daily_install
       WHERE day_start_unix >= ?
       ${rollupEmailFilter.condition ? `AND ${rollupEmailFilter.condition}` : ""}
       GROUP BY user_id, user_email
@@ -1070,8 +1070,8 @@ export async function collectAnalyticsSnapshot(
           COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS day_bytes,
           COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.request_count ELSE 0 END), 0) AS request_count_month,
           COALESCE(MAX(r.last_event_unix), 0) AS last_event_unix
-        FROM tile_request_rollup_daily_account r
-        LEFT JOIN users u ON u.id = r.user_id
+        FROM tile_request_rollup_daily_install r
+        LEFT JOIN cloud_installs u ON u.id = r.user_id
         GROUP BY
           r.user_id,
           COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(r.user_email), ''), '')),
@@ -1081,7 +1081,7 @@ export async function collectAnalyticsSnapshot(
         SELECT
           user_id,
           COALESCE(SUM(bytes_served), 0) AS hour_bytes
-        FROM tile_request_rollup_hourly_account
+        FROM tile_request_rollup_hourly_install
         WHERE bucket_start_unix >= ?
         GROUP BY user_id
       )
@@ -1106,7 +1106,7 @@ export async function collectAnalyticsSnapshot(
   const topHeavyDay = await deps.dbAll(db, `${heavyBaseSql} ORDER BY day_bytes DESC LIMIT 50`, heavyBindings);
   const topHeavyHour = await deps.dbAll(db, `${heavyBaseSql} ORDER BY hour_bytes DESC LIMIT 50`, heavyBindings);
 
-  let heavyUsers30d = (Array.isArray(topHeavyLifetime) ? topHeavyLifetime : []).map((row) => ({
+  let heavyInstalls30d = (Array.isArray(topHeavyLifetime) ? topHeavyLifetime : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
     user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
@@ -1115,12 +1115,12 @@ export async function collectAnalyticsSnapshot(
     request_count_month: deps.clampNonNegativeInt(row && row.request_count_month),
     last_event_unix: deps.clampNonNegativeInt(row && row.last_event_unix),
   }));
-  heavyUsers30d = heavyUsers30d.map((row) => ({
+  heavyInstalls30d = heavyInstalls30d.map((row) => ({
     ...row,
     request_count_30d: deps.clampNonNegativeInt(row && row.request_count_month),
     bytes_served_30d: deps.clampNonNegativeInt(row && row.month_bytes),
   }));
-  heavyUsers30d = heavyUsers30d
+  heavyInstalls30d = heavyInstalls30d
     .sort((a, b) => deps.clampNonNegativeInt(b && b.lifetime_bytes) - deps.clampNonNegativeInt(a && a.lifetime_bytes))
     .slice(0, 20);
 
@@ -1133,7 +1133,7 @@ export async function collectAnalyticsSnapshot(
         ...(Array.isArray(topHeavyWeek) ? topHeavyWeek : []),
         ...(Array.isArray(topHeavyDay) ? topHeavyDay : []),
         ...(Array.isArray(topHeavyHour) ? topHeavyHour : []),
-        ...(Array.isArray(heavyUsers30d) ? heavyUsers30d : []),
+        ...(Array.isArray(heavyInstalls30d) ? heavyInstalls30d : []),
       ].map((row) => String(row && row.user_id || "").trim()).filter(Boolean),
     ),
   );
@@ -1168,7 +1168,7 @@ export async function collectAnalyticsSnapshot(
         resolve_count: deps.clampNonNegativeInt(heavyResolveCountByUserId.get(userId) || 0),
       };
     });
-  const normalizedActiveUsers10m = (Array.isArray(activeUsers10m) ? activeUsers10m : []).map((row) => ({
+  const normalizedActiveInstalls10m = (Array.isArray(activeInstalls10m) ? activeInstalls10m : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
     user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
@@ -1185,8 +1185,8 @@ export async function collectAnalyticsSnapshot(
     window_minutes: windowMinutes,
     window_start_unix: windowStartUnix,
     top_line: {
-      users: {
-        total: deps.clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
+      installs: {
+        total: deps.clampNonNegativeInt(topLineInstalls && topLineInstalls.total_installs),
       },
       resolves: {
         total: deps.clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
@@ -1213,37 +1213,37 @@ export async function collectAnalyticsSnapshot(
       tagged_resolve_count: deps.clampNonNegativeInt(summary && summary.tagged_resolve_count),
     },
     active: {
-      users_total: deps.clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
-      users_6m: deps.clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
-      users_3m: deps.clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
-      users_1m: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
-      users_1w: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
-      users_1d: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
-      users_1h: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
+      installs_total: deps.clampNonNegativeInt(topLineInstalls && topLineInstalls.total_installs),
+      installs_6m: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.total),
+      installs_3m: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.total),
+      installs_1m: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.total),
+      installs_1w: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.total),
+      installs_1d: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.total),
+      installs_1h: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.total),
       windows: {
         "6m": {
-          total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
+          total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.total),
         },
         "3m": {
-          total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
+          total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.total),
         },
         "1m": {
-          total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
+          total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.total),
         },
         "1w": {
-          total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
+          total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.total),
         },
         "1d": {
-          total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
+          total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.total),
         },
         "1h": {
-          total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
+          total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.total),
         },
       },
       tile_events_10s: deps.clampNonNegativeInt(activeNow && activeNow.active_download_rows),
     },
-    active_users_10m: normalizedActiveUsers10m,
-    top_users: Array.isArray(topUsers) ? topUsers : [],
+    active_installs_10m: normalizedActiveInstalls10m,
+    top_installs: Array.isArray(topInstalls) ? topInstalls : [],
     recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
     auth_refresh_health: {
       window_seconds: authRefreshWindowSeconds,
@@ -1254,9 +1254,9 @@ export async function collectAnalyticsSnapshot(
       failed_user_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.failed_user_count),
       critical_failure_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.critical_failure_count),
       critical_failed_user_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.critical_failed_user_count),
-      top_failure_users: Array.isArray(authRefreshTopFailureUsers) ? authRefreshTopFailureUsers : [],
+      top_failure_installs: Array.isArray(authRefreshTopFailureInstalls) ? authRefreshTopFailureInstalls : [],
       error_breakdown: Array.isArray(authRefreshErrorBreakdown) ? authRefreshErrorBreakdown : [],
-      top_critical_failure_users: Array.isArray(authRefreshTopCriticalFailureUsers) ? authRefreshTopCriticalFailureUsers : [],
+      top_critical_failure_installs: Array.isArray(authRefreshTopCriticalFailureInstalls) ? authRefreshTopCriticalFailureInstalls : [],
       critical_error_breakdown: Array.isArray(authRefreshCriticalErrorBreakdown) ? authRefreshCriticalErrorBreakdown : [],
     },
     rollup_30d: {
@@ -1266,9 +1266,9 @@ export async function collectAnalyticsSnapshot(
       error_count: deps.clampNonNegativeInt(rollup30d && rollup30d.error_count),
       cache_hit_count: deps.clampNonNegativeInt(rollup30d && rollup30d.cache_hit_count),
       tagged_request_count: deps.clampNonNegativeInt(rollup30d && rollup30d.tagged_request_count),
-      active_users: deps.clampNonNegativeInt(rollup30d && rollup30d.active_users),
-      top_accounts: Array.isArray(topAccounts30d)
-        ? topAccounts30d.map((row) => ({
+      active_installs: deps.clampNonNegativeInt(rollup30d && rollup30d.active_installs),
+      top_installs: Array.isArray(topInstalls30d)
+        ? topInstalls30d.map((row) => ({
           ...row,
           last_seen_at: Number.isFinite(Number(row && row.last_event_unix))
             ? new Date(Number(row.last_event_unix) * 1000).toISOString()
@@ -1276,7 +1276,7 @@ export async function collectAnalyticsSnapshot(
         }))
         : [],
     },
-    heavy_users: {
+    heavy_installs: {
       access_status_filter: safeAccessStatusFilter,
       top_lifetime: attachHeavyResolveCounts(topHeavyLifetime),
       top_month: attachHeavyResolveCounts(topHeavyMonth),
@@ -1284,12 +1284,12 @@ export async function collectAnalyticsSnapshot(
       top_day: attachHeavyResolveCounts(topHeavyDay),
       top_hour: attachHeavyResolveCounts(topHeavyHour),
     },
-    heavy_users_30d: attachHeavyResolveCounts(heavyUsers30d),
+    heavy_installs_30d: attachHeavyResolveCounts(heavyInstalls30d),
     live_tile_map: {
       generated_at: deps.nowIso(),
       window_seconds: tileMapWindowSeconds,
       access_status_filter: safeAccessStatusFilter,
-      users_active: activeTileUsersSet.size,
+      installs_active: activeTileInstallsSet.size,
       tiles_active: activeTileKeysSet.size,
       row_limit: tileMapRowLimit,
       rows: normalizedTileMapRows,
@@ -1300,7 +1300,7 @@ export async function collectAnalyticsSnapshot(
 export async function listAnalyticsUsers(db, env, options = {}, deps) {
   await deps.ensureTileRequestEventsTable(db);
   await deps.ensureTileRequestRollupTables(db);
-  await deps.ensureUserQualityAccessColumns(db);
+  await deps.ensureCloudInstallAccessColumns(db);
   const sortBy = parseAnalyticsUsersSort(options.sort_by);
   const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
   const query = String(options.query || "").trim().toLowerCase();
@@ -1334,7 +1334,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
           r.user_id,
           COALESCE(SUM(r.bytes_served), 0) AS data_downloaded_bytes,
           COALESCE(MAX(r.last_event_unix), 0) AS last_seen_unix
-        FROM tile_request_rollup_daily_account r
+        FROM tile_request_rollup_daily_install r
         GROUP BY r.user_id
       )
       SELECT
@@ -1351,7 +1351,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
           COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))
         ) AS last_seen_at,
         COALESCE(du.last_seen_unix, strftime('%s', COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))), 0) AS last_seen_unix
-      FROM users u
+      FROM cloud_installs u
       LEFT JOIN daily_usage du ON du.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
       ${whereSql}

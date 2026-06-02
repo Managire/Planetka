@@ -180,7 +180,7 @@ def ensure_authenticated(auth_module, prefs, payload_path="", api_token="", api_
         auth_module.ensure_authenticated_session(prefs)
     return {
         "bootstrap": "anonymous",
-        "device_id": str(getattr(prefs, "auth_device_id", "") or "").strip(),
+        "device_id": str(getattr(prefs, "cloud_install_id", "") or "").strip(),
         "session_active": bool(auth_module.is_authenticated(prefs)),
     }
 

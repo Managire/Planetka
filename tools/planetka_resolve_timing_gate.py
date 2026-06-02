@@ -229,7 +229,7 @@ def main():
         diagnostics = import_submodule(base_module, "diagnostics")
 
         prefs = extension_prefs.get_prefs()
-        payload["account"] = ensure_authenticated(
+        payload["cloud_session"] = ensure_authenticated(
             auth,
             prefs,
             payload_path=str(os.environ.get("PLANETKA_AUTH_PAYLOAD") or "").strip(),

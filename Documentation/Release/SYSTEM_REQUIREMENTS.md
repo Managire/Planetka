@@ -6,7 +6,7 @@ Planetka is an online texture-streaming product. Creating Earth, checking update
 
 ## Runtime Access
 
-Planetka connects to Planetka Cloud automatically through an anonymous install session. No email, access key, API key, or in-Blender account activation is required.
+Planetka connects to Planetka Cloud automatically through an anonymous install session. No email, access key, API key, or in-Blender cloud activation is required.
 
 ## Hardware
 

@@ -21,8 +21,8 @@ import {
   createAuthCore,
 } from "./worker/auth_core.js";
 import {
-  readBearerUser as readBearerUserRoute,
-  requireAuthenticatedUserContext as requireAuthenticatedUserContextRoute,
+  readBearerInstall as readBearerInstallRoute,
+  requireCloudSessionContext as requireCloudSessionContextRoute,
 } from "./worker/auth_session.js";
 import {
   createAuthSessionRouteHandlers,
@@ -55,8 +55,8 @@ let rateLimitsTableReady = false;
 let adminHardBlocksTableReady = false;
 let apiKeyTablesReady = false;
 let refreshSessionColumnsReady = false;
-let userConsentColumnsReady = false;
-let userQualityAccessColumnsReady = false;
+let cloudInstallColumnsReady = false;
+let cloudInstallAccessColumnsReady = false;
 let newsletterContactsTableReady = false;
 let authRefreshEventsTableReady = false;
 let rateLimitsLastPruneAt = 0;
@@ -175,8 +175,8 @@ function requestCountry(request) {
   return country;
 }
 
-function blockedAccountResponse(env, message = "Planetka account is blocked. Contact info@planetka.io.") {
-  return json({ ok: false, error: "account_blocked", message }, 403, env);
+function blockedCloudSessionResponse(env, message = "Planetka Cloud session is blocked. Contact info@planetka.io.") {
+  return json({ ok: false, error: "session_blocked", message }, 403, env);
 }
 
 function rateLimitedResponse(env, code, message, retryAfterSeconds) {
@@ -494,21 +494,43 @@ async function logAuthRefreshEvent(db, event = {}) {
   }
 }
 
-async function ensureUserConsentColumns(db) {
-  if (userConsentColumnsReady) {
+async function ensureCloudInstallColumns(db) {
+  if (cloudInstallColumnsReady) {
     return;
   }
-  const pragma = await db.prepare(`PRAGMA table_info(users)`).all();
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS cloud_installs (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        last_login_at TEXT,
+        terms_accepted_at TEXT,
+        privacy_accepted_at TEXT,
+        terms_version TEXT,
+        privacy_version TEXT,
+        preview_fair_usage_hold_at TEXT,
+        preview_fair_usage_hold_reason TEXT,
+        preview_fair_usage_hold_details_json TEXT
+      )
+    `,
+  );
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_cloud_installs_email ON cloud_installs(email)`);
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_cloud_installs_status ON cloud_installs(status)`);
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_cloud_installs_last_login ON cloud_installs(last_login_at DESC)`);
+  const pragma = await db.prepare(`PRAGMA table_info(cloud_installs)`).all();
   const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
   if (!rows.length) {
     return;
   }
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
   for (const statement of [
-    !names.has("terms_accepted_at") ? `ALTER TABLE users ADD COLUMN terms_accepted_at TEXT` : "",
-    !names.has("privacy_accepted_at") ? `ALTER TABLE users ADD COLUMN privacy_accepted_at TEXT` : "",
-    !names.has("terms_version") ? `ALTER TABLE users ADD COLUMN terms_version TEXT` : "",
-    !names.has("privacy_version") ? `ALTER TABLE users ADD COLUMN privacy_version TEXT` : "",
+    !names.has("terms_accepted_at") ? `ALTER TABLE cloud_installs ADD COLUMN terms_accepted_at TEXT` : "",
+    !names.has("privacy_accepted_at") ? `ALTER TABLE cloud_installs ADD COLUMN privacy_accepted_at TEXT` : "",
+    !names.has("terms_version") ? `ALTER TABLE cloud_installs ADD COLUMN terms_version TEXT` : "",
+    !names.has("privacy_version") ? `ALTER TABLE cloud_installs ADD COLUMN privacy_version TEXT` : "",
   ].filter(Boolean)) {
     try {
       await dbRun(db, statement);
@@ -518,23 +540,23 @@ async function ensureUserConsentColumns(db) {
       }
     }
   }
-  userConsentColumnsReady = true;
+  cloudInstallColumnsReady = true;
 }
 
-async function ensureUserQualityAccessColumns(db) {
-  if (userQualityAccessColumnsReady) {
+async function ensureCloudInstallAccessColumns(db) {
+  if (cloudInstallAccessColumnsReady) {
     return;
   }
-  const pragma = await db.prepare(`PRAGMA table_info(users)`).all();
+  const pragma = await db.prepare(`PRAGMA table_info(cloud_installs)`).all();
   const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
   if (!rows.length) {
     return;
   }
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
   for (const statement of [
-    !names.has("preview_fair_usage_hold_at") ? `ALTER TABLE users ADD COLUMN preview_fair_usage_hold_at TEXT` : "",
-    !names.has("preview_fair_usage_hold_reason") ? `ALTER TABLE users ADD COLUMN preview_fair_usage_hold_reason TEXT` : "",
-    !names.has("preview_fair_usage_hold_details_json") ? `ALTER TABLE users ADD COLUMN preview_fair_usage_hold_details_json TEXT` : "",
+    !names.has("preview_fair_usage_hold_at") ? `ALTER TABLE cloud_installs ADD COLUMN preview_fair_usage_hold_at TEXT` : "",
+    !names.has("preview_fair_usage_hold_reason") ? `ALTER TABLE cloud_installs ADD COLUMN preview_fair_usage_hold_reason TEXT` : "",
+    !names.has("preview_fair_usage_hold_details_json") ? `ALTER TABLE cloud_installs ADD COLUMN preview_fair_usage_hold_details_json TEXT` : "",
   ].filter(Boolean)) {
     try {
       await dbRun(db, statement);
@@ -544,7 +566,7 @@ async function ensureUserQualityAccessColumns(db) {
       }
     }
   }
-  userQualityAccessColumnsReady = true;
+  cloudInstallAccessColumnsReady = true;
 }
 
 async function ensureNewsletterContactsTable(db) {
@@ -606,7 +628,7 @@ async function ensureRefreshSessionColumns(db) {
   await dbRun(
     db,
     `
-      CREATE TABLE IF NOT EXISTS refresh_sessions (
+      CREATE TABLE IF NOT EXISTS cloud_session_refresh_tokens (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
         refresh_token_hash TEXT NOT NULL UNIQUE,
@@ -619,13 +641,13 @@ async function ensureRefreshSessionColumns(db) {
       )
     `,
   );
-  const pragma = await db.prepare(`PRAGMA table_info(refresh_sessions)`).all();
+  const pragma = await db.prepare(`PRAGMA table_info(cloud_session_refresh_tokens)`).all();
   const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
   for (const statement of [
-    !names.has("auth_method") ? `ALTER TABLE refresh_sessions ADD COLUMN auth_method TEXT` : "",
-    !names.has("device_id") ? `ALTER TABLE refresh_sessions ADD COLUMN device_id TEXT` : "",
-    !names.has("client_ip_scope") ? `ALTER TABLE refresh_sessions ADD COLUMN client_ip_scope TEXT` : "",
+    !names.has("auth_method") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN auth_method TEXT` : "",
+    !names.has("device_id") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN device_id TEXT` : "",
+    !names.has("client_ip_scope") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN client_ip_scope TEXT` : "",
   ].filter(Boolean)) {
     try {
       await dbRun(db, statement);
@@ -650,14 +672,14 @@ function resolveFixedInternalAccessStatusForEmail(email, requestedAccessStatus =
   return normalizeAccessStatusStrict(requestedAccessStatus);
 }
 
-async function findUserByEmail(db, email) {
-  await ensureUserQualityAccessColumns(db);
+async function findCloudInstallByEmail(db, email) {
+  await ensureCloudInstallAccessColumns(db);
   return dbGet(
     db,
     `
       SELECT id, email, status, preview_fair_usage_hold_at, preview_fair_usage_hold_reason,
              preview_fair_usage_hold_details_json, created_at, last_login_at
-      FROM users
+      FROM cloud_installs
       WHERE email = ?
       LIMIT 1
     `,
@@ -665,14 +687,14 @@ async function findUserByEmail(db, email) {
   );
 }
 
-async function findUserById(db, userId) {
-  await ensureUserQualityAccessColumns(db);
+async function findCloudInstallById(db, userId) {
+  await ensureCloudInstallAccessColumns(db);
   return dbGet(
     db,
     `
       SELECT id, email, status, preview_fair_usage_hold_at, preview_fair_usage_hold_reason,
              preview_fair_usage_hold_details_json, created_at, last_login_at
-      FROM users
+      FROM cloud_installs
       WHERE id = ?
       LIMIT 1
     `,
@@ -680,39 +702,39 @@ async function findUserById(db, userId) {
   );
 }
 
-async function upsertAnonymousUserByDeviceId(db, deviceId, env = {}) {
+async function upsertAnonymousInstallByDeviceId(db, deviceId, env = {}) {
   const safeDeviceId = normalizeDeviceId(deviceId);
   if (!safeDeviceId) {
     throw new Error("missing_device_id");
   }
-  await ensureUserConsentColumns(db);
-  await ensureUserQualityAccessColumns(db);
+  await ensureCloudInstallColumns(db);
+  await ensureCloudInstallAccessColumns(db);
   await ensureRefreshSessionColumns(db);
   const hashed = await sha256Hex(`planetka-anonymous:${safeDeviceId}`);
   const anonymousId = `anon_${hashed.slice(0, 32)}`;
   const syntheticEmail = `anonymous+${hashed.slice(0, 32)}@planetka.local`;
   const now = nowIso();
-  let user = await findUserById(db, anonymousId);
+  let user = await findCloudInstallById(db, anonymousId);
   if (user) {
     if (isBlockedStatus(user.status)) {
       return user;
     }
     const normalizedStatus = normalizeAccessStatusStrict(user.status);
     if (!normalizedStatus) {
-      throw new Error("invalid_user_status");
+      throw new Error("invalid_install_status");
     }
-    await dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, anonymousId]);
-    return findUserById(db, anonymousId);
+    await dbRun(db, `UPDATE cloud_installs SET last_login_at = ? WHERE id = ?`, [now, anonymousId]);
+    return findCloudInstallById(db, anonymousId);
   }
-  user = await dbGet(db, `SELECT id, email, status FROM users WHERE lower(email) = ? LIMIT 1`, [syntheticEmail]);
+  user = await dbGet(db, `SELECT id, email, status FROM cloud_installs WHERE lower(email) = ? LIMIT 1`, [syntheticEmail]);
   if (user) {
-    await dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, user.id]);
-    return findUserById(db, user.id);
+    await dbRun(db, `UPDATE cloud_installs SET last_login_at = ? WHERE id = ?`, [now, user.id]);
+    return findCloudInstallById(db, user.id);
   }
   await dbRun(
     db,
     `
-      INSERT INTO users (id, email, status, created_at, last_login_at, terms_accepted_at, privacy_accepted_at, terms_version, privacy_version)
+      INSERT INTO cloud_installs (id, email, status, created_at, last_login_at, terms_accepted_at, privacy_accepted_at, terms_version, privacy_version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
@@ -728,10 +750,10 @@ async function upsertAnonymousUserByDeviceId(db, deviceId, env = {}) {
     ],
   );
   void env;
-  return findUserById(db, anonymousId);
+  return findCloudInstallById(db, anonymousId);
 }
 
-async function sendNewUserLoginAlert(env, details = {}) {
+async function sendNewInstallAlert(env, details = {}) {
   const to = String(env.SECURITY_ALERT_EMAIL || "").trim();
   const apiKey = String(env.EMAIL_API_KEY || "").trim();
   if (!to || !apiKey) {
@@ -750,7 +772,7 @@ async function sendNewUserLoginAlert(env, details = {}) {
     body: JSON.stringify({
       from,
       to: [to],
-      subject: `New Planetka account access: ${email || "unknown"}`,
+      subject: `New Planetka Cloud install: ${email || "unknown"}`,
       text: [`email=${email || "unknown"}`, `source=${source}`, `created_at=${createdAt}`].join("\n"),
     }),
   });
@@ -760,19 +782,19 @@ async function sendNewUserLoginAlert(env, details = {}) {
   }
 }
 
-async function upsertUserByEmail(db, email, status = ACCESS_STATUS_ACTIVE, options = {}, env = {}) {
+async function upsertCloudInstallByEmail(db, email, status = ACCESS_STATUS_ACTIVE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
-  await ensureUserConsentColumns(db);
-  await ensureUserQualityAccessColumns(db);
+  await ensureCloudInstallColumns(db);
+  await ensureCloudInstallAccessColumns(db);
   const requestedStatus = resolveFixedInternalAccessStatusForEmail(normalizedEmail, status);
   if (!requestedStatus) {
     throw new Error("invalid_access_status_code");
   }
-  let user = await findUserByEmail(db, normalizedEmail);
+  let user = await findCloudInstallByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
     if (!isBlockedStatus(currentStatus) && !normalizeAccessStatusStrict(currentStatus)) {
-      throw new Error("invalid_user_status");
+      throw new Error("invalid_install_status");
     }
     const termsAcceptedAt = String(options.termsAcceptedAt || "").trim();
     const privacyAcceptedAt = String(options.privacyAcceptedAt || "").trim();
@@ -781,7 +803,7 @@ async function upsertUserByEmail(db, email, status = ACCESS_STATUS_ACTIVE, optio
     await dbRun(
       db,
       `
-        UPDATE users
+        UPDATE cloud_installs
         SET
           terms_accepted_at = CASE WHEN ? != '' THEN ? ELSE terms_accepted_at END,
           privacy_accepted_at = CASE WHEN ? != '' THEN ? ELSE privacy_accepted_at END,
@@ -791,7 +813,7 @@ async function upsertUserByEmail(db, email, status = ACCESS_STATUS_ACTIVE, optio
       `,
       [termsAcceptedAt, termsAcceptedAt, privacyAcceptedAt, privacyAcceptedAt, termsVersion, termsVersion, privacyVersion, privacyVersion, user.id],
     );
-    return await findUserById(db, user.id) || user;
+    return await findCloudInstallById(db, user.id) || user;
   }
 
   const id = crypto.randomUUID();
@@ -799,7 +821,7 @@ async function upsertUserByEmail(db, email, status = ACCESS_STATUS_ACTIVE, optio
   await dbRun(
     db,
     `
-      INSERT INTO users (id, email, status, created_at, terms_accepted_at, privacy_accepted_at, terms_version, privacy_version)
+      INSERT INTO cloud_installs (id, email, status, created_at, terms_accepted_at, privacy_accepted_at, terms_version, privacy_version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
@@ -815,7 +837,7 @@ async function upsertUserByEmail(db, email, status = ACCESS_STATUS_ACTIVE, optio
   );
   if (!parseBooleanFlag(options.suppressNewUserAlert)) {
     try {
-      await sendNewUserLoginAlert(env, {
+      await sendNewInstallAlert(env, {
         email: normalizedEmail,
         source: String(options.signupSource || options.source || "unknown").trim() || "unknown",
         accessStatus: requestedStatus,
@@ -825,10 +847,10 @@ async function upsertUserByEmail(db, email, status = ACCESS_STATUS_ACTIVE, optio
       console.warn("auth_worker.new_user_alert_email_failed", String(error && error.message || "new_user_alert_email_failed"));
     }
   }
-  return findUserByEmail(db, normalizedEmail);
+  return findCloudInstallByEmail(db, normalizedEmail);
 }
 
-async function enforceUserAccessStatusPolicy(db, user, env = {}) {
+async function enforceCloudInstallAccessStatusPolicy(db, user, env = {}) {
   void db;
   void env;
   if (!user || !user.id || isBlockedStatus(user.status)) {
@@ -836,12 +858,12 @@ async function enforceUserAccessStatusPolicy(db, user, env = {}) {
   }
   const currentStatus = normalizeAccessStatusStrict(user.status);
   if (!currentStatus) {
-    throw new Error("invalid_user_status");
+    throw new Error("invalid_install_status");
   }
   return { ...user, status: currentStatus };
 }
 
-async function resolveUserQualityAccessState(db, user, env = {}) {
+async function resolveCloudInstallQualityAccessState(db, user, env = {}) {
   void db;
   void env;
   const storedAccessStatus = normalizeAccessStatusStrict(user && user.status);
@@ -849,12 +871,12 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
     return { storedAccessStatus: ACCESS_STATUS_ACTIVE, qualityAccessStatus: ACCESS_STATUS_ACTIVE };
   }
   if (!storedAccessStatus && !isBlockedStatus(user && user.status)) {
-    throw new Error("invalid_user_status");
+    throw new Error("invalid_install_status");
   }
   return { storedAccessStatus: storedAccessStatus || "", qualityAccessStatus: storedAccessStatus || "" };
 }
 
-function getPreviewFairUsageHoldForUserFromRow(user) {
+function getPreviewFairUsageHoldForInstallFromRow(user) {
   if (!user || !user.preview_fair_usage_hold_at) {
     return { held: false };
   }
@@ -875,21 +897,21 @@ function getPreviewFairUsageHoldForUserFromRow(user) {
   };
 }
 
-async function buildAccountState(db, user, env) {
-  const qualityAccess = await resolveUserQualityAccessState(db, user, env);
+async function buildCloudSessionState(db, user, env) {
+  const qualityAccess = await resolveCloudInstallQualityAccessState(db, user, env);
   const storedAccessStatus = normalizeAccessStatusStrict(qualityAccess.storedAccessStatus);
   if (!storedAccessStatus) {
-    throw new Error("invalid_user_status");
+    throw new Error("invalid_install_status");
   }
   return {
     accessStatus: storedAccessStatus,
     storedAccessStatus,
     qualityAccessStatus: qualityAccess.qualityAccessStatus,
-    previewFairUsageHold: getPreviewFairUsageHoldForUserFromRow(user),
+    previewFairUsageHold: getPreviewFairUsageHoldForInstallFromRow(user),
   };
 }
 
-function serializeAccountState(state) {
+function serializeCloudSessionState(state) {
   const safeState = state || {};
   const accessStatus = normalizeAccessStatusStrict(safeState.accessStatus);
   const storedAccessStatus = normalizeAccessStatusStrict(safeState.storedAccessStatus);
@@ -970,18 +992,21 @@ const authSessionDepsBase = {
   requestClientIpScope,
   normalizeDeviceId,
   normalizeAccessStatusStrict,
-  findUserById,
+  findCloudInstallById,
+  findInstallById: findCloudInstallById,
   isBlockedStatus,
-  blockedAccountResponse,
-  enforceUserAccessStatusPolicy,
-  resolveUserQualityAccessState,
+  blockedCloudSessionResponse,
+  enforceCloudInstallAccessStatusPolicy,
+  enforceInstallAccessStatusPolicy: enforceCloudInstallAccessStatusPolicy,
+  resolveCloudInstallQualityAccessState,
+  resolveInstallQualityAccessState: resolveCloudInstallQualityAccessState,
   isAnalyticsAdmin: () => false,
   isPrimaryAnalyticsAdmin: () => false,
   json,
 };
 
-const readBearerUser = (request, env) => readBearerUserRoute(request, env, authSessionDeps);
-const requireAuthenticatedUserContext = (request, env, options = {}) => requireAuthenticatedUserContextRoute(request, env, options, authSessionDeps);
+const readBearerInstall = (request, env) => readBearerInstallRoute(request, env, authSessionDeps);
+const requireCloudSessionContext = (request, env, options = {}) => requireCloudSessionContextRoute(request, env, options, authSessionDeps);
 
 const authCoreDeps = {
   ACCESS_STATUS_ACTIVE,
@@ -1038,20 +1063,20 @@ const authSessionRouteDeps = {
   dbAll,
   dbMetaChanges,
   isBlockedStatus,
-  blockedAccountResponse,
+  blockedCloudSessionResponse,
   normalizeAccessStatusStrict,
-  enforceUserAccessStatusPolicy,
+  enforceCloudInstallAccessStatusPolicy,
   nowIso,
-  buildAccountState,
+  buildCloudSessionState,
   createAccessToken: authCore.createAccessToken,
   createRefreshSession: authCore.createRefreshSession,
   normalizeEmail,
   json,
-  serializeAccountState,
+  serializeCloudSessionState,
   ensureRefreshSessionColumns,
   normalizeDeviceId,
-  readBearerUser,
-  requireAuthenticatedUserContext,
+  readBearerInstall,
+  requireCloudSessionContext,
   isSyntheticAnonymousEmail,
 };
 
@@ -1086,16 +1111,16 @@ async function handleAnonymousAuth(request, env) {
     ip: requestClientIp(request),
   });
   if (block) {
-    return blockedAccountResponse(env);
+    return blockedCloudSessionResponse(env);
   }
-  const user = await upsertAnonymousUserByDeviceId(db, deviceId, env);
+  const user = await upsertAnonymousInstallByDeviceId(db, deviceId, env);
   if (!user || !user.id) {
-    return json({ ok: false, error: "anonymous_user_create_failed" }, 500, env);
+    return json({ ok: false, error: "anonymous_install_create_failed" }, 500, env);
   }
   if (isBlockedStatus(user.status)) {
-    return blockedAccountResponse(env);
+    return blockedCloudSessionResponse(env);
   }
-  const policyUser = await enforceUserAccessStatusPolicy(db, user, env);
+  const policyUser = await enforceCloudInstallAccessStatusPolicy(db, user, env);
   const accessToken = await authCore.createAccessToken(
     env,
     policyUser,
@@ -1120,7 +1145,7 @@ async function handleAnonymousAuth(request, env) {
     {
       ok: true,
       anonymous: true,
-      planetka_user_id: String(policyUser.id || ""),
+      planetka_install_id: String(policyUser.id || ""),
       user_id: String(policyUser.id || ""),
       email: publicEmail,
       access_token: accessToken,

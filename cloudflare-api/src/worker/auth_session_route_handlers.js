@@ -4,7 +4,7 @@ export function createAuthSessionRouteHandlers(deps) {
       ? deps.normalizeAccessStatusStrict(value)
       : "";
     if (!normalized) {
-      throw new Error("invalid_user_status");
+      throw new Error("invalid_install_status");
     }
     return normalized;
   };
@@ -42,15 +42,15 @@ export function createAuthSessionRouteHandlers(deps) {
       outcome = "error",
       errorCode = "",
       httpStatus = 0,
-      userId = "",
-      userEmail = "",
+      installId = "",
+      installEmail = "",
       sessionRow = null,
       details = null,
     } = {}) => {
       await deps.logAuthRefreshEvent(db, {
         ...refreshEventBase,
-        user_id: userId,
-        user_email: userEmail,
+        install_id: installId,
+        install_email: installEmail,
         auth_method: sessionRow ? String(sessionRow.auth_method || "").trim() : "",
         device_id: sessionRow ? String(sessionRow.device_id || "").trim() : "",
         outcome,
@@ -64,8 +64,8 @@ export function createAuthSessionRouteHandlers(deps) {
         outcome: "error",
         errorCode,
         httpStatus,
-        userId: sessionRow ? String(sessionRow.user_id || "").trim() : "",
-        userEmail: sessionRow ? deps.normalizeEmail(sessionRow.email || "") : "",
+        installId: sessionRow ? String(sessionRow.install_id || "").trim() : "",
+        installEmail: sessionRow ? deps.normalizeEmail(sessionRow.email || "") : "",
         sessionRow,
         details,
       });
@@ -99,8 +99,8 @@ export function createAuthSessionRouteHandlers(deps) {
           rs.client_ip_scope,
           u.email,
           u.status
-        FROM refresh_sessions rs
-        JOIN users u ON u.id = rs.user_id
+        FROM cloud_session_refresh_tokens rs
+        JOIN cloud_installs u ON u.id = rs.user_id
         WHERE rs.refresh_token_hash = ?
         LIMIT 1
       `,
@@ -112,13 +112,13 @@ export function createAuthSessionRouteHandlers(deps) {
     if (deps.isBlockedStatus(session.status)) {
       await recordRefreshEvent({
         outcome: "error",
-        errorCode: "account_blocked",
+        errorCode: "session_blocked",
         httpStatus: 403,
-        userId: String(session.user_id || "").trim(),
-        userEmail: deps.normalizeEmail(session.email || ""),
+        installId: String(session.user_id || "").trim(),
+        installEmail: deps.normalizeEmail(session.email || ""),
         sessionRow: session,
       });
-      return deps.blockedAccountResponse(env);
+      return deps.blockedCloudSessionResponse(env);
     }
     if (session.revoked_at) {
       return errorResponse("refresh_token_revoked", 400, session);
@@ -139,23 +139,23 @@ export function createAuthSessionRouteHandlers(deps) {
     try {
       strictSessionStatus = strictStoredTier(session.status);
     } catch (_error) {
-      return errorResponse("invalid_user_status", 500, session);
+      return errorResponse("invalid_install_status", 500, session);
     }
-    let user = {
+    let install = {
       id: session.user_id,
       email: session.email,
       status: strictSessionStatus,
     };
-    user = await deps.enforceUserAccessStatusPolicy(db, user, env);
+    install = await deps.enforceInstallAccessStatusPolicy(db, install, env);
 
     await deps.dbRun(
       db,
-      `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`,
+      `UPDATE cloud_session_refresh_tokens SET revoked_at = ? WHERE id = ?`,
       [deps.nowIso(), session.id],
     );
     const accessToken = await deps.createAccessToken(
       env,
-      user,
+      install,
       {
         auth_method: String(session.auth_method || "").trim(),
         device_id: String(session.device_id || "").trim(),
@@ -176,8 +176,8 @@ export function createAuthSessionRouteHandlers(deps) {
       outcome: "success",
       errorCode: "",
       httpStatus: 200,
-      userId: String(user.id || "").trim(),
-      userEmail: deps.normalizeEmail(user.email || ""),
+      installId: String(install.id || "").trim(),
+      installEmail: deps.normalizeEmail(install.email || ""),
       sessionRow: session,
       details: requestIpScope && String(session.client_ip_scope || "").trim() && requestIpScope !== String(session.client_ip_scope || "").trim()
         ? {
@@ -192,11 +192,11 @@ export function createAuthSessionRouteHandlers(deps) {
         ok: true,
         access_token: accessToken,
         refresh_token: nextRefreshToken,
-        planetka_user_id: String(user.id || ""),
-        user_id: String(user.id || ""),
-        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
+        planetka_install_id: String(install.id || ""),
+        install_id: String(install.id || ""),
+        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
           ? ""
-          : user.email,
+          : install.email,
       },
       200,
       env,
@@ -212,7 +212,7 @@ export function createAuthSessionRouteHandlers(deps) {
     let deviceId = deps.normalizeDeviceId(
       body.device_id || request.headers.get("X-Planetka-Device-Id") || "",
     );
-    let userId = "";
+    let installId = "";
     let revokedSessions = 0;
 
     if (refreshToken) {
@@ -221,25 +221,25 @@ export function createAuthSessionRouteHandlers(deps) {
         db,
         `
           SELECT id, user_id, device_id
-          FROM refresh_sessions
+          FROM cloud_session_refresh_tokens
           WHERE refresh_token_hash = ?
           LIMIT 1
         `,
         [refreshHash],
       );
       if (session) {
-        userId = String(session.user_id || "").trim();
+        installId = String(session.user_id || "").trim();
         if (!deviceId) {
           deviceId = deps.normalizeDeviceId(session.device_id || "");
         }
       }
     }
 
-    if (!userId) {
+    if (!installId) {
       try {
-        const access = await deps.readBearerUser(request, env);
+        const access = await deps.readBearerInstall(request, env);
         if (access && access.sub) {
-          userId = String(access.sub || "").trim();
+          installId = String(access.sub || "").trim();
         }
         if (!deviceId && access) {
           deviceId = deps.normalizeDeviceId(access.device_id || "");
@@ -249,15 +249,15 @@ export function createAuthSessionRouteHandlers(deps) {
       }
     }
 
-    if (userId) {
+    if (installId) {
       const revokedAt = deps.nowIso();
       let revokeSql = `
-        UPDATE refresh_sessions
+        UPDATE cloud_session_refresh_tokens
         SET revoked_at = ?
         WHERE user_id = ?
           AND (revoked_at IS NULL OR revoked_at = '')
       `;
-      const revokeBindings = [revokedAt, userId];
+      const revokeBindings = [revokedAt, installId];
       if (deviceId) {
         revokeSql += " AND device_id = ?";
         revokeBindings.push(deviceId);
@@ -278,7 +278,7 @@ export function createAuthSessionRouteHandlers(deps) {
   }
 
   async function handleMe(request, env) {
-    const auth = await deps.requireAuthenticatedUserContext(
+    const auth = await deps.requireCloudSessionContext(
       request,
       env,
       {},
@@ -286,16 +286,16 @@ export function createAuthSessionRouteHandlers(deps) {
     if (auth.error) {
       return auth.error;
     }
-    const { user } = auth;
+    const { install } = auth;
 
     return deps.json(
       {
         ok: true,
-        planetka_user_id: String(user.id || ""),
-        user_id: String(user.id || ""),
-        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
+        planetka_install_id: String(install.id || ""),
+        install_id: String(install.id || ""),
+        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
           ? ""
-          : user.email,
+          : install.email,
       },
       200,
       env,

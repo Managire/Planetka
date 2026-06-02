@@ -5,7 +5,7 @@ export function isAdminRoutePath(path) {
 export async function dispatchAdminRoute(request, env, path, deps) {
   const {
     handleAdminAnalyticsPage,
-    handleAdminAnalyticsUsersPage,
+    handleAdminAnalyticsInstallsPage,
     handleAdminAnalyticsData,
     handleAdminAnalyticsTileMapImage,
     handleAdminLoginPage,
@@ -13,9 +13,9 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminSessionStartPage,
     handleAdminSessionStart,
     handleAdminSessionLogout,
-    handleAdminUserBlock,
-    handleAdminUserUnblock,
-    handleAdminUserHardBlock,
+    handleAdminInstallBlock,
+    handleAdminInstallUnblock,
+    handleAdminInstallHardBlock,
     handleAdminQaAuthReset,
   } = deps;
 
@@ -25,9 +25,9 @@ export async function dispatchAdminRoute(request, env, path, deps) {
         return await handleAdminAnalyticsPage(request, env);
       }
       return null;
-    case "/admin/analytics/users":
+    case "/admin/analytics/installs":
       if (request.method === "GET") {
-        return await handleAdminAnalyticsUsersPage(request, env);
+        return await handleAdminAnalyticsInstallsPage(request, env);
       }
       return null;
     case "/admin/analytics/data":
@@ -61,19 +61,19 @@ export async function dispatchAdminRoute(request, env, path, deps) {
         return await handleAdminSessionLogout(request, env);
       }
       return null;
-    case "/admin/users/block":
+    case "/admin/installs/block":
       if (request.method === "POST") {
-        return await handleAdminUserBlock(request, env);
+        return await handleAdminInstallBlock(request, env);
       }
       return null;
-    case "/admin/users/unblock":
+    case "/admin/installs/unblock":
       if (request.method === "POST") {
-        return await handleAdminUserUnblock(request, env);
+        return await handleAdminInstallUnblock(request, env);
       }
       return null;
-    case "/admin/users/hard-block":
+    case "/admin/installs/hard-block":
       if (request.method === "POST") {
-        return await handleAdminUserHardBlock(request, env);
+        return await handleAdminInstallHardBlock(request, env);
       }
       return null;
     case "/admin/qa/auth-reset":

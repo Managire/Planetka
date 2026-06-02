@@ -122,7 +122,7 @@ export async function handleLegalDocumentRequest(request, env, path, deps) {
 }
 
 export async function handleSupportBugReport(request, env, deps) {
-  const auth = await deps.requireAuthenticatedUserContext(
+  const auth = await deps.requireCloudSessionContext(
     request,
     env,
     { enforceApiKeyDevicePolicy: true },
@@ -130,7 +130,7 @@ export async function handleSupportBugReport(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
-  const { user } = auth;
+  const install = auth.install || {};
 
   const body = await deps.parseJson(request);
   const reportJson = String(body.report_json || "").trim();
@@ -183,14 +183,14 @@ export async function handleSupportBugReport(request, env, deps) {
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
   const to = String(env.BUG_REPORT_EMAIL || env.SECURITY_ALERT_EMAIL || "info@planetka.io").trim() || "info@planetka.io";
   const sentAt = deps.nowIso();
-  const reporterEmail = String(user.email || "").trim();
+  const reporterEmail = String(install.email || "").trim();
 
   const textBody = [
     "Planetka bug report submitted from Blender.",
     "",
     `reported_at_utc=${sentAt}`,
     `reporter_email=${reporterEmail || "unknown"}`,
-    `reporter_user_id=${String(user.id || "")}`,
+    `reporter_install_id=${String(install.id || "")}`,
     `report_file_name=${reportFileName}`,
     `local_report_path=${sourcePath || "n/a"}`,
     "",
@@ -210,7 +210,7 @@ export async function handleSupportBugReport(request, env, deps) {
       <h2 style="margin:0 0 12px 0;">Planetka Bug Report</h2>
       <p><strong>Reported at (UTC):</strong> ${deps.escapeHtml(sentAt)}<br/>
       <strong>Reporter email:</strong> ${deps.escapeHtml(reporterEmail || "unknown")}<br/>
-      <strong>User ID:</strong> ${deps.escapeHtml(String(user.id || ""))}<br/>
+      <strong>Install ID:</strong> ${deps.escapeHtml(String(install.id || ""))}<br/>
       <strong>Report file:</strong> ${deps.escapeHtml(reportFileName)}<br/>
       <strong>Local report path:</strong> ${deps.escapeHtml(sourcePath || "n/a")}</p>
       <h3 style="margin:16px 0 8px 0;">Issue Description</h3>

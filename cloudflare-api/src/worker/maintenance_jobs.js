@@ -9,7 +9,7 @@ export async function cleanupAuthTables(db, env, nowTimestamp, deps) {
         deps.DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS,
       ),
     ),
-    refresh_sessions_deleted: 0,
+    cloud_session_refresh_tokens_deleted: 0,
     auth_refresh_event_retention_days: Math.max(
       7,
       deps.parseNonNegativeInteger(
@@ -42,11 +42,11 @@ export async function cleanupAuthTables(db, env, nowTimestamp, deps) {
   );
   const tileRollupCutoffUnix = Math.max(0, nowUnix - (summary.tile_rollup_retention_days * 86400));
 
-  if (await deps.dbTableExists(db, "refresh_sessions")) {
+  if (await deps.dbTableExists(db, "cloud_session_refresh_tokens")) {
     const refreshSessionsResult = await deps.dbRun(
       db,
       `
-        DELETE FROM refresh_sessions
+        DELETE FROM cloud_session_refresh_tokens
         WHERE
           (expires_at IS NOT NULL AND expires_at != '' AND expires_at < ?)
           OR
@@ -54,7 +54,7 @@ export async function cleanupAuthTables(db, env, nowTimestamp, deps) {
       `,
       [refreshSessionCutoff, refreshSessionCutoff],
     );
-    summary.refresh_sessions_deleted = deps.dbMetaChanges(refreshSessionsResult);
+    summary.cloud_session_refresh_tokens_deleted = deps.dbMetaChanges(refreshSessionsResult);
   }
 
   if (await deps.dbTableExists(db, "auth_refresh_events")) {
@@ -81,11 +81,11 @@ export async function cleanupAuthTables(db, env, nowTimestamp, deps) {
     summary.tile_request_events_deleted = deps.dbMetaChanges(tileEventsResult);
   }
 
-  if (await deps.dbTableExists(db, "tile_request_rollup_hourly_account")) {
+  if (await deps.dbTableExists(db, "tile_request_rollup_hourly_install")) {
     const hourlyRollupResult = await deps.dbRun(
       db,
       `
-        DELETE FROM tile_request_rollup_hourly_account
+        DELETE FROM tile_request_rollup_hourly_install
         WHERE bucket_start_unix < ?
       `,
       [tileRollupCutoffUnix],
@@ -93,11 +93,11 @@ export async function cleanupAuthTables(db, env, nowTimestamp, deps) {
     summary.tile_rollup_hourly_deleted = deps.dbMetaChanges(hourlyRollupResult);
   }
 
-  if (await deps.dbTableExists(db, "tile_request_rollup_daily_account")) {
+  if (await deps.dbTableExists(db, "tile_request_rollup_daily_install")) {
     const dailyRollupResult = await deps.dbRun(
       db,
       `
-        DELETE FROM tile_request_rollup_daily_account
+        DELETE FROM tile_request_rollup_daily_install
         WHERE day_start_unix < ?
       `,
       [tileRollupCutoffUnix],

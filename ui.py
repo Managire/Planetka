@@ -1139,7 +1139,7 @@ def _show_internal_animation_ui():
 
 
 
-def _draw_general_account_summary(layout):
+def _draw_general_cloud_summary(layout):
     from .extension_prefs import get_prefs
 
     prefs = get_prefs()
@@ -1173,9 +1173,9 @@ def _draw_general_account_summary(layout):
         status_text = "Starting session"
     status_message = get_status_message(prefs)
 
-    account_box = layout.box()
-    account_box.label(text="Planetka Data", icon="WORLD")
-    row = account_box.row()
+    cloud_box = layout.box()
+    cloud_box.label(text="Planetka Data", icon="WORLD")
+    row = cloud_box.row()
     row.label(text="Status")
     row.label(text=status_text, icon=status_icon)
 
@@ -2226,7 +2226,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         workflow_enabled = _is_earth_workflow_enabled()
 
         if props:
-            _draw_general_account_summary(layout)
+            _draw_general_cloud_summary(layout)
 
             addon_box = layout.box()
             addon_box.label(text="Add-on", icon="PREFERENCES")

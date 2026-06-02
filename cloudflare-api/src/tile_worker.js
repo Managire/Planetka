@@ -168,7 +168,7 @@ function authCacheSet(key, value, ttlMs = 60000) {
   AUTH_CACHE.set(safeKey, { value, expires_at_ms: Date.now() + Math.max(1000, ttlMs) });
 }
 
-async function requireAuthenticatedUserContext(request, env) {
+async function requireCloudSessionContext(request, env) {
   const token = readBearerToken(request);
   if (!token) return { error: json({ ok: false, error: "missing_bearer_token" }, 401, env) };
   const currentIpScope = requestClientIpScope(request);
@@ -192,7 +192,7 @@ async function requireAuthenticatedUserContext(request, env) {
   }
   const result = {
     db: requireDb(env),
-    user: {
+    install: {
       id: String(access.sub || "").trim(),
       email: String(access.email || "").trim(),
       status: "",
@@ -208,29 +208,29 @@ async function requireAuthenticatedUserContext(request, env) {
 
 async function resolveTileSessionAuth(_request, env, auth) {
   const db = requireDb(env);
-  const userId = String(auth && auth.user && auth.user.id || "").trim();
-  if (!userId) {
+  const installId = String(auth && auth.install && auth.install.id || "").trim();
+  if (!installId) {
     return { error: json({ ok: false, error: "invalid_access_token" }, 401, env) };
   }
   const row = await db.prepare(
     `
       SELECT id, email, status
-      FROM users
+      FROM cloud_installs
       WHERE id = ?
       LIMIT 1
     `,
-  ).bind(userId).first();
+  ).bind(installId).first();
   if (!row || !row.id) {
-    return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
+    return { error: json({ ok: false, error: "cloud_install_not_found" }, 404, env) };
   }
   if (String(row.status || "").trim().toLowerCase() === "blocked") {
     return { error: json({ ok: false, error: "session_blocked", message: "Planetka Cloud access is blocked. Contact info@planetka.io." }, 403, env) };
   }
   return {
     ...auth,
-    user: {
+    install: {
       id: String(row.id || "").trim(),
-      email: String(row.email || auth.user.email || "").trim(),
+      email: String(row.email || (auth.install && auth.install.email) || "").trim(),
       status: "",
     },
   };
@@ -252,8 +252,8 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
   const resolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
   const payload = {
     type: "tile_session",
-    sub: String(auth && auth.user && auth.user.id || "").trim(),
-    email: String(auth && auth.user && auth.user.email || "").trim(),
+    sub: String(auth && auth.install && auth.install.id || "").trim(),
+    email: String(auth && auth.install && auth.install.email || "").trim(),
     quality_mode: qualityMode,
     resolve_id: resolveId,
     auth_method: String(auth && auth.authMethod || "").trim(),
@@ -360,7 +360,7 @@ async function ensureResolveUsageTables(db) {
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_unix ON tile_request_events(created_at_unix DESC)`);
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_user_created ON tile_request_events(user_id, created_at_unix DESC)`);
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_quality_created ON tile_request_events(quality_mode, created_at_unix DESC)`);
-  await dbRun(db, `CREATE TABLE IF NOT EXISTS tile_request_rollup_hourly_account (
+  await dbRun(db, `CREATE TABLE IF NOT EXISTS tile_request_rollup_hourly_install (
     bucket_start_unix INTEGER NOT NULL,
     bucket_start TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -373,7 +373,7 @@ async function ensureResolveUsageTables(db) {
     last_event_unix INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (bucket_start_unix, user_id)
   )`);
-  await dbRun(db, `CREATE TABLE IF NOT EXISTS tile_request_rollup_daily_account (
+  await dbRun(db, `CREATE TABLE IF NOT EXISTS tile_request_rollup_daily_install (
     day_start_unix INTEGER NOT NULL,
     day_start TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -421,8 +421,8 @@ async function recordResolveUsageRollups(db, payload) {
       [startUnix, isoFromUnix(startUnix), userId, userEmail, bytesServed, taggedRequest, createdAtUnix],
     );
   };
-  await writeRollup("tile_request_rollup_hourly_account", "bucket_start_unix", "bucket_start", hourStart);
-  await writeRollup("tile_request_rollup_daily_account", "day_start_unix", "day_start", dayStart);
+  await writeRollup("tile_request_rollup_hourly_install", "bucket_start_unix", "bucket_start", hourStart);
+  await writeRollup("tile_request_rollup_daily_install", "day_start_unix", "day_start", dayStart);
 }
 
 async function recordResolveSummaryEvent(db, payload = {}) {
@@ -490,7 +490,7 @@ const TILE_DEPS = {
   parseJson,
   readTileSessionClaims,
   recordResolveSummaryEvent,
-  requireAuthenticatedUserContext,
+  requireCloudSessionContext,
   requireDb,
   resolveTileSessionAuth,
   resolveTileCacheControl,

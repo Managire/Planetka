@@ -2899,7 +2899,15 @@ def _replace_fake_atmosphere_texture_group_with_live_loader(scene=None):
                 continue
             node_tree = getattr(node, "node_tree", None)
             node_tree_name = str(getattr(node_tree, "name", ""))
-            if node_tree_name == TEXTURE_LOADING_GROUP_NAME:
+            if node_tree_name == TEXTURE_LOADING_GROUP_NAME or node_tree_name.startswith(f"{TEXTURE_LOADING_GROUP_NAME}."):
+                if node.node_tree is not texture_group:
+                    try:
+                        node.node_tree = texture_group
+                        changed = True
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        logger.debug("Planetka asset builder: failed rewiring EEVEE supplement live texture loader", exc_info=True)
+                    except (RuntimeError, TypeError, ValueError, AttributeError):
+                        logger.debug("Planetka asset builder: failed rewiring EEVEE supplement live texture loader", exc_info=True)
                 changed |= ensure_el_multiplier(target_node_tree, node)
                 continue
             if node_tree_name != FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME:
@@ -2931,7 +2939,23 @@ def _replace_fake_atmosphere_texture_group_with_live_loader(scene=None):
 
     if changed:
         _remove_node_group_if_exists(FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME)
+    _remove_unused_texture_loading_group_duplicates(texture_group)
     return changed
+
+
+def _remove_unused_texture_loading_group_duplicates(canonical_group=None):
+    canonical_group = canonical_group or bpy.data.node_groups.get(TEXTURE_LOADING_GROUP_NAME)
+    for duplicate in tuple(getattr(bpy.data, "node_groups", ())):
+        name = str(getattr(duplicate, "name", "") or "")
+        if duplicate is canonical_group or not name.startswith(f"{TEXTURE_LOADING_GROUP_NAME}."):
+            continue
+        try:
+            if int(getattr(duplicate, "users", 0) or 0) <= 0:
+                bpy.data.node_groups.remove(duplicate, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: failed removing unused texture-loader duplicate", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: failed removing unused texture-loader duplicate", exc_info=True)
 
 
 def _configure_eevee_supplement_group_defaults():
@@ -3491,24 +3515,36 @@ def _clear_animation_data(id_block):
 
 
 def _sanitize_embedded_assets():
-    for group_name in MATERIAL_LIBRARY_NODE_GROUPS:
-        node_group = bpy.data.node_groups.get(group_name)
-        if not node_group:
+    def _material_library_group_matches(name, base):
+        text = str(name or "")
+        return text == base or text.startswith(f"{base}.")
+
+    for node_group in tuple(getattr(bpy.data, "node_groups", ())):
+        group_name = str(getattr(node_group, "name", "") or "")
+        if not any(_material_library_group_matches(group_name, base) for base in MATERIAL_LIBRARY_NODE_GROUPS):
             continue
         _clear_animation_data(node_group)
-        for node in node_group.nodes:
-            if node.bl_idname == "ShaderNodeTexImage":
-                node.image = None
+        for node in tuple(getattr(node_group, "nodes", ())):
+            if str(getattr(node, "bl_idname", "")) == "ShaderNodeTexImage":
+                try:
+                    node.image = None
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka asset builder: failed clearing embedded library image node", exc_info=True)
 
-    for material_name in MATERIAL_LIBRARY_MATERIALS:
-        material = bpy.data.materials.get(material_name)
+    for material in tuple(getattr(bpy.data, "materials", ())):
+        material_name = str(getattr(material, "name", "") or "")
+        if not any(_material_library_group_matches(material_name, base) for base in MATERIAL_LIBRARY_MATERIALS):
+            continue
         if not material or not material.node_tree:
             continue
         _clear_animation_data(material)
         _clear_animation_data(material.node_tree)
-        for node in material.node_tree.nodes:
-            if node.bl_idname == "ShaderNodeTexImage":
-                node.image = None
+        for node in tuple(getattr(material.node_tree, "nodes", ())):
+            if str(getattr(node, "bl_idname", "")) == "ShaderNodeTexImage":
+                try:
+                    node.image = None
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka asset builder: failed clearing embedded material image node", exc_info=True)
 
 
 def _load_static_image(image_name):

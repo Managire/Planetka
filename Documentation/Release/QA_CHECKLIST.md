@@ -21,7 +21,7 @@
 - [ ] The add-on connects to Planetka Cloud automatically without account, email, or API-key prompts.
 - [ ] All quality levels and feature panels remain available in the UI.
 - [ ] Admin block/unblock is the only runtime access-control branch.
-- [ ] Analytics reports total users and usage without feature-class splits.
+- [ ] Analytics reports total cloud_installs and usage without feature-class splits.
 
 ## Rendering And Export
 
