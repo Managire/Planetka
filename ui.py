@@ -1264,6 +1264,7 @@ def _draw_new_earth(layout):
     row.alert = False
     row.enabled = create_enabled
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
+
     try:
         create_status = str(scene.get("planetka_create_earth_status", "") or "").strip() if scene is not None else ""
         create_status_active = bool(scene.get("planetka_create_earth_status_active", False)) if scene is not None else False
@@ -1275,6 +1276,11 @@ def _draw_new_earth(layout):
         status_row.alert = bool(not create_status_active and "failed" in create_status.casefold())
         status_icon = "TIME" if create_status_active else ("CHECKMARK" if "success" in create_status.casefold() else "INFO")
         status_row.label(text=create_status, icon=status_icon)
+    elif not has_earth:
+        start_row = layout.row()
+        start_row.label(text="Start here", icon="TRIA_UP")
+
+
 def _draw_live_telemetry(layout, scene):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -1307,7 +1313,7 @@ def _draw_live_telemetry(layout, scene):
         notice_row.alert = True
         notice_row.label(text=radius_sync_notice, icon="ERROR")
 
-    if props is not None and is_authenticated(prefs):
+    if props is not None:
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
         quality_box = layout.box()
         header_row = quality_box.row(align=True)
@@ -2123,12 +2129,13 @@ def _draw_atmosphere(layout, context):
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "New Earth"
     bl_idname = "PLANETKA_PT_new_earth"
-    bl_order = 9001
+    bl_order = 9000
     bl_options = set()
 
     @classmethod
     def poll(cls, context):
-        return not _has_earth()
+        _ = context
+        return True
 
     def draw(self, context):
         layout = self.layout
@@ -2145,7 +2152,7 @@ class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pan
     @classmethod
     def poll(cls, context):
         _ = context
-        return _has_earth()
+        return False
 
     def draw(self, context):
         layout = self.layout
@@ -2266,8 +2273,8 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        scene = getattr(context, "scene", None) if context else None
-        return _has_earth() and (not bool(_resolve_failure_message_for_ui(scene)))
+        _ = context
+        return True
 
     def draw(self, context):
         self.layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
@@ -2284,7 +2291,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
     @classmethod
     def poll(cls, context):
         _ = context
-        return not _has_earth()
+        return False
 
     def draw(self, context):
         # Pre-Earth state: keep panel available but collapsed by default.
@@ -2301,8 +2308,8 @@ class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.
 
     @classmethod
     def poll(cls, context):
-        scene = getattr(context, "scene", None) if context else None
-        return _has_earth() and bool(_resolve_failure_message_for_ui(scene))
+        _ = context
+        return False
 
     def draw(self, context):
         self.layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
@@ -2374,7 +2381,8 @@ class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _is_earth_workflow_enabled()
+        _ = context
+        return True
 
     def draw(self, context):
         layout = self.layout
@@ -2390,7 +2398,8 @@ class PLANETKA_PT_NavigationPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.P
 
     @classmethod
     def poll(cls, context):
-        return not _is_earth_workflow_enabled()
+        _ = context
+        return False
 
     def draw(self, context):
         layout = self.layout
