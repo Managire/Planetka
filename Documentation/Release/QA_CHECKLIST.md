@@ -31,6 +31,13 @@
 - [ ] Standalone file export works.
 - [ ] Optimize Render Settings applies expected EEVEE/Cycles settings.
 
+## Rollback-Safe Update Testing
+
+- [ ] Update manifest points to a downloadable ZIP with matching SHA-256.
+- [ ] Legal document endpoints return HTTP 200.
+- [ ] Previously installed addon can be disabled, updated, re-enabled, and still auto-connects anonymously.
+- [ ] If update validation fails, the previous installed addon remains usable.
+
 ## Clouds And Atmosphere
 
 - [ ] Global Clouds load by default and use reference material defaults.

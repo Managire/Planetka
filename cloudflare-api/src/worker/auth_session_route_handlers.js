@@ -52,7 +52,6 @@ export function createAuthSessionRouteHandlers(deps) {
         user_id: userId,
         user_email: userEmail,
         auth_method: sessionRow ? String(sessionRow.auth_method || "").trim() : "",
-        api_key_id: sessionRow ? String(sessionRow.api_key_id || "").trim() : "",
         device_id: sessionRow ? String(sessionRow.device_id || "").trim() : "",
         outcome,
         error_code: errorCode,
@@ -96,7 +95,6 @@ export function createAuthSessionRouteHandlers(deps) {
           rs.expires_at,
           rs.revoked_at,
           rs.auth_method,
-          rs.api_key_id,
           rs.device_id,
           rs.client_ip_scope,
           u.email,
@@ -135,15 +133,7 @@ export function createAuthSessionRouteHandlers(deps) {
         request_device_id: requestDeviceId,
       });
     }
-    if (
-      sessionAuthMethod === "api_key"
-      && String(session.api_key_id || "").trim()
-    ) {
-      const keyUsable = await deps.isApiKeyUsableById(db, session.api_key_id, session.user_id);
-      if (!keyUsable) {
-        return errorResponse("api_key_revoked", 401, session);
-      }
-    }
+
 
     let strictSessionStatus = "";
     try {
@@ -170,12 +160,9 @@ export function createAuthSessionRouteHandlers(deps) {
       {
         plan_code: String(accountState.planCode || ""),
         user_status: String(accountState.planCode || ""),
-        account_tier: String(accountState.accountTier || accountState.storedAccountTier || ""),
         stored_plan_code: String(accountState.storedPlanCode || ""),
-        stored_account_tier: String(accountState.storedAccountTier || ""),
         quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
         auth_method: String(session.auth_method || "").trim(),
-        api_key_id: String(session.api_key_id || "").trim(),
         device_id: String(session.device_id || "").trim(),
         client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
       },
@@ -186,7 +173,6 @@ export function createAuthSessionRouteHandlers(deps) {
       "",
       {
         auth_method: String(session.auth_method || "").trim(),
-        api_key_id: String(session.api_key_id || "").trim(),
         device_id: String(session.device_id || "").trim(),
         client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
       },
@@ -226,7 +212,6 @@ export function createAuthSessionRouteHandlers(deps) {
   async function handleAuthLogout(request, env) {
     const db = deps.requireDb(env);
     await deps.ensureRefreshSessionColumns(db);
-    await deps.ensureApiKeyTables(db);
     const body = await deps.parseJson(request);
 
     const refreshToken = String(body.refresh_token || "").trim();
@@ -235,7 +220,6 @@ export function createAuthSessionRouteHandlers(deps) {
     );
     let userId = "";
     let revokedSessions = 0;
-    let clearedDeviceActivity = 0;
 
     if (refreshToken) {
       const refreshHash = await deps.sha256Hex(refreshToken);
@@ -288,24 +272,11 @@ export function createAuthSessionRouteHandlers(deps) {
       revokedSessions = deps.dbMetaChanges(revokeResult);
     }
 
-    if (userId && deviceId) {
-      const clearResult = await deps.dbRun(
-        db,
-        `
-          DELETE FROM api_key_device_activity
-          WHERE user_id = ?
-            AND device_id = ?
-        `,
-        [userId, deviceId],
-      );
-      clearedDeviceActivity = deps.dbMetaChanges(clearResult);
-    }
 
     return deps.json(
       {
         ok: true,
         revoked_sessions: revokedSessions,
-        cleared_device_activity: clearedDeviceActivity,
       },
       200,
       env,
@@ -316,7 +287,7 @@ export function createAuthSessionRouteHandlers(deps) {
     const auth = await deps.requireAuthenticatedUserContext(
       request,
       env,
-      { enforceApiKeyDevicePolicy: true },
+      {},
     );
     if (auth.error) {
       return auth.error;

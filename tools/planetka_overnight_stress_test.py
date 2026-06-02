@@ -1,5 +1,5 @@
 """
-Planetka overnight stress test runner (free-account focused).
+Planetka overnight stress test runner (personal-licence focused).
 
 Flow:
 1. Enable addon and verify existing logged-in account session.
@@ -957,7 +957,7 @@ def main():
             "ok": len(failures) == 0,
             "seed": int(run_seed),
             "account_email": user_email,
-            "account_tier_code": plan_code,
+            "licence_code": plan_code,
             "render_dir": render_dir,
             "report_path": report_path,
             "geonames_index_db_path": db_path,

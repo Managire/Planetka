@@ -81,7 +81,7 @@ def _test_texture_quality_uses_single_status_line() -> dict:
     return {"checked": True}
 
 
-def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
+def _test_streaming_quality_ui_has_no_licence_gate() -> dict:
     """Static guard for the simplified streaming-only quality-level UI."""
 
     text = _source_text("ui.py")
@@ -98,8 +98,8 @@ def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
         "Quality Level must expose the Balanced streaming quality button.",
     )
     _assert(
-        "planetka.open_credit_checkout" not in text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")],
-        "Quality Level must not route Full Quality through checkout.",
+        "planetka.open_credit_package" not in text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")],
+        "Quality Level must not route Full Quality through package.",
     )
     return {"checked": True}
 
@@ -116,8 +116,8 @@ def _test_quality_operator_is_streaming_only() -> dict:
         "Texture quality operator must accept Balanced mode.",
     )
     _assert(
-        "open_credit_checkout" not in operator_text,
-        "Texture quality operator must not open checkout.",
+        "open_credit_package" not in operator_text,
+        "Texture quality operator must not open package.",
     )
     _assert(
         "bpy.ops.planetka.load_textures" in operator_text and "defer_download=True" in operator_text,
@@ -322,20 +322,11 @@ def _test_full_quality_details_removed_from_data_control() -> dict:
     data_control_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
         "planetka.data_cost_breakdown" not in data_control_text,
-        "Quality Level should not expose the old Full Quality Details pricing popup.",
+        "Quality Level should not expose the old Full Quality Details licence popup.",
     )
     _assert(
         "Relevant Data Packs" not in data_control_text,
         "Quality Level should not expose data-pack upsells.",
-    )
-    return {"checked": True}
-
-
-def _test_region_pack_offer_context_is_not_download_context() -> dict:
-    text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
-    _assert(
-        "schedule_region_pack_offer_refresh(\n            scene,\n            ctx," not in text,
-        "Relevant Data Packs refresh must not pass the auto-resolve download context as view telemetry runtime.",
     )
     return {"checked": True}
 
@@ -352,7 +343,7 @@ def main() -> int:
         ui_module = __import__(f"{base_module}.ui", fromlist=["dummy"])
         checks = (
             ("texture_quality_uses_single_status_line", _test_texture_quality_uses_single_status_line),
-            ("streaming_quality_ui_has_no_pricing_gate", _test_streaming_quality_ui_has_no_pricing_gate),
+            ("streaming_quality_ui_has_no_licence_gate", _test_streaming_quality_ui_has_no_licence_gate),
             ("quality_operator_is_streaming_only", _test_quality_operator_is_streaming_only),
             ("texture_quality_tile_levels", lambda: _test_texture_quality_tile_levels(base_module)),
             ("quality_switch_fast_path", _test_quality_switch_fast_path),
@@ -362,7 +353,6 @@ def main() -> int:
             ("animation_stop_is_cooperative", _test_animation_stop_is_cooperative),
             ("animation_restart_ignores_old_cancel_epoch", _test_animation_restart_ignores_old_cancel_epoch),
             ("full_quality_details_removed_from_data_control", _test_full_quality_details_removed_from_data_control),
-            ("region_pack_offer_context_is_correct", _test_region_pack_offer_context_is_not_download_context),
         )
         for name, fn in checks:
             result = fn()

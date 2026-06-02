@@ -1,281 +1,4 @@
 export function createAuthCore(deps) {
-  async function isApiKeyUsableById(db, apiKeyId, expectedUserId = "") {
-    await deps.ensureApiKeyTables(db);
-    const safeApiKeyId = String(apiKeyId || "").trim();
-    if (!safeApiKeyId) {
-      return false;
-    }
-    const row = await deps.dbGet(
-      db,
-      `
-        SELECT id, user_id, status, expires_at
-        FROM api_keys
-        WHERE id = ?
-        LIMIT 1
-      `,
-      [safeApiKeyId],
-    );
-    if (!row || !row.id) {
-      return false;
-    }
-    if (String(row.status || "").trim().toLowerCase() !== "active") {
-      return false;
-    }
-    const safeExpectedUserId = String(expectedUserId || "").trim();
-    if (safeExpectedUserId && String(row.user_id || "").trim() !== safeExpectedUserId) {
-      return false;
-    }
-    return true;
-  }
-
-  async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
-    await deps.ensureApiKeyTables(db);
-    const safePlan = deps.normalizeRequestedPlan(planCode || user.status || deps.PLAN_CODE_PERSONAL);
-    const token = `pka_${deps.randomToken(36)}`;
-    const keyHash = await deps.sha256Hex(token);
-    const keyPrefix = String(token.slice(0, 16));
-    const keyId = crypto.randomUUID();
-    const issuedAt = deps.nowIso();
-    void options;
-    const expiresAt = String(options.expiresAt || deps.computeApiKeyExpiryIso(safePlan, env) || "").trim();
-    await deps.dbRun(
-      db,
-      `
-        INSERT INTO api_keys (
-          id,
-          user_id,
-          key_hash,
-          key_prefix,
-          status,
-          plan_code,
-          expires_at,
-          issued_at
-        ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
-      `,
-      [
-        keyId,
-        user.id,
-        keyHash,
-        keyPrefix,
-        safePlan,
-        expiresAt || null,
-        issuedAt,
-      ],
-    );
-    await deps.enforceSingleActiveLicenceApiKey(
-      db,
-      String(user && user.id || "").trim(),
-      keyId,
-    );
-
-    return {
-      apiKey: token,
-      apiKeyId: keyId,
-      keyPrefix,
-      planCode: safePlan,
-      expiresAt,
-    };
-  }
-
-  async function findActiveApiKeyRecord(db, apiKeyValue) {
-    await deps.ensureApiKeyTables(db);
-    const keyHash = await deps.sha256Hex(apiKeyValue);
-    return deps.dbGet(
-      db,
-      `
-        SELECT
-          ak.id AS api_key_id,
-          ak.user_id,
-          ak.status AS api_key_status,
-          ak.plan_code AS api_key_plan_code,
-          ak.expires_at AS api_key_expires_at,
-          ak.key_prefix,
-          u.id,
-          u.email,
-          u.status,
-          u.created_at,
-          u.last_login_at
-        FROM api_keys ak
-        JOIN users u ON u.id = ak.user_id
-        WHERE ak.key_hash = ?
-        LIMIT 1
-      `,
-      [keyHash],
-    );
-  }
-
-  function maxDevicesForPlan(planCode) {
-    void deps.normalizeRequestedPlan(planCode);
-    return 1;
-  }
-
-  async function listActiveApiKeyDevicesForUser(db, userId, env) {
-    await deps.ensureApiKeyTables(db);
-    const safeUserId = String(userId || "").trim();
-    if (!safeUserId) {
-      return new Set();
-    }
-    const nowUnix = Math.floor(Date.now() / 1000);
-    const activeWindowSeconds = Math.max(
-      60,
-      Math.floor(
-        deps.parsePositiveNumber(
-          env.API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
-          deps.DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
-        ),
-      ),
-    );
-    const windowStart = Math.max(0, nowUnix - activeWindowSeconds);
-
-    await deps.dbRun(
-      db,
-      `
-        DELETE FROM api_key_device_activity
-        WHERE last_seen_unix < ?
-      `,
-      [Math.max(0, nowUnix - (activeWindowSeconds * 4))],
-    );
-
-    const rows = await deps.dbAll(
-      db,
-      `
-        SELECT DISTINCT device_id
-        FROM api_key_device_activity
-        WHERE user_id = ?
-          AND last_seen_unix >= ?
-      `,
-      [safeUserId, windowStart],
-    );
-    return new Set(
-      rows.map((row) => deps.normalizeDeviceId(row && row.device_id)).filter((value) => Boolean(value)),
-    );
-  }
-
-  async function enforceApiKeyIssueDeviceLimit(db, userId, userEmail, planCode, deviceId, env) {
-    const safeUserId = String(userId || "").trim();
-    if (!safeUserId) {
-      return { activeDeviceCount: 0, maxDevices: maxDevicesForPlan(planCode), matchedDevice: false };
-    }
-    if (deps.isDeviceLimitExemptEmail(userEmail, env)) {
-      return { activeDeviceCount: 0, maxDevices: Number.MAX_SAFE_INTEGER, matchedDevice: true, exempted: true };
-    }
-    const safeDeviceId = deps.normalizeDeviceId(deviceId);
-    const activeDeviceIds = await listActiveApiKeyDevicesForUser(db, safeUserId, env);
-    const maxDevices = maxDevicesForPlan(planCode);
-    const matchedDevice = Boolean(safeDeviceId && activeDeviceIds.has(safeDeviceId));
-    if (activeDeviceIds.size >= maxDevices && !matchedDevice) {
-      throw new Error("device_limit_exceeded");
-    }
-    return {
-      activeDeviceCount: activeDeviceIds.size,
-      maxDevices,
-      matchedDevice,
-    };
-  }
-
-  async function touchApiKeyDeviceActivity(db, apiKeyId, userId, deviceId, request, env) {
-    await deps.ensureApiKeyTables(db);
-    const safeUserId = String(userId || "").trim();
-    const safeDeviceId = deps.normalizeDeviceId(deviceId);
-    if (!safeUserId || !safeDeviceId) {
-      throw new Error("missing_device_id");
-    }
-    const nowUnix = Math.floor(Date.now() / 1000);
-    const now = deps.nowIso();
-    const ip = deps.requestClientIp(request);
-    const country = deps.requestCountry(request);
-    const existingRows = await deps.dbAll(
-      db,
-      `
-        SELECT id
-        FROM api_key_device_activity
-        WHERE user_id = ? AND device_id = ?
-        ORDER BY last_seen_unix DESC
-      `,
-      [safeUserId, safeDeviceId],
-    );
-    const primaryExisting = Array.isArray(existingRows) && existingRows.length > 0 ? existingRows[0] : null;
-    if (primaryExisting && primaryExisting.id) {
-      await deps.dbRun(
-        db,
-        `
-          UPDATE api_key_device_activity
-          SET
-            api_key_id = ?,
-            last_seen_at = ?,
-            last_seen_unix = ?,
-            last_ip = ?,
-            last_country = ?
-          WHERE id = ?
-        `,
-        [apiKeyId, now, nowUnix, ip, country, primaryExisting.id],
-      );
-      if (existingRows.length > 1) {
-        await deps.dbRun(
-          db,
-          `
-            DELETE FROM api_key_device_activity
-            WHERE user_id = ?
-              AND device_id = ?
-              AND id != ?
-          `,
-          [safeUserId, safeDeviceId, primaryExisting.id],
-        );
-      }
-      return primaryExisting.id;
-    }
-    await deps.dbRun(
-      db,
-      `
-        INSERT INTO api_key_device_activity (
-          id,
-          api_key_id,
-          user_id,
-          device_id,
-          first_seen_at,
-          last_seen_at,
-          last_seen_unix,
-          last_ip,
-          last_country
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [crypto.randomUUID(), apiKeyId, safeUserId, safeDeviceId, now, now, nowUnix, ip, country],
-    );
-    return "";
-  }
-
-  async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, userEmail, planCode, deviceId, request, env) {
-    await deps.ensureApiKeyTables(db);
-    const safeUserId = String(userId || "").trim();
-    if (!safeUserId) {
-      throw new Error("user_not_found");
-    }
-    const safeDeviceId = deps.normalizeDeviceId(deviceId);
-    if (!safeDeviceId) {
-      throw new Error("missing_device_id");
-    }
-    const activeDeviceIds = await listActiveApiKeyDevicesForUser(db, safeUserId, env);
-    if (deps.isDeviceLimitExemptEmail(userEmail, env)) {
-      await touchApiKeyDeviceActivity(db, apiKeyId, safeUserId, safeDeviceId, request, env);
-      return {
-        activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
-        maxDevices: Number.MAX_SAFE_INTEGER,
-        exempted: true,
-      };
-    }
-    const alreadyActive = activeDeviceIds.has(safeDeviceId);
-    const maxDevices = maxDevicesForPlan(planCode);
-    if (!alreadyActive && activeDeviceIds.size >= maxDevices) {
-      throw new Error("device_limit_exceeded");
-    }
-
-    await touchApiKeyDeviceActivity(db, apiKeyId, safeUserId, safeDeviceId, request, env);
-    return {
-      activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
-      maxDevices,
-    };
-  }
-
   async function createAccessToken(env, user, extraClaims = {}) {
     const secret = deps.requireSecret(env, "JWT_SIGNING_SECRET");
     const exp = Math.floor(Date.now() / 1000) + (60 * 60);
@@ -437,7 +160,6 @@ export function createAuthCore(deps) {
     const createdAt = deps.nowIso();
     const expiresAt = String(expiresAtOverride || "").trim() || deps.addDaysIso(30);
     const authMethod = String(metadata.auth_method || metadata.authMethod || "").trim();
-    const apiKeyId = String(metadata.api_key_id || metadata.apiKeyId || "").trim();
     const deviceId = deps.normalizeDeviceId(metadata.device_id || metadata.deviceId || "");
     const clientIpScope = String(metadata.client_ip_scope || metadata.clientIpScope || "").trim().slice(0, 80);
     await deps.dbRun(
@@ -450,10 +172,9 @@ export function createAuthCore(deps) {
           expires_at,
           created_at,
           auth_method,
-          api_key_id,
           device_id,
           client_ip_scope
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         refreshSessionId,
@@ -462,7 +183,6 @@ export function createAuthCore(deps) {
         expiresAt,
         createdAt,
         authMethod || null,
-        apiKeyId || null,
         deviceId || null,
         clientIpScope || null,
       ],
@@ -470,26 +190,10 @@ export function createAuthCore(deps) {
     return refreshToken;
   }
 
-  function genericAuthStartResponse(env) {
-    return deps.json(
-      {
-        ok: true,
-        message: "Planetka access key activation link has been sent.",
-      },
-      200,
-      env,
-    );
-  }
 
   return {
     createAccessToken,
     createRefreshSession,
-    enforceApiKeyDeviceLimit,
-    enforceApiKeyIssueDeviceLimit,
-    findActiveApiKeyRecord,
-    genericAuthStartResponse,
-    isApiKeyUsableById,
-    issueApiKeyForUser,
     issueTileSessionToken,
     normalizeResolveId,
     readTileSessionClaims,

@@ -17,6 +17,6 @@ Normal creative, educational, freelance, studio, and commercial rendering workfl
 
 Planetka may apply request limits, caching rules, abuse detection, account checks, device/session checks, and temporary throttling to protect service reliability and hosted data.
 
-Users may not share licence keys, API keys, account credentials, or paid access outside their authorised single-seat licence scope.
+Users may not share licence keys, account credentials, addon packages, or paid access outside their authorised single-seat licence scope.
 
 Users may not scrape, bulk-download, reconstruct, redistribute, or expose Planetka-hosted data as a standalone map product, dataset, tile service, API, texture library, training dataset, or competing service.

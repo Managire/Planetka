@@ -42,7 +42,6 @@ _AUTH_DISCONNECT_TOKENS = (
     "session expired",
     "log in again",
     "missing_refresh_token",
-    "invalid_api_key",
 )
 
 def _normalize_tiles(visible_tiles):

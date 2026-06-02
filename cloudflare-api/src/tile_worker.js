@@ -204,9 +204,7 @@ async function requireAuthenticatedUserContext(request, env) {
     planCode,
     qualityAccessPlanCode: qualityAccessPlanCode || planCode,
     authMethod,
-    apiKeyId: String(access.api_key_id || "").trim(),
     deviceId: normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || ""),
-    devicePolicy: null,
     tokenSource: "bearer_lightweight",
   };
   authCacheSet(cacheKey, result);

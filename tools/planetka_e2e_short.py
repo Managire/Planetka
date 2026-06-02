@@ -5,10 +5,9 @@ Recommended usage:
     /Applications/Blender5.0.app/Contents/MacOS/Blender --background \
       --python tools/planetka_e2e_short.py
 
-  Clean session with API key bootstrap:
+  Clean anonymous session:
     PLANETKA_AUTH_DEVICE_ID=1de81a60-831d-4aac-9e66-e86af91a900b \
-    PLANETKA_API_KEY_PATH=/absolute/path/to/api_key.json \
-    /Applications/Blender5.0.app/Contents/MacOS/Blender --factory-startup --background \
+        /Applications/Blender5.0.app/Contents/MacOS/Blender --factory-startup --background \
       --python tools/planetka_e2e_short.py
 
 What it covers:
@@ -105,9 +104,7 @@ def main():
             auth,
             prefs,
             payload_path=str(os.environ.get("PLANETKA_AUTH_PAYLOAD") or "").strip(),
-            api_key=str(os.environ.get("PLANETKA_API_KEY") or "").strip(),
-            api_key_path=str(os.environ.get("PLANETKA_API_KEY_PATH") or "").strip(),
-        )
+                                )
         wait_for_geonames_ready(geonames)
 
         scene = bpy.context.scene

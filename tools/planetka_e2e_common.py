@@ -2,10 +2,9 @@
 
 Authentication bootstrap order:
 1. reuse an already-authenticated Blender profile session
-2. apply a full auth payload JSON via ``PLANETKA_AUTH_PAYLOAD``
-3. exchange an API key supplied via ``PLANETKA_API_KEY`` or ``PLANETKA_API_KEY_PATH``
+2. create or refresh an anonymous Planetka install session automatically
 
-Optional for clean-session test accounts:
+Optional for deterministic clean-session tests:
 - force a stable device id via ``PLANETKA_AUTH_DEVICE_ID`` or ``PLANETKA_DEVICE_ID``
 """
 
@@ -166,31 +165,6 @@ def _load_auth_payload(path):
     return payload
 
 
-def _load_api_key(raw_value="", path=""):
-    token = str(raw_value or "").strip()
-    if token:
-        return token
-
-    target = str(path or "").strip()
-    if not target:
-        return ""
-    if not os.path.isfile(target):
-        raise E2EError(f"API key file not found: {target}")
-
-    with open(target, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-
-    if isinstance(payload, dict):
-        api_key = str(payload.get("api_key", "") or "").strip()
-        if api_key:
-            return api_key
-    if isinstance(payload, str):
-        token = str(payload).strip()
-        if token:
-            return token
-    raise E2EError("API key payload is invalid (missing api_key).")
-
-
 def _parse_bool_like(value):
     token = str(value or "").strip().lower()
     if token in {"1", "true", "yes", "on"}:
@@ -200,56 +174,16 @@ def _parse_bool_like(value):
     return False
 
 
-def ensure_authenticated(auth_module, prefs, payload_path="", api_key="", api_key_path=""):
-    if prefs is None:
-        raise E2EError("Planetka preferences unavailable.")
-
-    bootstrap = "session"
-    force_bootstrap = _parse_bool_like(os.environ.get("PLANETKA_FORCE_AUTH_BOOTSTRAP"))
-    forced_device_id = str(
-        os.environ.get("PLANETKA_AUTH_DEVICE_ID")
-        or os.environ.get("PLANETKA_DEVICE_ID")
-        or ""
-    ).strip()
-    if forced_device_id:
-        prefs.auth_device_id = forced_device_id
-    payload = _load_auth_payload(payload_path)
-    apply_fn = getattr(auth_module, "_apply_auth_payload", None)
-    api_key_value = _load_api_key(api_key, api_key_path)
-    if force_bootstrap:
-        if payload and callable(apply_fn):
-            apply_fn(prefs, payload, login_state="authenticated")
-            bootstrap = "auth_payload"
-        elif api_key_value:
-            auth_module.connect_with_api_key(api_key_value, prefs=prefs)
-            bootstrap = "api_key"
-        else:
-            raise E2EError(
-                "Hermetic auth bootstrap required. Provide PLANETKA_AUTH_PAYLOAD "
-                "or PLANETKA_API_KEY/PLANETKA_API_KEY_PATH when PLANETKA_FORCE_AUTH_BOOTSTRAP=1."
-            )
-    elif not auth_module.is_authenticated(prefs):
-        if payload and callable(apply_fn):
-            apply_fn(prefs, payload, login_state="authenticated")
-            bootstrap = "auth_payload"
-        elif api_key_value:
-            auth_module.connect_with_api_key(api_key_value, prefs=prefs)
-            bootstrap = "api_key"
-        else:
-            raise E2EError(
-                "Planetka account is not authenticated. Connect the addon first, "
-                "provide PLANETKA_AUTH_PAYLOAD, or provide PLANETKA_API_KEY/PLANETKA_API_KEY_PATH."
-            )
-
-    auth_module.sync_account_profile(prefs)
+def ensure_authenticated(auth_module, prefs, payload_path="", api_token="", api_token_path=""):
+    del payload_path, api_token, api_token_path
+    if not auth_module.is_authenticated(prefs):
+        auth_module.ensure_authenticated_session(prefs)
     return {
-        "email": str(auth_module.get_connected_email(prefs) or "").strip(),
-        "account_tier": str(auth_module.get_account_tier(prefs) or "").strip(),
-        "plan_code": str(getattr(prefs, "auth_plan_code", "") or "").strip(),
-        "auth_bootstrap": bootstrap,
-        "device_id": str(getattr(prefs, "auth_device_id", "") or "").strip(),
+        "bootstrap": "anonymous",
+        "email": str(getattr(prefs, "auth_email", "") or "").strip(),
+        "licence_code": str(auth_module.get_licence_code(prefs) or "").strip(),
+        "login_state": str(getattr(prefs, "auth_login_state", "") or "").strip(),
     }
-
 
 def ensure_camera(scene, name="Planetka E2E Camera"):
     current = getattr(scene, "camera", None)

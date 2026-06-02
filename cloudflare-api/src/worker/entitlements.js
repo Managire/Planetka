@@ -9,11 +9,11 @@ function normalizeEmail(value) {
 
 export function normalizeUserStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (["commercial", "paid", "unlimited"].includes(normalized)) {
-    return PLAN_CODE_COMMERCIAL;
+  if (normalized === "blocked") {
+    return "blocked";
   }
-  if (["personal", ""].includes(normalized)) {
-    return PLAN_CODE_PERSONAL;
+  if (["commercial", "paid", "unlimited", "personal", ""].includes(normalized)) {
+    return PLAN_CODE_COMMERCIAL;
   }
   return normalized;
 }
@@ -52,13 +52,13 @@ export function isBlockedStatus(statusValue) {
 
 export function normalizeRequestedPlan(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_COMMERCIAL) return PLAN_CODE_COMMERCIAL;
-  return PLAN_CODE_PERSONAL;
+  if (normalized === "blocked") return "blocked";
+  return PLAN_CODE_COMMERCIAL;
 }
 
 export function defaultSignupPlanCode(env = {}) {
   void env;
-  return PLAN_CODE_PERSONAL;
+  return PLAN_CODE_COMMERCIAL;
 }
 
 export function resolvePolicyPlanCode(user, env = {}) {
@@ -137,12 +137,16 @@ export function accountLicenceForPlanCode(planCode) {
 
 export function planDisplayName(planCode) {
   const plan = normalizeRequestedPlan(planCode);
+  if (plan === "blocked") return "Blocked";
   if (plan === PLAN_CODE_COMMERCIAL) return "Commercial";
   return "Personal";
 }
 
 export function planAccessSummary(planCode) {
   const plan = normalizeRequestedPlan(planCode);
+  if (plan === "blocked") {
+    return "Blocked account.";
+  }
   if (plan === PLAN_CODE_COMMERCIAL) {
     return "Commercial licence: all Planetka features for commercial and personal use.";
   }
@@ -151,6 +155,7 @@ export function planAccessSummary(planCode) {
 
 export function resolvePlanPriority(planCode) {
   const plan = normalizeRequestedPlan(planCode);
+  if (plan === "blocked") return -1;
   if (plan === PLAN_CODE_COMMERCIAL) return 20;
   return 0;
 }

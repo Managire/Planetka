@@ -233,9 +233,7 @@ def main():
             auth,
             prefs,
             payload_path=str(os.environ.get("PLANETKA_AUTH_PAYLOAD") or "").strip(),
-            api_key=str(os.environ.get("PLANETKA_API_KEY") or "").strip(),
-            api_key_path=str(os.environ.get("PLANETKA_API_KEY_PATH") or "").strip(),
-        )
+                                )
         wait_for_geonames_ready(geonames)
 
         scene = bpy.context.scene

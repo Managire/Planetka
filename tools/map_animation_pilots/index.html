@@ -16,7 +16,7 @@
   --new:#d76d62;
   --partial:#e2bc49;
   --licenced:#4fa86a;
-  --free:#69707a;
+  --inactive:#69707a;
   --accent:#d76d62;
 }
 @media (prefers-color-scheme: dark){
@@ -28,8 +28,8 @@ main{max-width:1240px;margin:0 auto;padding:28px}
 h1{font-size:34px;margin:0 0 8px}h2{font-size:22px;margin:0 0 6px}.muted{color:var(--muted)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:18px;margin-top:22px}.panel{border:1px solid var(--line);border-radius:18px;background:var(--panel);padding:18px;box-shadow:0 12px 30px rgba(0,0,0,.06)}
 .map-shell{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#080b10;margin-top:12px}.map-shell svg{width:100%;display:block;aspect-ratio:2/1;background:var(--map-bg)}
-.land{fill:#050608;opacity:.86}.border{fill:none;stroke:rgba(255,255,255,.55);stroke-width:.55;vector-effect:non-scaling-stroke}.river{fill:none;stroke:#215aab;stroke-width:.9;opacity:.55}.tile{stroke:#fff;stroke-width:.45;vector-effect:non-scaling-stroke;opacity:.58}.new{fill:var(--new)}.partial{fill:var(--partial)}.licenced{fill:var(--licenced)}.free{fill:var(--free);opacity:.45}.outline-only{fill:transparent;stroke:#fff;stroke-width:.8;opacity:.78}.button-row{display:flex;gap:10px;align-items:center;margin-top:12px}.replay{border:0;border-radius:999px;background:var(--accent);color:#fff;font-weight:800;padding:9px 14px;cursor:pointer}.caption{margin:8px 0 0;color:var(--muted)}
-.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px}.sw{display:inline-block;width:13px;height:13px;border-radius:3px;margin-right:6px;vertical-align:-2px}.sw.new{background:var(--new)}.sw.partial{background:var(--partial)}.sw.licenced{background:var(--licenced)}.sw.free{background:var(--free)}
+.land{fill:#050608;opacity:.86}.border{fill:none;stroke:rgba(255,255,255,.55);stroke-width:.55;vector-effect:non-scaling-stroke}.river{fill:none;stroke:#215aab;stroke-width:.9;opacity:.55}.tile{stroke:#fff;stroke-width:.45;vector-effect:non-scaling-stroke;opacity:.58}.new{fill:var(--new)}.partial{fill:var(--partial)}.licenced{fill:var(--licenced)}.inactive{fill:var(--inactive);opacity:.45}.outline-only{fill:transparent;stroke:#fff;stroke-width:.8;opacity:.78}.button-row{display:flex;gap:10px;align-items:center;margin-top:12px}.replay{border:0;border-radius:999px;background:var(--accent);color:#fff;font-weight:800;padding:9px 14px;cursor:pointer}.caption{margin:8px 0 0;color:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px}.sw{display:inline-block;width:13px;height:13px;border-radius:3px;margin-right:6px;vertical-align:-2px}.sw.new{background:var(--new)}.sw.partial{background:var(--partial)}.sw.licenced{background:var(--licenced)}.sw.inactive{background:var(--inactive)}
 /* Variant 1: puzzle pop-in */
 .puzzle .tile{transform-box:fill-box;transform-origin:center;animation:puzzleIn 1.35s cubic-bezier(.18,.9,.2,1) both;animation-delay:calc(var(--i) * 18ms)}
 @keyframes puzzleIn{0%{opacity:0;transform:scale(.55) rotate(-2deg);filter:blur(3px)}58%{opacity:.72;transform:scale(1.04) rotate(.5deg);filter:blur(0)}100%{opacity:.58;transform:scale(1) rotate(0)}}
@@ -62,7 +62,7 @@ h1{font-size:34px;margin:0 0 8px}h2{font-size:22px;margin:0 0 6px}.muted{color:v
 <script>
 const variants=[
   {id:'puzzle', title:'Option A - Puzzle Pop-in', note:'Fast, playful: tiles appear like puzzle pieces, staggered by tile order.'},
-  {id:'draw-then-fill', title:'Option B - Draw Lines, Then Fill', note:'More technical/professional: grid outlines draw first, then colors fade in.'},
+  {id:'draw-then-fill', title:'Option B - Draw Lines, Then Fill', note:'More technical: grid outlines draw first, then colors fade in.'},
   {id:'wave', title:'Option C - Geographic Wave', note:'Tiles sweep from west to east with a subtle wave. Good for large maps.'},
   {id:'cinematic', title:'Option D - Soft Reveal', note:'Subtle premium feel: a light sweep and gentle tile fade. Least distracting.'},
   {id:'puzzle-random', title:'Option E - Random Puzzle Pop-in', note:'Same feel as Option A, twice as fast, with tiles appearing in a scattered random order.'},
@@ -77,7 +77,7 @@ for(let r=0;r<rows;r++){
     let status='new';
     if((c+r)%13===0) status='licenced';
     else if((c*3+r)%17===0) status='partial';
-    else if((c+r*2)%11===0) status='free';
+    else if((c+r*2)%11===0) status='inactive';
     tiles.push({x:18+c*14,y:24+r*12,w:14,h:12,row:r,col:c,status});
   }
 }
@@ -97,7 +97,7 @@ function svgFor(variant){
 }
 function render(){
   const grid=document.getElementById('grid');
-  grid.innerHTML=variants.map(v=>`<section class="panel ${v.id}" data-variant="${v.id}"><h2>${v.title}</h2><p class="caption">${v.note}</p><div class="map-shell">${svgFor(v)}</div><div class="legend"><span><i class="sw new"></i>New</span><span><i class="sw partial"></i>Partial</span><span><i class="sw licenced"></i>Licenced</span><span><i class="sw free"></i>Free</span></div><div class="button-row"><button class="replay">Replay</button><span class="muted">Duration: about 1-2 seconds</span></div></section>`).join('');
+  grid.innerHTML=variants.map(v=>`<section class="panel ${v.id}" data-variant="${v.id}"><h2>${v.title}</h2><p class="caption">${v.note}</p><div class="map-shell">${svgFor(v)}</div><div class="legend"><span><i class="sw new"></i>New</span><span><i class="sw partial"></i>Partial</span><span><i class="sw licenced"></i>Licenced</span><span><i class="sw inactive"></i>Inactive</span></div><div class="button-row"><button class="replay">Replay</button><span class="muted">Duration: about 1-2 seconds</span></div></section>`).join('');
   grid.querySelectorAll('.replay').forEach(btn=>btn.addEventListener('click',()=>{
     const panel=btn.closest('.panel');
     const v=variants.find(x=>x.id===panel.dataset.variant);

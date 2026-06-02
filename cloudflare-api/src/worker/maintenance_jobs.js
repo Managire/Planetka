@@ -10,8 +10,6 @@ export async function cleanupAuthTables(db, env, nowTimestamp, deps) {
       ),
     ),
     refresh_sessions_deleted: 0,
-    api_key_requests_deleted: 0,
-    api_key_device_activity_deleted: 0,
     auth_refresh_event_retention_days: Math.max(
       7,
       deps.parseNonNegativeInteger(
@@ -57,46 +55,6 @@ export async function cleanupAuthTables(db, env, nowTimestamp, deps) {
       [refreshSessionCutoff, refreshSessionCutoff],
     );
     summary.refresh_sessions_deleted = deps.dbMetaChanges(refreshSessionsResult);
-  }
-
-  if (await deps.dbTableExists(db, "api_key_requests")) {
-    await deps.ensureApiKeyTables(db);
-    const apiKeyRequestsResult = await deps.dbRun(
-      db,
-      `
-        DELETE FROM api_key_requests
-        WHERE
-          expires_at < ?
-          OR (used_at IS NOT NULL AND used_at != '' AND used_at < ?)
-      `,
-      [
-        nowTimestamp,
-        refreshSessionCutoff,
-      ],
-    );
-    summary.api_key_requests_deleted = deps.dbMetaChanges(apiKeyRequestsResult);
-  }
-
-  if (await deps.dbTableExists(db, "api_key_device_activity")) {
-    const activeWindowSeconds = Math.max(
-      60,
-      Math.floor(
-        deps.parsePositiveNumber(
-          env.API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
-          deps.DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
-        ),
-      ),
-    );
-    const cutoffUnix = Math.max(0, nowUnix - (activeWindowSeconds * 4));
-    const deviceActivityResult = await deps.dbRun(
-      db,
-      `
-        DELETE FROM api_key_device_activity
-        WHERE last_seen_unix < ?
-      `,
-      [cutoffUnix],
-    );
-    summary.api_key_device_activity_deleted = deps.dbMetaChanges(deviceActivityResult);
   }
 
   if (await deps.dbTableExists(db, "auth_refresh_events")) {

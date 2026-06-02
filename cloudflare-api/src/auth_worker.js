@@ -1,38 +1,23 @@
 import {
   corsHeaders,
-  html,
   json,
   jsonWithHeaders,
-  publicErrorCode,
 } from "./worker/responses.js";
 import {
   parseBooleanFlag,
   parseNonNegativeInteger,
-  parsePositiveNumber,
 } from "./worker/env.js";
 import {
   PLAN_CODE_PERSONAL,
   PLAN_CODE_COMMERCIAL,
-  defaultSignupPlanCode,
   isBlockedStatus,
-  isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
   normalizePlanCode,
   normalizeQualityMode,
   normalizeRequestedPlan,
-  planAccessSummary,
-  planDisplayName,
   qualityModeNotAllowedMessage,
-  resolvePlanCode,
   resolvePolicyPlanCode,
 } from "./worker/entitlements.js";
-import {
-  handleApiKeyActivatePage,
-  handleApiKeyPage,
-} from "./worker/api_key_page_handlers.js";
-import {
-  createAuthApiKeyHandlers,
-} from "./worker/auth_api_key_handlers.js";
 import {
   createAuthCore,
 } from "./worker/auth_core.js";
@@ -44,17 +29,12 @@ import {
   createAuthSessionRouteHandlers,
 } from "./worker/auth_session_route_handlers.js";
 import {
-  createLemonSqueezyBillingHandlers,
-} from "./worker/lemonsqueezy_billing_handlers.js";
-import {
   handleAddonUpdateManifest,
   handleLegalDocumentRequest,
 } from "./worker/public_misc_handlers.js";
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
-const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/upgrade";
-const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
 const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
 const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
 const DEFAULT_LEGAL_VERSION = "2026-05-12";
@@ -62,19 +42,11 @@ const DEFAULT_ADDON_UPDATE_MANIFEST_VERSION = "0.2.0";
 const DEFAULT_ADDON_UPDATE_CHANNEL = "stable";
 const DEFAULT_ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS = 300;
 const DEFAULT_ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/";
-const DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT = 20;
-const DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS = 60;
-const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT = 6;
-const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS = 900;
-const DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT = 30;
-const DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT = 60;
 const DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS = 60;
 const DEFAULT_AUTH_CONTEXT_CACHE_TTL_SECONDS = 60;
 const DEFAULT_AUTH_CONTEXT_CACHE_MAX_ENTRIES = 4096;
 const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 1800;
-const DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = 900;
-const DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS = 2;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 
@@ -105,19 +77,6 @@ function addDaysIso(days) {
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
-}
-
-function normalizeContactUrl(value) {
-  const fallback = DEFAULT_CONTACT_URL;
-  const raw = String(value || "").trim();
-  if (!raw) {
-    return fallback;
-  }
-  const trimmed = raw.replace(/\/+$/, "");
-  if (trimmed === "https://www.planetka.io/contact") {
-    return fallback;
-  }
-  return raw;
 }
 
 function escapeHtml(value) {
@@ -330,17 +289,6 @@ function isValidApiKey(value) {
   return /^pka_[A-Za-z0-9_-]{24,128}$/.test(String(value || "").trim());
 }
 
-function maskApiKey(value) {
-  const key = String(value || "").trim();
-  if (!key) {
-    return "";
-  }
-  if (key.length <= 12) {
-    return `${key.slice(0, 4)}***`;
-  }
-  return `${key.slice(0, 8)}...${key.slice(-4)}`;
-}
-
 function normalizeDeviceId(value) {
   const raw = String(value || "").trim();
   if (!raw) {
@@ -361,12 +309,6 @@ function normalizeTierCodeStrict(value) {
   if (normalized === PLAN_CODE_COMMERCIAL) {
     return PLAN_CODE_COMMERCIAL;
   }
-  return "";
-}
-
-function computeApiKeyExpiryIso(planCode, env) {
-  void planCode;
-  void env;
   return "";
 }
 
@@ -500,7 +442,6 @@ async function ensureAuthRefreshEventsTable(db) {
         user_id TEXT,
         user_email TEXT,
         auth_method TEXT,
-        api_key_id TEXT,
         device_id TEXT,
         client_ip TEXT,
         cf_country TEXT,
@@ -528,7 +469,7 @@ async function logAuthRefreshEvent(db, event = {}) {
       db,
       `
         INSERT INTO auth_refresh_events (
-          id, created_at, created_at_unix, user_id, user_email, auth_method, api_key_id, device_id,
+          id, created_at, created_at_unix, user_id, user_email, auth_method, device_id,
           client_ip, cf_country, cf_ray, outcome, error_code, http_status, details_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
@@ -539,7 +480,6 @@ async function logAuthRefreshEvent(db, event = {}) {
         String(event.user_id || "").trim() || null,
         normalizeEmail(event.user_email || "") || null,
         String(event.auth_method || "").trim().toLowerCase() || null,
-        String(event.api_key_id || "").trim() || null,
         normalizeDeviceId(event.device_id || "") || null,
         String(event.client_ip || "").trim() || null,
         String(event.cf_country || "").trim().toUpperCase() || null,
@@ -660,92 +600,6 @@ async function recordNewsletterOptIn(db, email, source = "unknown", options = {}
   );
 }
 
-async function ensureApiKeyTables(db) {
-  if (apiKeyTablesReady) {
-    return;
-  }
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS api_key_requests (
-        id TEXT PRIMARY KEY,
-        email TEXT NOT NULL,
-        requested_plan TEXT NOT NULL DEFAULT 'personal',
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at TEXT NOT NULL,
-        used_at TEXT,
-        accept_terms INTEGER NOT NULL DEFAULT 0,
-        accept_privacy INTEGER NOT NULL DEFAULT 0,
-        opt_in_news INTEGER NOT NULL DEFAULT 0,
-        submitted_at_ms INTEGER NOT NULL DEFAULT 0,
-        request_ip TEXT,
-        request_device_id TEXT,
-        created_at TEXT NOT NULL
-      )
-    `,
-  );
-  const requestPragma = await db.prepare(`PRAGMA table_info(api_key_requests)`).all();
-  const requestRows = Array.isArray(requestPragma && requestPragma.results) ? requestPragma.results : [];
-  const requestNames = new Set(requestRows.map((row) => String(row && row.name || "").trim().toLowerCase()));
-  for (const statement of [
-    !requestNames.has("request_ip") ? `ALTER TABLE api_key_requests ADD COLUMN request_ip TEXT` : "",
-    !requestNames.has("accept_terms") ? `ALTER TABLE api_key_requests ADD COLUMN accept_terms INTEGER NOT NULL DEFAULT 0` : "",
-    !requestNames.has("accept_privacy") ? `ALTER TABLE api_key_requests ADD COLUMN accept_privacy INTEGER NOT NULL DEFAULT 0` : "",
-    !requestNames.has("opt_in_news") ? `ALTER TABLE api_key_requests ADD COLUMN opt_in_news INTEGER NOT NULL DEFAULT 0` : "",
-    !requestNames.has("submitted_at_ms") ? `ALTER TABLE api_key_requests ADD COLUMN submitted_at_ms INTEGER NOT NULL DEFAULT 0` : "",
-    !requestNames.has("request_device_id") ? `ALTER TABLE api_key_requests ADD COLUMN request_device_id TEXT` : "",
-    !requestNames.has("created_at") ? `ALTER TABLE api_key_requests ADD COLUMN created_at TEXT` : "",
-  ].filter(Boolean)) {
-    try {
-      await dbRun(db, statement);
-    } catch (error) {
-      if (!String(error && error.message || "").toLowerCase().includes("duplicate column")) {
-        throw error;
-      }
-    }
-  }
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_api_key_requests_email_created ON api_key_requests(email, created_at DESC)`);
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS api_keys (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        key_hash TEXT NOT NULL UNIQUE,
-        key_prefix TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        plan_code TEXT NOT NULL DEFAULT 'personal',
-        expires_at TEXT,
-        issued_at TEXT NOT NULL,
-        last_used_at TEXT,
-        revoked_at TEXT
-      )
-    `,
-  );
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_api_keys_user_status ON api_keys(user_id, status, issued_at DESC)`);
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS api_key_device_activity (
-        id TEXT PRIMARY KEY,
-        api_key_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        device_id TEXT NOT NULL,
-        first_seen_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL,
-        last_seen_unix INTEGER NOT NULL,
-        last_ip TEXT,
-        last_country TEXT
-      )
-    `,
-  );
-  await dbRun(db, `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_device_activity_unique ON api_key_device_activity(api_key_id, device_id)`);
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_user_seen ON api_key_device_activity(user_id, last_seen_unix DESC)`);
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_user_device ON api_key_device_activity(user_id, device_id)`);
-  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_seen ON api_key_device_activity(last_seen_unix DESC)`);
-  apiKeyTablesReady = true;
-}
-
 async function ensureRefreshSessionColumns(db) {
   if (refreshSessionColumnsReady) {
     return;
@@ -761,7 +615,6 @@ async function ensureRefreshSessionColumns(db) {
         revoked_at TEXT,
         created_at TEXT NOT NULL,
         auth_method TEXT,
-        api_key_id TEXT,
         device_id TEXT,
         client_ip_scope TEXT
       )
@@ -772,7 +625,6 @@ async function ensureRefreshSessionColumns(db) {
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
   for (const statement of [
     !names.has("auth_method") ? `ALTER TABLE refresh_sessions ADD COLUMN auth_method TEXT` : "",
-    !names.has("api_key_id") ? `ALTER TABLE refresh_sessions ADD COLUMN api_key_id TEXT` : "",
     !names.has("device_id") ? `ALTER TABLE refresh_sessions ADD COLUMN device_id TEXT` : "",
     !names.has("client_ip_scope") ? `ALTER TABLE refresh_sessions ADD COLUMN client_ip_scope TEXT` : "",
   ].filter(Boolean)) {
@@ -791,7 +643,7 @@ function fixedInternalPlanForEmail(email) {
   return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizeEmail(email)] || "";
 }
 
-function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_PERSONAL) {
+function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_COMMERCIAL) {
   const fixedPlan = fixedInternalPlanForEmail(email);
   if (fixedPlan) {
     return fixedPlan;
@@ -867,7 +719,7 @@ async function upsertAnonymousUserByDeviceId(db, deviceId, env = {}) {
     [
       anonymousId,
       syntheticEmail,
-      PLAN_CODE_PERSONAL,
+      PLAN_CODE_COMMERCIAL,
       now,
       now,
       now,
@@ -909,7 +761,7 @@ async function sendNewUserLoginAlert(env, details = {}) {
   }
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_PERSONAL, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_COMMERCIAL, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
@@ -995,7 +847,7 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
   void env;
   const storedPlanCode = normalizeTierCodeStrict(user && user.status);
   if (!user || !user.id) {
-    return { storedPlanCode: PLAN_CODE_PERSONAL, qualityAccessPlanCode: PLAN_CODE_PERSONAL };
+    return { storedPlanCode: PLAN_CODE_COMMERCIAL, qualityAccessPlanCode: PLAN_CODE_COMMERCIAL };
   }
   if (!storedPlanCode && !isBlockedStatus(user && user.status)) {
     throw new Error("invalid_user_status");
@@ -1033,11 +885,7 @@ async function buildAccountState(db, user, env) {
   return {
     planCode: storedPlanCode,
     storedPlanCode,
-    accountTier: storedPlanCode,
-    storedAccountTier: storedPlanCode,
     qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
-    upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
-    contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
     previewFairUsageHold: getPreviewFairUsageHoldForUserFromRow(user),
   };
 }
@@ -1046,161 +894,14 @@ function serializeAccountState(state) {
   const safeState = state || {};
   const planCode = normalizeTierCodeStrict(safeState.planCode);
   const storedPlanCode = normalizeTierCodeStrict(safeState.storedPlanCode);
-  const storedTier = normalizeTierCodeStrict(safeState.storedAccountTier || storedPlanCode);
-  const tier = normalizeTierCodeStrict(safeState.accountTier || planCode || storedPlanCode);
   const qualityAccessPlanCode = normalizeTierCodeStrict(safeState.qualityAccessPlanCode);
   return {
     plan: { code: planCode || "" },
     plan_code: planCode || "",
-    account_tier: tier || "",
     stored_plan_code: storedPlanCode || "",
-    stored_account_tier: storedTier || "",
     quality_access_plan_code: qualityAccessPlanCode || "",
-    upgrade_url: safeState.upgradeUrl,
-    contact_url: safeState.contactUrl,
     preview_fair_usage_hold: safeState.previewFairUsageHold || { held: false },
     previewFairUsageHold: safeState.previewFairUsageHold || { held: false },
-  };
-}
-
-async function sendApiKeyActivationEmail(env, email, token) {
-  const apiKey = requireSecret(env, "EMAIL_API_KEY");
-  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-  const apiBaseUrl = String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "");
-  const activationUrl = `${apiBaseUrl}/api-key/activate?token=${encodeURIComponent(token)}`;
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [email],
-      subject: "Your Planetka account access link",
-      text: [
-        "Planetka account access request received.",
-        "",
-        "Open this activation link to generate your access key:",
-        activationUrl,
-        "",
-        "The link expires in 30 minutes.",
-      ].join("\n"),
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 16px;">Activate your Planetka account access</h2>
-          <p>Use the button below to generate your access key for Blender.</p>
-          <p style="margin: 24px 0;">
-            <a href="${activationUrl}" style="background:#111827;color:#ffffff;padding:12px 18px;text-decoration:none;border-radius:8px;display:inline-block;">
-              Activate Account Access
-            </a>
-          </p>
-          <p>If the button does not work, open this link:</p>
-          <p><a href="${activationUrl}">${activationUrl}</a></p>
-          <p>This link expires in 30 minutes.</p>
-        </div>
-      `,
-    }),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`resend_error_${response.status}_${body}`);
-  }
-}
-
-async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresAt = "") {
-  const apiKey = requireSecret(env, "EMAIL_API_KEY");
-  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-  const safePlan = normalizeRequestedPlan(planCode);
-  const displayPlan = planDisplayName(safePlan);
-  const accessSummary = planAccessSummary(safePlan);
-  void expiresAt;
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [email],
-      subject: "Your Planetka account access key",
-      text: [
-        "Your Planetka account access key is ready.",
-        "",
-        `Access: ${displayPlan}`,
-        accessSummary,
-        "",
-        "Access key:",
-        apiKeyValue,
-        "",
-        "Paste this key in Blender > Planetka > Account.",
-      ].join("\n"),
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 16px;">Your Planetka account access key</h2>
-          <p><strong>Access:</strong> ${escapeHtml(displayPlan)}</p>
-          <p>${escapeHtml(accessSummary)}</p>
-          <p style="margin: 16px 0;">Paste this access key in Blender &rarr; Planetka &rarr; Account:</p>
-          <pre style="padding:12px;border-radius:8px;background:#111827;color:#e5e7eb;overflow:auto;">${escapeHtml(apiKeyValue)}</pre>
-        </div>
-      `,
-    }),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`resend_error_${response.status}_${body}`);
-  }
-}
-
-async function revokeOtherActiveApiKeysForUser(db, userId, keepApiKeyId = "", reason = "superseded") {
-  await ensureApiKeyTables(db);
-  await ensureRefreshSessionColumns(db);
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return 0;
-  }
-  const safeKeepApiKeyId = String(keepApiKeyId || "").trim();
-  const activeRows = await dbAll(db, `SELECT id FROM api_keys WHERE user_id = ? AND status = 'active'`, [safeUserId]);
-  const idsToRevoke = activeRows
-    .map((row) => String(row && row.id || "").trim())
-    .filter((id) => Boolean(id) && id !== safeKeepApiKeyId);
-  if (!idsToRevoke.length) {
-    return 0;
-  }
-  const revokedAt = nowIso();
-  for (const apiKeyId of idsToRevoke) {
-    await dbRun(db, `UPDATE api_keys SET status = 'revoked', revoked_at = ? WHERE id = ?`, [revokedAt, apiKeyId]);
-    await dbRun(db, `UPDATE refresh_sessions SET revoked_at = ? WHERE api_key_id = ? AND (revoked_at IS NULL OR revoked_at = '')`, [revokedAt, apiKeyId]);
-  }
-  console.log("auth_worker.api_key.revoke_other_active", JSON.stringify({ user_id: safeUserId, keep_api_key_id: safeKeepApiKeyId, revoked_count: idsToRevoke.length, reason }));
-  return idsToRevoke.length;
-}
-
-async function enforceSingleActiveLicenceApiKey(db, userId, preferredApiKeyId = "") {
-  await ensureApiKeyTables(db);
-  const safeUserId = String(userId || "").trim();
-  const safePreferredApiKeyId = String(preferredApiKeyId || "").trim();
-  if (!safeUserId) {
-    return { allowed: true, keepApiKeyId: "", revokedCount: 0 };
-  }
-  const activeRows = await dbAll(
-    db,
-    `SELECT id FROM api_keys WHERE user_id = ? AND status = 'active' ORDER BY issued_at DESC, id DESC`,
-    [safeUserId],
-  );
-  if (!Array.isArray(activeRows) || activeRows.length === 0) {
-    return { allowed: true, keepApiKeyId: "", revokedCount: 0 };
-  }
-  const keepApiKeyId = String(activeRows[0] && activeRows[0].id || "").trim();
-  if (!keepApiKeyId) {
-    return { allowed: true, keepApiKeyId: "", revokedCount: 0 };
-  }
-  const revokedCount = await revokeOtherActiveApiKeysForUser(db, safeUserId, keepApiKeyId, "single_active_free_key_reconciliation");
-  return {
-    allowed: !safePreferredApiKeyId || safePreferredApiKeyId === keepApiKeyId,
-    keepApiKeyId,
-    revokedCount,
   };
 }
 
@@ -1285,20 +986,16 @@ const requireAuthenticatedUserContext = (request, env, options = {}) => requireA
 
 const authCoreDeps = {
   PLAN_CODE_PERSONAL,
-  DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
   DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
   requireSecret,
   dbAll,
   dbGet,
   dbRun,
-  ensureApiKeyTables,
   ensureRefreshSessionColumns,
   normalizeRequestedPlan,
   resolvePolicyPlanCode,
   normalizeDeviceId,
-  parsePositiveNumber,
   parseRateLimitInteger,
-  isDeviceLimitExemptEmail,
   requestClientIp,
   requestClientIpScope,
   requestCountry,
@@ -1314,80 +1011,13 @@ const authCoreDeps = {
   json,
   authContextCacheGet,
   authContextCacheSet,
-  enforceSingleActiveLicenceApiKey,
-  computeApiKeyExpiryIso,
 };
 
 const authCore = createAuthCore(authCoreDeps);
 
 const authSessionDeps = {
   ...authSessionDepsBase,
-  isApiKeyUsableById: authCore.isApiKeyUsableById,
-  enforceApiKeyDeviceLimit: authCore.enforceApiKeyDeviceLimit,
 };
-
-const authApiKeyDeps = {
-  PLAN_CODE_PERSONAL,
-  PLAN_CODE_COMMERCIAL,
-  defaultSignupPlanCode,
-  DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS,
-  DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
-  DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
-  DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT,
-  DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
-  DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT,
-  DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS,
-  DEFAULT_LEGAL_VERSION,
-  genericAuthStartResponse: (env) => authCore.genericAuthStartResponse(env),
-  requireDb,
-  ensureApiKeyTables,
-  ensureRateLimitsTable,
-  parseJson,
-  normalizeEmail,
-  normalizeDeviceId,
-  normalizeTierCodeStrict,
-  normalizeRequestedPlan,
-  parseBooleanFlag,
-  parseNonNegativeInteger,
-  parsePositiveNumber,
-  parseRateLimitInteger,
-  requestClientIp,
-  findActiveHardBlock,
-  blockedAccountResponse,
-  consumeRateLimitWindow,
-  rateLimitedResponse,
-  findUserByEmail,
-  resolvePlanCode,
-  isBlockedStatus,
-  enforceUserPlanPolicy,
-  enforceApiKeyIssueDeviceLimit: authCore.enforceApiKeyIssueDeviceLimit,
-  json,
-  upsertUserByEmail,
-  recordNewsletterOptIn,
-  randomToken,
-  sha256Hex,
-  dbRun,
-  dbGet,
-  dbAll,
-  nowIso,
-  addMinutesIso,
-  addDaysIso,
-  sendApiKeyActivationEmail,
-  issueApiKeyForUser: authCore.issueApiKeyForUser,
-  sendApiKeyIssuedEmail,
-  publicErrorCode,
-  isValidApiKey,
-  findActiveApiKeyRecord: authCore.findActiveApiKeyRecord,
-  enforceSingleActiveLicenceApiKey,
-  enforceApiKeyDeviceLimit: authCore.enforceApiKeyDeviceLimit,
-  buildAccountState,
-  createAccessToken: authCore.createAccessToken,
-  createRefreshSession: authCore.createRefreshSession,
-  maskApiKey,
-  serializeAccountState,
-};
-
-const authApiKeyHandlers = createAuthApiKeyHandlers(authApiKeyDeps);
 
 const authSessionRouteDeps = {
   DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT,
@@ -1410,7 +1040,6 @@ const authSessionRouteDeps = {
   dbMetaChanges,
   isBlockedStatus,
   blockedAccountResponse,
-  isApiKeyUsableById: authCore.isApiKeyUsableById,
   normalizeTierCodeStrict,
   enforceUserPlanPolicy,
   nowIso,
@@ -1419,10 +1048,8 @@ const authSessionRouteDeps = {
   createRefreshSession: authCore.createRefreshSession,
   normalizeEmail,
   json,
-  html,
   serializeAccountState,
   ensureRefreshSessionColumns,
-  ensureApiKeyTables,
   normalizeDeviceId,
   readBearerUser,
   requireAuthenticatedUserContext,
@@ -1430,7 +1057,6 @@ const authSessionRouteDeps = {
 };
 
 const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRouteDeps);
-const lemonSqueezyBillingHandlers = createLemonSqueezyBillingHandlers(authSessionRouteDeps);
 
 async function handleAnonymousAuth(request, env) {
   const db = requireDb(env);
@@ -1478,9 +1104,7 @@ async function handleAnonymousAuth(request, env) {
     {
       plan_code: String(accountState.planCode || ""),
       user_status: String(accountState.planCode || ""),
-      account_tier: String(accountState.accountTier || accountState.storedAccountTier || ""),
       stored_plan_code: String(accountState.storedPlanCode || ""),
-      stored_account_tier: String(accountState.storedAccountTier || ""),
       quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
       auth_method: "anonymous",
       device_id: deviceId,
@@ -1514,24 +1138,6 @@ async function handleAnonymousAuth(request, env) {
   );
 }
 
-const apiKeyPageDeps = {
-  PLAN_CODE_PERSONAL,
-  PLAN_CODE_COMMERCIAL,
-  defaultSignupPlanCode,
-  DEFAULT_CONTACT_URL,
-  DEFAULT_PRIVACY_URL,
-  DEFAULT_TERMS_URL,
-  activateApiKeyFromToken: authApiKeyHandlers.activateApiKeyFromToken,
-  corsHeaders,
-  escapeHtml,
-  html,
-  maskApiKey,
-  normalizeContactUrl,
-  normalizeRequestedPlan,
-  planAccessSummary,
-  planDisplayName,
-  requireDb,
-};
 
 const updateManifestDeps = {
   ADDON_ID,
@@ -1635,36 +1241,6 @@ async function dispatchAuthRequest(request, env) {
     }
     return handleLegalDocumentRequest(request, env, path, updateManifestDeps);
   }
-  if (path === "/api-key") {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return methodNotAllowed(env);
-    }
-    return handleApiKeyPage(request, env, apiKeyPageDeps);
-  }
-  if (path === "/api-key/activate") {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return methodNotAllowed(env);
-    }
-    return handleApiKeyActivatePage(request, env, apiKeyPageDeps);
-  }
-  if (path === "/auth/api-key/request") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return authApiKeyHandlers.handleApiKeyRequest(request, env);
-  }
-  if (path === "/auth/api-key/activate") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return authApiKeyHandlers.handleApiKeyActivate(request, env);
-  }
-  if (path === "/auth/api-key/exchange") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return authApiKeyHandlers.handleApiKeyExchange(request, env);
-  }
   if (path === "/auth/anonymous") {
     if (request.method !== "POST") {
       return methodNotAllowed(env);
@@ -1682,33 +1258,6 @@ async function dispatchAuthRequest(request, env) {
       return methodNotAllowed(env);
     }
     return authSessionRouteHandlers.handleAuthLogout(request, env);
-  }
-  if (path === "/billing/lemonsqueezy/checkout") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleCreateCheckout(request, env);
-  }
-  if (path === "/billing/lemonsqueezy/webhook") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleWebhook(request, env);
-  }
-  if (path === "/billing/lemonsqueezy/restore") {
-    if (request.method !== "POST") {
-      return methodNotAllowed(env);
-    }
-    return lemonSqueezyBillingHandlers.handleRestoreLicense(request, env);
-  }
-  if (path === "/billing/lemonsqueezy/success") {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return methodNotAllowed(env);
-    }
-    if (request.method === "HEAD") {
-      return new Response(null, { status: 200, headers: corsHeaders(env) });
-    }
-    return lemonSqueezyBillingHandlers.handleSuccess(request, env);
   }
   if (path === "/me") {
     if (request.method !== "GET" && request.method !== "HEAD") {

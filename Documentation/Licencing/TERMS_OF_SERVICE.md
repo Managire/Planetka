@@ -21,9 +21,9 @@ Both licences are single-seat licences. A licence may not be shared outside the 
 
 ## 3. Planetka Cloud Access
 
-Planetka may require licence activation, an API key, device/session checks, or account verification to access Planetka Cloud data. These controls protect service reliability, prevent abuse, support licence recovery, and allow compromised access to be revoked.
+Planetka currently uses automatic anonymous install/session access for Planetka Cloud data. Planetka may use device/session checks, abuse controls, and temporary throttling to protect service reliability, prevent scraping, and revoke compromised access.
 
-Payment providers and marketplaces may process purchases, but Planetka remains the source of truth for hosted-data access and licence activation.
+Payment providers and marketplaces may process purchases, but Planetka remains the source of truth for hosted-data access policy and licence terms.
 
 ## 4. Hosted Data And Cache
 

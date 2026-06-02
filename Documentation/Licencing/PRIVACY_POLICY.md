@@ -8,9 +8,9 @@ Planetka collects the minimum operational data needed to provide hosted data acc
 
 Planetka may process:
 
-- email address or licence/account identifier where activation or recovery is used;
+- email address or licence/account identifier where purchase support or recovery is used;
 - licence type, such as Personal or Commercial;
-- API key metadata, device/session identifiers, and token metadata;
+- anonymous install identifiers, device/session identifiers, and token metadata;
 - payment status and payment-provider metadata where a payment is made;
 - texture/cloud request metadata needed to serve data and protect the service;
 - operational telemetry, errors, cache status, request counts, and bytes served;
@@ -27,7 +27,7 @@ Payments are processed by the payment provider or marketplace shown during check
 Planetka uses operational data to:
 
 - provide Planetka Cloud access;
-- activate and restore Personal or Commercial licences;
+- support Personal or Commercial licence purchases and recovery;
 - deliver texture and cloud data;
 - protect against scraping, abuse, fraud, and account sharing;
 - provide support and invoice/licence assistance;
@@ -39,7 +39,7 @@ Planetka does not sell, rent, trade, or disclose account, usage, payment, teleme
 
 Planetka keeps account, licence, payment-status, and operational records for as long as needed to provide access, support users, satisfy accounting requirements, protect the service, and resolve disputes.
 
-Planetka uses reasonable technical and organisational measures to protect account and service data. No internet service can guarantee perfect security. You are responsible for keeping your Planetka licence, account access, API key, local computer, and Blender installation secure.
+Planetka uses reasonable technical and organisational measures to protect account and service data. No internet service can guarantee perfect security. You are responsible for keeping your Planetka licence, local computer, and Blender installation secure.
 
 ## Contact
 

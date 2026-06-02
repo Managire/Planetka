@@ -57,13 +57,11 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   const db = deps.requireDb(env);
   const allowCookieToken = deps.parseBooleanFlag(options.allowCookieToken);
   const requireAdmin = deps.parseBooleanFlag(options.requireAdmin);
-  const enforceApiKeyDevicePolicy = options.enforceApiKeyDevicePolicy !== false;
   const lightweightAccessClaims = deps.parseBooleanFlag(options.lightweightAccessClaims);
   const canUseLightweightAuthCache = (
     lightweightAccessClaims
     && !requireAdmin
     && !allowCookieToken
-    && !enforceApiKeyDevicePolicy
   );
   const bearerToken = readBearerToken(request);
   const requestIpScope = typeof deps.requestClientIpScope === "function"
@@ -120,7 +118,6 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   if (authMethod === "anonymous" && tokenIpScope && requestIpScope && tokenIpScope !== requestIpScope) {
     return { error: deps.json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
   }
-  const apiKeyId = String(access.api_key_id || "").trim();
   const deviceId = deps.normalizeDeviceId(
     access.device_id || request.headers.get("X-Planetka-Device-Id") || "",
   );
@@ -161,9 +158,7 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
         planCode: tokenPlanCode,
         qualityAccessPlanCode: tokenQualityAccessPlanCode || tokenPlanCode,
         authMethod,
-        apiKeyId,
         deviceId,
-        devicePolicy: null,
         tokenSource,
     };
   }
@@ -182,32 +177,6 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   const qualityAccess = await deps.resolveUserQualityAccessState(db, user, env);
   const planCode = qualityAccess.storedPlanCode;
   const qualityAccessPlanCode = qualityAccess.qualityAccessPlanCode;
-  let devicePolicy = null;
-  if (enforceApiKeyDevicePolicy && authMethod === "api_key" && apiKeyId) {
-    const keyUsable = await deps.isApiKeyUsableById(db, apiKeyId, String(user.id || ""));
-    if (!keyUsable) {
-      return { error: deps.json({ ok: false, error: "api_key_revoked", message: "API key is no longer active." }, 401, env) };
-    }
-    try {
-      devicePolicy = await deps.enforceApiKeyDeviceLimit(
-        db,
-        apiKeyId,
-        String(user.id || ""),
-        String(user.email || ""),
-        planCode,
-        deviceId,
-        request,
-        env,
-      );
-    } catch (error) {
-      const code = String(error && error.message || "device_limit_exceeded");
-      const statusCode = code === "missing_device_id" ? 400 : 429;
-      const message = code === "missing_device_id"
-        ? "Missing device identifier for API key session."
-        : "This Planetka account can be active on one computer at a time.";
-      return { error: deps.json({ ok: false, error: code, message }, statusCode, env) };
-    }
-  }
   if (requireAdmin && !deps.isAnalyticsAdmin(user, env)) {
     return { error: deps.json({ ok: false, error: "admin_access_required" }, 403, env) };
   }
@@ -218,9 +187,7 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     planCode,
     qualityAccessPlanCode,
     authMethod,
-    apiKeyId,
     deviceId,
-    devicePolicy,
     tokenSource,
   };
 }
@@ -229,7 +196,7 @@ export async function requireAnalyticsAdmin(request, env, deps) {
   const auth = await requireAuthenticatedUserContext(
     request,
     env,
-    { requireAdmin: true, allowCookieToken: true, enforceApiKeyDevicePolicy: false },
+    { requireAdmin: true, allowCookieToken: true },
     deps,
   );
   if (auth && auth.error) {

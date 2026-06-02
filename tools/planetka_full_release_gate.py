@@ -303,7 +303,7 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
             command=[
                 "zsh",
                 "-lc",
-                "for cfg in wrangler.auth.toml wrangler.tiles.toml wrangler.commerce.toml wrangler.analytics.toml wrangler.maps.toml; do "
+                "for cfg in wrangler.auth.toml wrangler.tiles.toml wrangler.analytics.toml; do "
                 "echo \"--- dry-run $cfg\"; "
                 "npx wrangler deploy -c \"$cfg\" --dry-run || exit $?; "
                 "done",

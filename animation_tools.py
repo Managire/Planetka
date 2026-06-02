@@ -160,7 +160,7 @@ def _require_animation_texture_quality_access(operator, prefs=None, texture_qual
     if operator is not None:
         fail(
             operator,
-            "Final Animation Render requires a Commercial licence.",
+            "Final Animation Render is unavailable.",
             code=ErrorCode.RENDER_FAILED,
             logger=logger,
         )

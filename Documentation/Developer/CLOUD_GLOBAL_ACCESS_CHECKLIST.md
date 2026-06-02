@@ -14,7 +14,7 @@ These changes are already applied in the Worker source:
 - The same cache policy is now applied consistently to both:
   - edge-cached object responses
   - final user responses
-- Worker env vars are now split across `wrangler.auth.toml`, `wrangler.tiles.toml`, `wrangler.commerce.toml`, and `wrangler.analytics.toml`:
+- Worker env vars are now split across `wrangler.auth.toml`, `wrangler.tiles.toml`, and `wrangler.analytics.toml`:
   - `TILE_BROWSER_MAX_AGE_SECONDS = "86400"`
   - `TILE_EDGE_MAX_AGE_SECONDS = "604800"`
   - `TILE_CACHE_IMMUTABLE = "1"`
@@ -48,7 +48,6 @@ From:
    - `cd cloudflare-api`
    - `npx wrangler deploy --config wrangler.auth.toml`
    - `npx wrangler deploy --config wrangler.tiles.toml`
-   - `npx wrangler deploy --config wrangler.commerce.toml`
    - `npx wrangler deploy --config wrangler.analytics.toml`
 2. Verify cache header on a tile request
    - Confirm `Cache-Control` contains `max-age=86400, s-maxage=604800, immutable`.
@@ -132,5 +131,5 @@ For better first-byte latency globally:
 
 If needed:
 
-1. In the Worker project folder, run `npx wrangler deployments list --name planetka-auth`, `npx wrangler deployments list --name planetka-tiles`, `npx wrangler deployments list --name planetka-commerce`, or `npx wrangler deployments list --name planetka-analytics`.
+1. In the Worker project folder, run `npx wrangler deployments list --name planetka-auth`, `npx wrangler deployments list --name planetka-tiles`, or `npx wrangler deployments list --name planetka-analytics`.
 2. Roll back the affected split Worker to the prior stable deployment/version.

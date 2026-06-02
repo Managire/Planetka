@@ -31,35 +31,23 @@ function isAllowedQaResetEmail(email, env, deps) {
   if (!normalized) {
     return false;
   }
-  const allowed = parseQaResetEmailSet(env, deps);
-  return allowed.has(normalized);
-}
-
-function defaultQaPlanForEmail(email, deps) {
-  const normalized = deps.normalizeEmail(email || "");
-  if (normalized === "personal@planetka.io") {
-    return deps.PLAN_CODE_PERSONAL;
-  }
-  if (normalized === "tom.griger@gmail.com") {
-    return deps.PLAN_CODE_PERSONAL;
-  }
-  return "";
+  return parseQaResetEmailSet(env, deps).has(normalized);
 }
 
 function resolveQaResetPlanCode(email, requestedPlanCode, existingUser, deps) {
-  const explicitPlan = deps.normalizePlanCode(requestedPlanCode || "");
-  if (explicitPlan === deps.PLAN_CODE_PERSONAL) {
+  const explicitPlan = deps.normalizeRequestedPlan(requestedPlanCode || "");
+  if ([deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL].includes(explicitPlan)) {
     return explicitPlan;
   }
-  const emailDefault = defaultQaPlanForEmail(email, deps);
-  if (emailDefault) {
-    return emailDefault;
+  const normalizedEmail = deps.normalizeEmail(email || "");
+  if (normalizedEmail === "tom.griger@gmail.com") {
+    return deps.PLAN_CODE_COMMERCIAL;
   }
-  const existingPlan = deps.normalizePlanCode(existingUser && existingUser.status || "");
-  if (existingPlan === deps.PLAN_CODE_PERSONAL) {
+  const existingPlan = deps.normalizeRequestedPlan(existingUser && existingUser.status || "");
+  if ([deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL].includes(existingPlan)) {
     return existingPlan;
   }
-  return deps.normalizeRequestedPlan(existingPlan || deps.PLAN_CODE_PERSONAL);
+  return deps.PLAN_CODE_COMMERCIAL;
 }
 
 async function clearRateLimitBucket(db, scope, rawKey, deps) {
@@ -73,25 +61,30 @@ async function clearRateLimitBucket(db, scope, rawKey, deps) {
   return deps.dbMetaChanges(result);
 }
 
-async function clearQaAuthRateLimits(db, request, email, deps) {
+async function clearQaAuthRateLimits(db, request, deps) {
   await deps.ensureRateLimitsTable(db);
   const clientIp = deps.requestClientIp(request);
-  const targetEmail = deps.normalizeEmail(email || "");
-  const cleared = {
-    api_key_request_ip: 0,
-    api_key_request_email: 0,
-    api_key_exchange_ip: 0,
-    auth_refresh_ip: 0,
-  };
+  const cleared = { auth_refresh_ip: 0, auth_anonymous_ip: 0 };
   if (clientIp) {
-    cleared.api_key_request_ip = await clearRateLimitBucket(db, "api_key_request_ip", clientIp, deps);
-    cleared.api_key_exchange_ip = await clearRateLimitBucket(db, "api_key_exchange_ip", clientIp, deps);
     cleared.auth_refresh_ip = await clearRateLimitBucket(db, "auth_refresh_ip", clientIp, deps);
-  }
-  if (targetEmail) {
-    cleared.api_key_request_email = await clearRateLimitBucket(db, "api_key_request_email", targetEmail, deps);
+    cleared.auth_anonymous_ip = await clearRateLimitBucket(db, "auth_anonymous_ip", clientIp, deps);
   }
   return cleared;
+}
+
+async function revokeRefreshSessions(db, userId, deps) {
+  await deps.ensureRefreshSessionColumns(db);
+  const result = await deps.dbRun(
+    db,
+    `
+      UPDATE refresh_sessions
+      SET revoked_at = ?
+      WHERE user_id = ?
+        AND (revoked_at IS NULL OR revoked_at = '')
+    `,
+    [deps.nowIso(), userId],
+  );
+  return deps.dbMetaChanges(result);
 }
 
 async function invalidateAdminAnalyticsSnapshots(env, deps) {
@@ -100,20 +93,15 @@ async function invalidateAdminAnalyticsSnapshots(env, deps) {
   } catch (error) {
     console.warn(
       "planetka.admin.analytics_snapshot_invalidate_failed",
-      JSON.stringify({
-        error: String(error && error.message || "analytics_snapshot_invalidate_failed"),
-      }),
+      JSON.stringify({ error: String(error && error.message || "analytics_snapshot_invalidate_failed") }),
     );
   }
 }
 
 export async function handleAdminUserBlock(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
+  if (auth.error) return auth.error;
   const { db, user: adminUser } = auth;
-  await deps.ensureApiKeyTables(db);
   await deps.ensureRefreshSessionColumns(db);
   const body = await deps.parseJson(request);
   const target = await resolveTargetUser(db, body, deps);
@@ -125,62 +113,16 @@ export async function handleAdminUserBlock(request, env, deps) {
   const targetEmail = deps.normalizeEmail(target.user.email || "");
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = 'blocked' WHERE id = ?`, [targetUserId]);
-  const revokedKeysResult = await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET status = 'revoked', revoked_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [now, targetUserId],
-  );
-  const revokedSessionsResult = await deps.dbRun(
-    db,
-    `
-      UPDATE refresh_sessions
-      SET revoked_at = ?
-      WHERE user_id = ?
-        AND (revoked_at IS NULL OR revoked_at = '')
-    `,
-    [now, targetUserId],
-  );
-  try {
-    console.log(
-      "admin.user_blocked",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
+  const revokedSessions = await revokeRefreshSessions(db, targetUserId, deps);
+  console.log("admin.user_blocked", JSON.stringify({ user_id: targetUserId, user_email: targetEmail, admin_email: deps.normalizeEmail(adminUser && adminUser.email || "") }));
   await invalidateAdminAnalyticsSnapshots(env, deps);
-  return deps.json(
-    {
-      ok: true,
-      action: "block_user",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      status: "blocked",
-      revoked_api_keys: deps.dbMetaChanges(revokedKeysResult),
-      revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
-      updated_at: now,
-    },
-    200,
-    env,
-  );
+  return deps.json({ ok: true, action: "block_user", user_id: targetUserId, user_email: targetEmail, status: "blocked", revoked_sessions: revokedSessions, updated_at: now }, 200, env);
 }
 
 export async function handleAdminUserUnblock(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
+  if (auth.error) return auth.error;
   const { db, user: adminUser } = auth;
-  await deps.ensureApiKeyTables(db);
   await deps.ensureRefreshSessionColumns(db);
   await deps.ensureAdminHardBlocksTable(db);
   const body = await deps.parseJson(request);
@@ -191,26 +133,15 @@ export async function handleAdminUserUnblock(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetStatus = deps.PLAN_CODE_COMMERCIAL || "commercial";
+  const targetStatus = deps.PLAN_CODE_COMMERCIAL;
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetStatus, targetUserId]);
-  const apiKeysResult = await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET plan_code = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [targetStatus, targetUserId],
-  );
   const hardBlocksClearedResult = await deps.dbRun(
     db,
     `
       UPDATE admin_hard_blocks
       SET active = 0
-      WHERE
-        active = 1
+      WHERE active = 1
         AND (
           source_user_id = ?
           OR LOWER(COALESCE(source_user_email, '')) = ?
@@ -219,45 +150,18 @@ export async function handleAdminUserUnblock(request, env, deps) {
     `,
     [targetUserId, targetEmail, targetEmail],
   );
-  try {
-    console.log(
-      "admin.user_unblocked",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
+  const revokedSessions = await revokeRefreshSessions(db, targetUserId, deps);
+  console.log("admin.user_unblocked", JSON.stringify({ user_id: targetUserId, user_email: targetEmail, admin_email: deps.normalizeEmail(adminUser && adminUser.email || "") }));
   await invalidateAdminAnalyticsSnapshots(env, deps);
-  return deps.json(
-    {
-      ok: true,
-      action: "unblock_user",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      status: targetStatus,
-      updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
-      hard_blocks_cleared: deps.dbMetaChanges(hardBlocksClearedResult),
-      updated_at: now,
-    },
-    200,
-    env,
-  );
+  return deps.json({ ok: true, action: "unblock_user", user_id: targetUserId, user_email: targetEmail, status: targetStatus, hard_blocks_cleared: deps.dbMetaChanges(hardBlocksClearedResult), revoked_sessions: revokedSessions, updated_at: now }, 200, env);
 }
 
 export async function handleAdminUserHardBlock(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
+  if (auth.error) return auth.error;
   const { db, user: adminUser } = auth;
-  await deps.ensureApiKeyTables(db);
   await deps.ensureRefreshSessionColumns(db);
   await deps.ensureAdminHardBlocksTable(db);
-
   const body = await deps.parseJson(request);
   const target = await resolveTargetUser(db, body, deps);
   if (target.error) {
@@ -267,57 +171,18 @@ export async function handleAdminUserHardBlock(request, env, deps) {
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
   const now = deps.nowIso();
+  const blockedDeviceId = deps.normalizeDeviceId(String(body.blocked_device_id || body.device_id || ""));
+  const blockedIp = String(body.blocked_ip || body.ip || deps.requestClientIp(request) || "").trim();
+  const reason = String(body.reason || "manual_admin_hard_block").trim().slice(0, 160) || "manual_admin_hard_block";
 
   await deps.dbRun(db, `UPDATE users SET status = 'blocked' WHERE id = ?`, [targetUserId]);
-  const revokedKeysResult = await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET status = 'revoked', revoked_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [now, targetUserId],
-  );
-  const revokedSessionsResult = await deps.dbRun(
-    db,
-    `
-      UPDATE refresh_sessions
-      SET revoked_at = ?
-      WHERE user_id = ?
-        AND (revoked_at IS NULL OR revoked_at = '')
-    `,
-    [now, targetUserId],
-  );
-
-  const fallbackRequest = await deps.dbGet(
-    db,
-    `
-      SELECT request_device_id, request_ip
-      FROM api_key_requests
-      WHERE LOWER(email) = ?
-      ORDER BY created_at DESC
-      LIMIT 1
-    `,
-    [targetEmail],
-  );
-  const blockedDeviceId = deps.normalizeDeviceId(String(fallbackRequest && fallbackRequest.request_device_id || ""));
-  const blockedIp = String(fallbackRequest && fallbackRequest.request_ip || "").trim();
-  const reason = String(body.reason || "manual_admin_hard_block").trim().slice(0, 160) || "manual_admin_hard_block";
+  const revokedSessions = await revokeRefreshSessions(db, targetUserId, deps);
   await deps.dbRun(
     db,
     `
       INSERT INTO admin_hard_blocks (
-        id,
-        blocked_email,
-        blocked_device_id,
-        blocked_ip,
-        source_user_id,
-        source_user_email,
-        reason,
-        created_by,
-        created_at,
-        active
+        id, blocked_email, blocked_device_id, blocked_ip, source_user_id,
+        source_user_email, reason, created_by, created_at, active
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     `,
     [
@@ -333,31 +198,13 @@ export async function handleAdminUserHardBlock(request, env, deps) {
     ],
   );
   await invalidateAdminAnalyticsSnapshots(env, deps);
-  return deps.json(
-    {
-      ok: true,
-      action: "hard_block_user",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      status: "blocked",
-      blocked_device_id: blockedDeviceId || null,
-      blocked_ip: blockedIp || null,
-      revoked_api_keys: deps.dbMetaChanges(revokedKeysResult),
-      revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
-      updated_at: now,
-    },
-    200,
-    env,
-  );
+  return deps.json({ ok: true, action: "hard_block_user", user_id: targetUserId, user_email: targetEmail, status: "blocked", blocked_device_id: blockedDeviceId || null, blocked_ip: blockedIp || null, revoked_sessions: revokedSessions, updated_at: now }, 200, env);
 }
 
 export async function handleAdminUserSetPlan(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
+  if (auth.error) return auth.error;
   const { db, user: adminUser } = auth;
-  await deps.ensureApiKeyTables(db);
   await deps.ensureRefreshSessionColumns(db);
   const body = await deps.parseJson(request);
   const target = await resolveTargetUser(db, body, deps);
@@ -370,72 +217,23 @@ export async function handleAdminUserSetPlan(request, env, deps) {
     return deps.json({ ok: false, error: "invalid_plan_code" }, 400, env);
   }
   if (deps.isBlockedStatus && deps.isBlockedStatus(target.user.status)) {
-    return deps.json({ ok: false, error: "user_blocked", message: "Unblock the user before changing account type." }, 409, env);
+    return deps.json({ ok: false, error: "user_blocked", message: "Unblock the user before changing licence type." }, 409, env);
   }
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);
-  const apiKeysResult = await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET plan_code = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [targetPlan, targetUserId],
-  );
-  const revokedSessionsResult = await deps.dbRun(
-    db,
-    `
-      UPDATE refresh_sessions
-      SET revoked_at = ?
-      WHERE user_id = ?
-        AND (revoked_at IS NULL OR revoked_at = '')
-    `,
-    [now, targetUserId],
-  );
-  try {
-    console.log(
-      "admin.user_plan_set",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        plan_code: targetPlan,
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-        updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
-        revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
+  const revokedSessions = await revokeRefreshSessions(db, targetUserId, deps);
+  console.log("admin.user_plan_set", JSON.stringify({ user_id: targetUserId, user_email: targetEmail, plan_code: targetPlan, admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""), revoked_sessions: revokedSessions }));
   await invalidateAdminAnalyticsSnapshots(env, deps);
-  return deps.json(
-    {
-      ok: true,
-      action: "set_user_plan",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      plan_code: targetPlan,
-      updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
-      revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
-      updated_at: now,
-    },
-    200,
-    env,
-  );
+  return deps.json({ ok: true, action: "set_user_plan", user_id: targetUserId, user_email: targetEmail, plan_code: targetPlan, revoked_sessions: revokedSessions, updated_at: now }, 200, env);
 }
 
 export async function handleAdminQaAuthReset(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
+  if (auth.error) return auth.error;
   const { db, user: adminUser } = auth;
-  await deps.ensureApiKeyTables(db);
   await deps.ensureRefreshSessionColumns(db);
   await deps.ensureAdminHardBlocksTable(db);
   await deps.ensureRateLimitsTable(db);
@@ -450,26 +248,11 @@ export async function handleAdminQaAuthReset(request, env, deps) {
   }
 
   const existingUser = await deps.findUserByEmail(db, targetEmail);
-  const targetPlan = resolveQaResetPlanCode(
-    targetEmail,
-    body && body.plan_code || "",
-    existingUser,
-    deps,
-  );
-  if (targetPlan !== deps.PLAN_CODE_PERSONAL) {
-    return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
-  }
-
+  const targetPlan = resolveQaResetPlanCode(targetEmail, body && body.plan_code || "", existingUser, deps);
   const now = deps.nowIso();
   let user = existingUser;
   if (!user) {
-    user = await deps.upsertUserByEmail(
-      db,
-      targetEmail,
-      targetPlan,
-      { signupSource: "admin_qa_reset" },
-      env,
-    );
+    user = await deps.upsertUserByEmail(db, targetEmail, targetPlan, { signupSource: "admin_qa_reset" }, env);
   } else {
     await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, String(user.id || "").trim()]);
     user = { ...user, status: targetPlan };
@@ -480,43 +263,13 @@ export async function handleAdminQaAuthReset(request, env, deps) {
     return deps.json({ ok: false, error: "user_not_found" }, 404, env);
   }
 
-  const revokedKeysResult = await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET status = 'revoked', revoked_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [now, userId],
-  );
-  const revokedSessionsResult = await deps.dbRun(
-    db,
-    `
-      UPDATE refresh_sessions
-      SET revoked_at = ?
-      WHERE user_id = ?
-        AND (revoked_at IS NULL OR revoked_at = '')
-    `,
-    [now, userId],
-  );
-  const clearedDeviceActivityResult = await deps.dbRun(
-    db,
-    `DELETE FROM api_key_device_activity WHERE user_id = ?`,
-    [userId],
-  );
-  const clearedApiKeyRequestsResult = await deps.dbRun(
-    db,
-    `DELETE FROM api_key_requests WHERE LOWER(email) = ?`,
-    [targetEmail],
-  );
+  const revokedSessions = await revokeRefreshSessions(db, userId, deps);
   const clearedHardBlocksResult = await deps.dbRun(
     db,
     `
       UPDATE admin_hard_blocks
       SET active = 0
-      WHERE
-        active = 1
+      WHERE active = 1
         AND (
           source_user_id = ?
           OR LOWER(COALESCE(source_user_email, '')) = ?
@@ -525,55 +278,9 @@ export async function handleAdminQaAuthReset(request, env, deps) {
     `,
     [userId, targetEmail, targetEmail],
   );
-  const clearedRateLimits = await clearQaAuthRateLimits(db, request, targetEmail, deps);
-  const issued = await deps.issueApiKeyForUser(
-    db,
-    env,
-    user,
-    targetPlan,
-    {},
-  );
-
-  try {
-    console.log(
-      "admin.qa_auth_reset",
-      JSON.stringify({
-        user_id: userId,
-        user_email: targetEmail,
-        plan_code: targetPlan,
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-        revoked_api_keys: deps.dbMetaChanges(revokedKeysResult),
-        revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
-        cleared_device_activity: deps.dbMetaChanges(clearedDeviceActivityResult),
-        cleared_api_key_requests: deps.dbMetaChanges(clearedApiKeyRequestsResult),
-        cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult),
-        issued_api_key_id: String(issued && issued.apiKeyId || "").trim(),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
+  const clearedRateLimits = await clearQaAuthRateLimits(db, request, deps);
+  console.log("admin.qa_auth_reset", JSON.stringify({ user_id: userId, user_email: targetEmail, plan_code: targetPlan, admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""), revoked_sessions: revokedSessions, cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult) }));
   await invalidateAdminAnalyticsSnapshots(env, deps);
 
-  return deps.json(
-    {
-      ok: true,
-      action: "qa_auth_reset",
-      user_id: userId,
-      user_email: targetEmail,
-      plan_code: targetPlan,
-      revoked_api_keys: deps.dbMetaChanges(revokedKeysResult),
-      revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
-      cleared_device_activity: deps.dbMetaChanges(clearedDeviceActivityResult),
-      cleared_api_key_requests: deps.dbMetaChanges(clearedApiKeyRequestsResult),
-      cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult),
-      cleared_rate_limits: clearedRateLimits,
-      api_key: issued.apiKey,
-      api_key_id: issued.apiKeyId,
-      expires_at: issued.expiresAt,
-      updated_at: now,
-    },
-    200,
-    env,
-  );
+  return deps.json({ ok: true, action: "qa_auth_reset", user_id: userId, user_email: targetEmail, plan_code: targetPlan, revoked_sessions: revokedSessions, cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult), cleared_rate_limits: clearedRateLimits, updated_at: now }, 200, env);
 }

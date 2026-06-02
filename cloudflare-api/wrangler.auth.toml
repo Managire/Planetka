@@ -5,10 +5,7 @@ find_additional_modules = true
 
 routes = [
   { pattern = "api.planetka.io/auth/*", zone_name = "planetka.io" },
-  { pattern = "api.planetka.io/api-key", zone_name = "planetka.io" },
-  { pattern = "api.planetka.io/api-key/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/me", zone_name = "planetka.io" },
-  { pattern = "api.planetka.io/billing/lemonsqueezy/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/health", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/addon/update-manifest", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/addon/releases/*", zone_name = "planetka.io" },
@@ -21,7 +18,6 @@ enabled = true
 [vars]
 APP_ORIGIN = "*"
 API_BASE_URL = "https://api.planetka.io"
-LOGIN_URL = "https://www.planetka.io/login"
 CONTACT_URL = "https://www.planetka.io/contact-me"
 PLANETKA_CONTACT_URL = "https://www.planetka.io/contact-me"
 TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf"
@@ -30,16 +26,8 @@ LEGAL_VERSION = "2026-05-12"
 TERMS_VERSION = "2026-05-12"
 PRIVACY_VERSION = "2026-05-12"
 DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com"
-RATE_LIMIT_AUTH_START_IP_LIMIT = "20"
-RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS = "60"
-RATE_LIMIT_AUTH_START_EMAIL_LIMIT = "6"
-RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS = "900"
-RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT = "30"
-RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS = "60"
 RATE_LIMIT_AUTH_REFRESH_IP_LIMIT = "60"
 RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS = "60"
-API_KEY_REQUEST_MIN_AGE_SECONDS = "2"
-API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = "900"
 AUTH_CONTEXT_CACHE_TTL_SECONDS = "60"
 AUTH_CONTEXT_CACHE_MAX_ENTRIES = "4096"
 ADDON_UPDATE_CHANNEL = "stable"
@@ -51,8 +39,6 @@ ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/
 ADDON_UPDATE_MIN_BLENDER = "4.5.7"
 ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS = "300"
 PLANETKA_BETA_DEFAULT_PRO = "0"
-LEMONSQUEEZY_TEST_MODE = "1"
-LEMONSQUEEZY_PRO_PRICE_LABEL = "€299"
 
 [[d1_databases]]
 binding = "DB"

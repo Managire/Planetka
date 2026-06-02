@@ -10,12 +10,6 @@ from .auth import (
     texture_quality_not_allowed_message,
 )
 from .planetka_ops.account_ops import (
-    PLANETKA_OT_AccountContact,
-    PLANETKA_OT_AccountLogin,
-    PLANETKA_OT_AccountLogout,
-    PLANETKA_OT_AccountOpenLogin,
-    PLANETKA_OT_AccountRestoreCommercial,
-    PLANETKA_OT_AccountCommercialCheckout,
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_UpdateNow,
 )

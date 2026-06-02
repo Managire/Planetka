@@ -84,7 +84,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   <div class="muted">Signed in as ${escapeHtml(String(user.email || ""))}. Session source: ${escapeHtml(String(tokenSource || "unknown"))}. Auto-refresh every 15 seconds. Build: ${escapeHtml(buildStamp)}</div>
   <div class="controls">
     <a href="/admin/analytics/users" style="color:#93c5fd; text-decoration:none;">All users</a>
-    <a href="/admin/analytics/products" style="color:#93c5fd; text-decoration:none;">Licence pricing</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
 	  <div class="controls">

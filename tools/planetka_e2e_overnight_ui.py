@@ -5,16 +5,14 @@ Recommended usage:
     /Applications/Blender5.0.app/Contents/MacOS/Blender \
       --python tools/planetka_e2e_overnight_ui.py
 
-  Clean session with API key bootstrap:
+  Clean anonymous session:
     PLANETKA_AUTH_DEVICE_ID=1de81a60-831d-4aac-9e66-e86af91a900b \
-    PLANETKA_API_KEY_PATH=/absolute/path/to/api_key.json \
-    /Applications/Blender5.0.app/Contents/MacOS/Blender --factory-startup \
+        /Applications/Blender5.0.app/Contents/MacOS/Blender --factory-startup \
       --python tools/planetka_e2e_overnight_ui.py
 
 Quick validation mode:
   PLANETKA_E2E_SMOKE=1 PLANETKA_AUTH_DEVICE_ID=1de81a60-831d-4aac-9e66-e86af91a900b \
-    PLANETKA_API_KEY_PATH=/absolute/path/to/api_key.json \
-    /Applications/Blender5.0.app/Contents/MacOS/Blender --factory-startup \
+        /Applications/Blender5.0.app/Contents/MacOS/Blender --factory-startup \
       --python tools/planetka_e2e_overnight_ui.py
 
 The script writes all visual outputs and a structured JSON report into /Volumes/SSDA/Renders.
@@ -28,8 +26,7 @@ It covers:
 - smoke mode via PLANETKA_E2E_SMOKE=1 (reduces case counts for script validation only)
 
 Intentionally skipped from automation because they have external side effects:
-- account_login / account_commercial_checkout / account_contact (browser opening)
-- account_logout (destroys session)
+- anonymous session bootstrap
 - update_now (mutates installed addon)
 - report_bug (sends support payload / opens mail)
 """
@@ -135,11 +132,6 @@ def _tile_block_nav(x0, y0, width, height, *, altitude_km, azimuth_deg=28.0, til
     }
 
 EXTERNAL_SKIPS = {
-    "planetka.account_login": "Opens browser",
-    "planetka.account_open_login": "Re-authenticates live account",
-    "planetka.account_logout": "Destroys current session",
-    "planetka.account_commercial_checkout": "Opens browser",
-    "planetka.account_contact": "Opens browser",
     "planetka.update_now": "Mutates installed addon",
     "planetka.report_bug": "Sends support payload / mail draft",
 }
@@ -1125,12 +1117,10 @@ class OvernightRunner:
             "email": str(self.auth.get_connected_email(self.prefs) or getattr(self.prefs, "auth_email", "") or "").strip(),
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "api_key_mask": str(getattr(self.prefs, "auth_api_key_mask", "") or "").strip(),
+            "licence_code": str(getattr(self.prefs, "auth_plan_code", "") or "").strip(),
             "plan_code": str(getattr(self.prefs, "auth_plan_code", "") or "").strip(),
             "plan_name": str(getattr(self.prefs, "auth_plan_name", "") or "").strip(),
-            "account_tier": str(self.auth.get_account_tier(self.prefs) or getattr(self.prefs, "auth_account_tier", "") or "").strip(),
-            "contact_url": str(getattr(self.prefs, "auth_contact_url", "") or "").strip(),
-            "upgrade_url": str(getattr(self.prefs, "auth_upgrade_url", "") or "").strip(),
+            "licence_code": str(self.auth.get_licence_code(self.prefs) or getattr(self.prefs, "auth_licence_code", "") or "").strip(),
         }
         target = self.session_dir / "final_animation_auth_payload.json"
         write_json(target, payload)
@@ -1303,9 +1293,7 @@ class OvernightRunner:
             self.auth,
             self.prefs,
             payload_path=str(os.environ.get("PLANETKA_AUTH_PAYLOAD") or "").strip(),
-            api_key=str(os.environ.get("PLANETKA_API_KEY") or "").strip(),
-            api_key_path=str(os.environ.get("PLANETKA_API_KEY_PATH") or "").strip(),
-        )
+                                )
         wait_for_geonames_ready(self.geonames)
         return SHORT_WAIT_SEC
 

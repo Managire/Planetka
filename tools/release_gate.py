@@ -182,7 +182,6 @@ def main() -> int:
     template_path = root / "Documentation" / "Release" / "RELEASE_NOTES_TEMPLATE.md"
     worker_auth_path = root / "cloudflare-api" / "src" / "auth_worker.js"
     worker_tiles_path = root / "cloudflare-api" / "src" / "tile_worker.js"
-    worker_commerce_path = root / "cloudflare-api" / "src" / "commerce_worker.js"
     worker_analytics_path = root / "cloudflare-api" / "src" / "analytics_worker.js"
     worker_tile_routes_path = root / "cloudflare-api" / "src" / "worker" / "tile_routes.js"
     worker_admin_analytics_path = root / "cloudflare-api" / "src" / "worker" / "admin_analytics_handlers.js"
@@ -190,7 +189,6 @@ def main() -> int:
     wrangler_paths = [
         root / "cloudflare-api" / "wrangler.auth.toml",
         root / "cloudflare-api" / "wrangler.tiles.toml",
-        root / "cloudflare-api" / "wrangler.commerce.toml",
         root / "cloudflare-api" / "wrangler.analytics.toml",
     ]
     fallback_dir = root / "Resources" / "Fallback Images"
@@ -265,17 +263,13 @@ def main() -> int:
 
     worker_auth_src = ""
     worker_tiles_src = ""
-    worker_commerce_src = ""
     worker_analytics_src = ""
     worker_tile_routes_src = ""
     worker_admin_analytics_src = ""
     worker_maintenance_src = ""
-    worker_auth_api_key_src = ""
-    worker_auth_api_key_path = root / "cloudflare-api" / "src" / "worker" / "auth_api_key_handlers.js"
     split_worker_paths = [
         ("auth Worker", worker_auth_path),
         ("tiles Worker", worker_tiles_path),
-        ("commerce Worker", worker_commerce_path),
         ("analytics Worker", worker_analytics_path),
     ]
     for label, path in split_worker_paths:
@@ -285,8 +279,6 @@ def main() -> int:
         worker_auth_src = read_text(worker_auth_path)
     if worker_tiles_path.exists():
         worker_tiles_src = read_text(worker_tiles_path)
-    if worker_commerce_path.exists():
-        worker_commerce_src = read_text(worker_commerce_path)
     if worker_analytics_path.exists():
         worker_analytics_src = read_text(worker_analytics_path)
     if worker_tile_routes_path.exists():
@@ -295,40 +287,22 @@ def main() -> int:
         worker_admin_analytics_src = read_text(worker_admin_analytics_path)
     if worker_maintenance_path.exists():
         worker_maintenance_src = read_text(worker_maintenance_path)
-    if worker_auth_api_key_path.exists():
-        worker_auth_api_key_src = read_text(worker_auth_api_key_path)
     combined_worker_src = "\n".join(
         part
         for part in [
             worker_auth_src,
             worker_tiles_src,
-            worker_commerce_src,
             worker_analytics_src,
             worker_tile_routes_src,
             worker_admin_analytics_src,
             worker_maintenance_src,
-            worker_auth_api_key_src,
         ]
         if part
     )
 
-    # 6) Worker access model must match the split-worker account-tier model.
-    if combined_worker_src:
-        required_worker_markers = [
-            (
-                "beta public API key request uses beta-aware default plan",
-                [
-                    "deps.defaultSignupPlanCode(env)",
-                    "defaultSignupPlanCode(env)",
-                ],
-            ),
-        ]
-        for label, markers in required_worker_markers:
-            if not any(marker in combined_worker_src for marker in markers):
-                errors.append(
-                    "Worker safeguard missing: "
-                    f"{label} ({' or '.join(repr(marker) for marker in markers)})"
-                )
+    # 6) Worker access model must match the anonymous install-session model.
+    if worker_auth_src and '"/auth/anonymous"' not in worker_auth_src:
+        errors.append("Auth Worker missing anonymous install-session endpoint: /auth/anonymous")
     tile_quality_marker_present = (
         "X-Planetka-Quality-Mode" in worker_tiles_src
         or "X-Planetka-Quality-Mode" in worker_tile_routes_src
@@ -551,13 +525,13 @@ def main() -> int:
             if isinstance(account, dict):
                 auth_bootstrap = str(account.get("auth_bootstrap", "") or "").strip()
                 account_email = str(account.get("email", "") or "").strip()
-                account_tier = str(account.get("account_tier", "") or "").strip()
+                licence_code = str(account.get("licence_code", "") or "").strip()
                 if auth_bootstrap:
                     print(
                         "  auth:"
                         f" bootstrap={auth_bootstrap}"
                         f"{f' email={account_email}' if account_email else ''}"
-                        f"{f' tier={account_tier}' if account_tier else ''}"
+                        f"{f' licence={licence_code}' if licence_code else ''}"
                     )
                 if auth_bootstrap == "session":
                     runtime_errors.append(

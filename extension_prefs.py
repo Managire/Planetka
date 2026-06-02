@@ -13,20 +13,13 @@ FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
 FALLBACK_TEXTURE_SOURCE_MODE_KEY = "planetka_texture_source_mode"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
 FALLBACK_AUTH_EMAIL_KEY = "planetka_auth_email"
-FALLBACK_AUTH_API_KEY_KEY = "planetka_auth_api_key"
-FALLBACK_AUTH_API_KEY_INPUT_KEY = "planetka_auth_api_key_input"
-FALLBACK_AUTH_API_KEY_MASK_KEY = "planetka_auth_api_key_mask"
 FALLBACK_AUTH_DEVICE_ID_KEY = "planetka_auth_device_id"
 FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
 FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
-FALLBACK_AUTH_ACCOUNT_TIER_KEY = "planetka_auth_account_tier"
-FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY = "planetka_auth_stored_account_tier"
 FALLBACK_AUTH_PLAN_CODE_KEY = "planetka_auth_plan_code"
 FALLBACK_AUTH_PLAN_NAME_KEY = "planetka_auth_plan_name"
 FALLBACK_AUTH_STORED_PLAN_CODE_KEY = "planetka_auth_stored_plan_code"
 FALLBACK_AUTH_STORED_PLAN_NAME_KEY = "planetka_auth_stored_plan_name"
-FALLBACK_AUTH_CONTACT_URL_KEY = "planetka_auth_contact_url"
-FALLBACK_AUTH_UPGRADE_URL_KEY = "planetka_auth_upgrade_url"
 FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
 FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
@@ -65,32 +58,15 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     )
 
     auth_email: StringProperty(name="Auth Email", default="", options={'HIDDEN'})
-    auth_api_key: StringProperty(name="Auth API Key", default="", options={'HIDDEN'})
-    auth_api_key_input: StringProperty(
-        name="Auth API Key Input",
-        default="",
-        options={'HIDDEN'},
-    )
-    auth_api_key_mask: StringProperty(name="Auth API Key Mask", default="", options={'HIDDEN'})
     auth_device_id: StringProperty(name="Auth Device ID", default="", options={'HIDDEN'})
     auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
     auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
-    auth_account_tier: StringProperty(name="Auth Account Tier", default="", options={'HIDDEN'})
-    auth_stored_account_tier: StringProperty(name="Auth Stored Account Tier", default="", options={'HIDDEN'})
     auth_plan_code: StringProperty(name="Auth Plan Code", default="", options={'HIDDEN'})
     auth_plan_name: StringProperty(name="Auth Plan Name", default="", options={'HIDDEN'})
     auth_stored_plan_code: StringProperty(name="Auth Stored Plan Code", default="", options={'HIDDEN'})
     auth_stored_plan_name: StringProperty(name="Auth Stored Plan Name", default="", options={'HIDDEN'})
-    auth_contact_url: StringProperty(name="Auth Contact URL", default="", options={'HIDDEN'})
-    auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
     auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
     auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
-    commercial_restore_license_key_input: StringProperty(
-        name="Planetka Licence Key",
-        description="Planetka licence key for restoring Planetka Commercial Licence",
-        default="",
-        options={'HIDDEN'},
-    )
     startup_setup_profile_json: StringProperty(
         name="Startup Setup Profile",
         default="",
@@ -106,7 +82,7 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     def draw(self, context):
         layout = self.layout
         layout.label(text="Planetka Preferences", icon='WORLD')
-        layout.label(text="Account is managed in the Planetka sidebar.", icon="INFO")
+        layout.label(text="Planetka connects to Planetka Cloud automatically.", icon="INFO")
 
 
 def mark_earth_object(obj):
@@ -223,18 +199,6 @@ def get_prefs():
             lambda self: self._get_value(FALLBACK_AUTH_EMAIL_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_EMAIL_KEY, value),
         )
-        auth_api_key = property(
-            lambda self: self._get_value(FALLBACK_AUTH_API_KEY_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_API_KEY_KEY, value),
-        )
-        auth_api_key_input = property(
-            lambda self: self._get_value(FALLBACK_AUTH_API_KEY_INPUT_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_API_KEY_INPUT_KEY, value),
-        )
-        auth_api_key_mask = property(
-            lambda self: self._get_value(FALLBACK_AUTH_API_KEY_MASK_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_API_KEY_MASK_KEY, value),
-        )
         auth_device_id = property(
             lambda self: self._get_value(FALLBACK_AUTH_DEVICE_ID_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_ID_KEY, value),
@@ -246,14 +210,6 @@ def get_prefs():
         auth_refresh_token = property(
             lambda self: self._get_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, value),
-        )
-        auth_account_tier = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ACCOUNT_TIER_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ACCOUNT_TIER_KEY, value),
-        )
-        auth_stored_account_tier = property(
-            lambda self: self._get_value(FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY, value),
         )
         auth_plan_code = property(
             lambda self: self._get_value(FALLBACK_AUTH_PLAN_CODE_KEY, ""),
@@ -270,14 +226,6 @@ def get_prefs():
         auth_stored_plan_name = property(
             lambda self: self._get_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, value),
-        )
-        auth_contact_url = property(
-            lambda self: self._get_value(FALLBACK_AUTH_CONTACT_URL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_CONTACT_URL_KEY, value),
-        )
-        auth_upgrade_url = property(
-            lambda self: self._get_value(FALLBACK_AUTH_UPGRADE_URL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_UPGRADE_URL_KEY, value),
         )
         auth_login_state = property(
             lambda self: self._get_value(FALLBACK_AUTH_LOGIN_STATE_KEY, "logged_out"),

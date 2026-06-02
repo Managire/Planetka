@@ -120,7 +120,7 @@ def _enable_module():
                 pass
             module.register()
         if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
-            _log(f"Enabled addon package from checkout: {package_name}")
+            _log(f"Enabled addon package from package path: {package_name}")
             return package_name
     except TOOL_RECOVERABLE_EXCEPTIONS:
         pass

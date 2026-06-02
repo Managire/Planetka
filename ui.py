@@ -14,8 +14,7 @@ from .auth import (
     allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
-    get_account_tier,
-    get_connected_email,
+    get_licence_code,
     get_status_message,
     ensure_authenticated_session,
     is_authenticated,
@@ -1207,189 +1206,6 @@ def _show_internal_animation_ui():
     return bool(SHOW_INTERNAL_ANIMATION_UI)
 
 
-def _api_key_inline_status(prefs, connected, status_message):
-    if connected:
-        return "", "NONE", False
-
-    message = str(status_message or "").strip()
-    if not message:
-        return "", "NONE", False
-
-    lowered = message.lower()
-    invalid_tokens = (
-        "invalid planetka api key",
-        "invalid_api_key",
-        "api key expired",
-        "api key is revoked",
-    )
-    if any(token in lowered for token in invalid_tokens):
-        return "Key invalid", "ERROR", True
-    if "session expired" in lowered or "connect your account again" in lowered:
-        return "Session expired", "ERROR", True
-    if "critical licence integrity error" in lowered or "licence integrity" in lowered:
-        return "Critical licence integrity error", "ERROR", True
-
-    return "Connect failed", "ERROR", True
-
-
-def _draw_addon_update_controls(layout):
-    try:
-        updater = get_updater_public_status()
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        logger.debug("Planetka: failed reading updater status in settings panel", exc_info=True)
-        updater = {}
-    updater_ready = bool(updater.get("update_ready", False))
-    updater_busy = _updater_is_busy(updater)
-    latest_version = str(updater.get("latest_version") or "").strip()
-    current_version = str(updater.get("current_version") or "").strip()
-    phase = str(updater.get("phase") or "").strip().lower()
-    message = str(updater.get("message") or "").strip()
-    last_error = str(updater.get("last_error") or "").strip()
-    try:
-        downloaded_bytes = int(updater.get("downloaded_bytes", 0) or 0)
-    except (TypeError, ValueError):
-        downloaded_bytes = 0
-    try:
-        total_bytes = int(updater.get("download_total_bytes", 0) or 0)
-    except (TypeError, ValueError):
-        total_bytes = 0
-
-    if updater_busy:
-        _schedule_updater_ui_redraw()
-
-    version_row = layout.row()
-    version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
-    updates_row = layout.row()
-    updates_row.enabled = not updater_busy
-    updates_row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
-    if updater_busy:
-        status_box = layout.box()
-        status_box.label(
-            text=message or f"Updating Planetka{_status_activity_suffix(True)}",
-            icon="TIME",
-        )
-        if total_bytes > 0 and hasattr(status_box, "progress"):
-            factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
-            status_box.progress(
-                factor=factor,
-                type='BAR',
-                text=f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}",
-            )
-        elif phase in {"verifying", "installing"} and hasattr(status_box, "progress"):
-            status_box.progress(
-                factor=1.0,
-                type='BAR',
-                text=message or "Finishing update",
-            )
-        else:
-            status_box.label(text=f"Please wait{_status_activity_suffix(True)}", icon="INFO")
-    elif updater_ready and latest_version:
-        row = layout.row()
-        row.alert = True
-        row.label(text=f"Update available: {latest_version}", icon="ERROR")
-        row.operator("planetka.update_now", text="Update now", icon="IMPORT")
-    elif message:
-        message_box = layout.box()
-        message_box.alert = bool(phase == "error" or last_error)
-        message_box.label(text=message, icon="ERROR" if message_box.alert else "CHECKMARK")
-        if message.lower().startswith("updated to "):
-            message_box.label(text="Restart Blender to finish the update.", icon="INFO")
-        elif "restart blender" in message.lower():
-            message_box.label(text="Restart Blender to finish the update.", icon="INFO")
-
-
-def _has_active_camera(scene):
-    return bool(scene is not None and getattr(scene, "camera", None) is not None)
-
-
-def _draw_account_panel(layout):
-    layout.use_property_split = False
-    layout.use_property_decorate = False
-
-    from .extension_prefs import get_prefs
-
-    prefs = get_prefs()
-    authenticated = bool(is_authenticated(prefs))
-    if authenticated:
-        _schedule_sidebar_account_refresh(force=False)
-    cloud_status = (
-        get_cached_cloud_connection_status()
-        if authenticated
-        else {"online": False, "message": "", "checked": False}
-    )
-    checked = bool(cloud_status.get("checked", False))
-    connected = bool(authenticated and checked and cloud_status.get("online", False))
-    status_message = get_status_message(prefs)
-    key_text = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
-    key_mask = str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
-    stored_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
-    key_locked = bool(authenticated)
-    inline_status_text, inline_status_icon, inline_status_alert = _api_key_inline_status(
-        prefs,
-        connected,
-        status_message,
-    )
-
-    request_row = layout.row()
-    request_row.enabled = not key_locked
-    request_row.operator("planetka.account_login", text="Request Account Access", icon="URL")
-
-    key_row = layout.row(align=True)
-    if key_locked:
-        key_row.enabled = False
-        if key_mask:
-            key_row.prop(prefs, "auth_api_key_mask", text="Access Key")
-        else:
-            key_row.prop(prefs, "auth_api_key_input", text="Access Key")
-    else:
-        key_row.enabled = True
-        key_row.prop(prefs, "auth_api_key_input", text="Access Key")
-    if inline_status_text and not connected:
-        key_status = key_row.row(align=True)
-        key_status.alert = bool(inline_status_alert)
-        key_status.label(text=inline_status_text, icon=inline_status_icon)
-
-    key_action_row = layout.row(align=True)
-    connect_row = key_action_row.row(align=True)
-    connect_row.enabled = (not key_locked) and bool(key_text)
-    connect_row.operator("planetka.account_open_login", text="Connect Account", icon="CHECKMARK")
-
-    logout_row = layout.row(align=True)
-    logout_row.enabled = authenticated
-    logout_row.operator("planetka.account_logout", text="Log Out", icon="X")
-
-    try:
-        email = str(get_connected_email(prefs) or "").strip()
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        email = str(getattr(prefs, "auth_email", "") or "").strip()
-    cloud_message = str(cloud_status.get("message", "") or "").strip()
-    cloud_overloaded = bool(cloud_message == CLOUD_OVERLOADED_MESSAGE)
-    status_icon = "CHECKMARK" if connected else ("INFO" if authenticated and not checked else "ERROR")
-    if connected:
-        status_text = "Status: Connected to Planetka Cloud"
-    elif authenticated and not checked:
-        status_text = "Status: Checking Planetka Cloud"
-    elif authenticated and cloud_overloaded:
-        status_text = "Status: Planetka Cloud overloaded"
-    elif authenticated:
-        status_text = "Status: Not connected to Planetka Cloud"
-    else:
-        status_text = "Status: Not connected"
-    status_row = layout.row(align=True)
-    status_row.alert = bool(authenticated and checked and not connected)
-    status_row.label(text=status_text, icon=status_icon)
-    layout.label(text=f"Account: {email or '-'}", icon="USER")
-    try:
-        account_tier = str(get_account_tier(prefs) or "").strip().lower()
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        account_tier = ""
-    if account_tier == "commercial":
-        account_type_label = "Commercial"
-    elif account_tier == "personal":
-        account_type_label = "Personal"
-    else:
-        account_type_label = "-"
-    layout.label(text=f"Account type: {account_type_label}", icon="COMMUNITY")
 
 def _draw_general_account_summary(layout):
     from .extension_prefs import get_prefs
@@ -1424,10 +1240,10 @@ def _draw_general_account_summary(layout):
     else:
         status_text = "Starting Planetka session"
     try:
-        account_tier = str(get_account_tier(prefs) or "").strip().lower()
+        licence_code = str(get_licence_code(prefs) or "").strip().lower()
     except (TypeError, ValueError, RuntimeError, AttributeError):
-        account_tier = ""
-    account_type_label = "Commercial" if account_tier == "commercial" else "Personal"
+        licence_code = ""
+    account_type_label = "Commercial" if licence_code == "commercial" else "Personal"
     status_message = get_status_message(prefs)
 
     account_box = layout.box()
@@ -1436,16 +1252,8 @@ def _draw_general_account_summary(layout):
     row.label(text="Status")
     row.label(text=status_text, icon=status_icon)
     row = account_box.row()
-    row.label(text="Account Type")
+    row.label(text="Licence")
     row.label(text=account_type_label)
-    if account_tier != "commercial":
-        account_box.operator("planetka.account_commercial_checkout", text="Buy Commercial Licence", icon="KEY_HLT")
-        restore_box = account_box.box()
-        restore_box.label(text="Restore Commercial Licence", icon="KEY_HLT")
-        if prefs is not None:
-            restore_box.prop(prefs, "commercial_restore_license_key_input", text="Planetka Licence Key")
-        restore_box.operator("planetka.account_restore_commercial", text="Restore Commercial Licence", icon="CHECKMARK")
-
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -2436,40 +2244,6 @@ def _draw_atmosphere(layout, context):
         else:
             _draw_eevee_supplement_atmosphere_node(container, node)
 
-
-class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Account"
-    bl_idname = "PLANETKA_PT_account"
-    bl_order = 9000
-    bl_options = set()
-
-    @classmethod
-    def poll(cls, context):
-        _ = context
-        return False
-
-    def draw(self, context):
-        _ = context
-        layout = self.layout
-        layout.enabled = _planetka_controls_enabled()
-        _draw_account_panel(layout)
-
-
-class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Account"
-    bl_idname = "PLANETKA_PT_account_collapsed"
-    bl_order = 9000
-
-    @classmethod
-    def poll(cls, context):
-        _ = context
-        return False
-
-    def draw(self, context):
-        _ = context
-        layout = self.layout
-        layout.enabled = _planetka_controls_enabled()
-        _draw_account_panel(layout)
 
 
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):

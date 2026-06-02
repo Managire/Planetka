@@ -20,21 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_BASE_URL = str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.planetka.io").rstrip("/")
-DEFAULT_UPGRADE_URL = str(
-    os.getenv("PLANETKA_UPGRADE_URL")
-    or "https://www.planetka.io/blender/upgrade"
-).strip()
-DEFAULT_CONTACT_URL = str(
-    os.getenv("PLANETKA_CONTACT_URL")
-    or os.getenv("PLANETKA_SUPPORT_URL")
-    or "mailto:info@planetka.io?subject=Planetka%20support%20request"
-).strip()
-DEFAULT_API_KEY_REQUEST_URL = str(
-    os.getenv("PLANETKA_API_KEY_REQUEST_URL")
-    or f"{DEFAULT_API_BASE_URL}/api-key"
-).strip()
-
-
 TIER_INTEGRITY_ERROR_CODE = "tier_integrity_violation"
 TIER_INTEGRITY_STATUS_MESSAGE = (
     "Critical licence integrity error detected. "
@@ -93,10 +78,6 @@ class AuthApiError(RuntimeError):
 
 
 _TERMINAL_AUTH_ERROR_CODES = {
-    "invalid_api_key",
-    "api_key_expired",
-    "api_key_revoked",
-    "missing_api_key",
     "missing_refresh_token",
     "invalid_refresh_token",
     "refresh_token_revoked",
@@ -180,12 +161,6 @@ def describe_auth_error(error):
             "Planetka could not verify this account safely. "
             "Reconnect and contact info@planetka.io if the problem persists."
         )
-    if "invalid_api_key" in lowered:
-        return "Invalid Planetka access key."
-    if "api_key_expired" in lowered:
-        return "Planetka access key expired. Request a new key."
-    if "api_key_revoked" in lowered:
-        return "Planetka access key is no longer valid. Request a new key."
     if any(
         token in lowered
         for token in (
@@ -210,8 +185,6 @@ def describe_auth_error(error):
         return _CLOUD_CONNECTION_OFFLINE_MESSAGE
     if "quality_mode_not_allowed" in lowered or "not_available_for_licence" in lowered or "insufficient_data" in lowered:
         return "Planetka Cloud could not stream the selected texture quality. Please retry."
-    if "lemonsqueezy" in lowered or "checkout" in lowered:
-        return "Planetka checkout is temporarily unavailable. Please try again shortly."
     if "missing_resolve_id" in lowered:
         return "Planetka request details are missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
@@ -234,7 +207,7 @@ def recover_from_terminal_auth_error(error, prefs=None, source=""):
         str(source or "terminal_auth_error").strip() or "terminal_auth_error",
         primary_error=error,
     )
-    _clear_auth_session_preserve_api_key(
+    _clear_auth_session_preserve_device_id(
         prefs,
         state="logged_out",
         status_message=_critical_disconnect_status_message(error),
@@ -453,44 +426,29 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
         return
 
     prefs.auth_email = ""
-    prefs.auth_api_key = ""
-    prefs.auth_api_key_mask = ""
-    prefs.auth_api_key_input = ""
     prefs.auth_access_token = ""
     prefs.auth_refresh_token = ""
-    prefs.auth_account_tier = ""
-    prefs.auth_stored_account_tier = ""
     prefs.auth_plan_code = ""
     prefs.auth_plan_name = ""
     prefs.auth_stored_plan_code = ""
     prefs.auth_stored_plan_name = ""
-    prefs.auth_contact_url = ""
-    prefs.auth_upgrade_url = ""
     prefs.auth_login_state = str(state or "logged_out")
     prefs.auth_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
 
 
-def _clear_auth_session_preserve_api_key(prefs=None, state="logged_out", status_message=""):
+def _clear_auth_session_preserve_device_id(prefs=None, state="logged_out", status_message=""):
     prefs = prefs or get_prefs()
     if prefs is None:
         return
-    api_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
-    api_key_input = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
-    api_key_mask = str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
     device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
     clear_auth_session(prefs=prefs, state=state, status_message=status_message)
-    if api_key:
-        prefs.auth_api_key = api_key
-    if api_key_input:
-        prefs.auth_api_key_input = api_key_input
-    if api_key_mask:
-        prefs.auth_api_key_mask = api_key_mask
     if device_id:
         prefs.auth_device_id = device_id
     _save_user_prefs()
     _tag_ui_redraw()
+
 
 
 def is_authenticated(prefs=None):
@@ -524,16 +482,6 @@ def get_connected_email(prefs=None):
     return str(getattr(prefs, "auth_email", "") or "").strip()
 
 
-def get_api_key_request_url():
-    return DEFAULT_API_KEY_REQUEST_URL
-
-
-def get_api_key_mask(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
-
 
 def _raise_tier_integrity_violation(prefs, reason, details=None):
     payload = {"reason": str(reason or "tier_integrity_violation").strip() or "tier_integrity_violation"}
@@ -541,13 +489,13 @@ def _raise_tier_integrity_violation(prefs, reason, details=None):
         payload.update(details)
     logger.error("Planetka: licence integrity violation: %s", payload)
     try:
-        _clear_auth_session_preserve_api_key(
+        _clear_auth_session_preserve_device_id(
             prefs=prefs,
             state="tier_integrity_error",
             status_message=TIER_INTEGRITY_STATUS_MESSAGE,
         )
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed preserving API key while handling tier integrity violation", exc_info=True)
+        logger.debug("Planetka: failed preserving device id while handling licence integrity violation", exc_info=True)
         clear_auth_session(
             prefs=prefs,
             state="tier_integrity_error",
@@ -563,10 +511,8 @@ def _require_valid_authenticated_tier(prefs=None, context="runtime"):
 
 def _normalize_account_plan_code(value):
     token = str(value or "").strip().lower()
-    if token in {"commercial", "paid", "unlimited"}:
+    if token in {"commercial", "paid", "unlimited", "personal", ""}:
         return "commercial"
-    if token in {"personal", ""}:
-        return "personal"
     return token
 
 
@@ -597,49 +543,43 @@ def _apply_account_plan_fields(prefs, payload):
     if prefs is None or not isinstance(payload, dict):
         return
     plan_code = _normalize_account_plan_code(
-        _first_plan_code_from_payload(payload, "plan_code", "plan", "user_status", "account_tier")
+        _first_plan_code_from_payload(payload, "plan_code", "plan", "user_status")
     )
     stored_plan_code = _normalize_account_plan_code(
-        _first_plan_code_from_payload(payload, "stored_plan_code", "storedPlanCode", "stored_account_tier")
-        or plan_code
-    )
-    account_tier = _normalize_account_plan_code(
-        _first_plan_code_from_payload(payload, "account_tier", "accountTier")
+        _first_plan_code_from_payload(payload, "stored_plan_code", "storedPlanCode")
         or plan_code
     )
     prefs.auth_plan_code = plan_code
     prefs.auth_plan_name = _account_plan_name(plan_code)
     prefs.auth_stored_plan_code = stored_plan_code
     prefs.auth_stored_plan_name = _account_plan_name(stored_plan_code)
-    prefs.auth_stored_account_tier = stored_plan_code
-    prefs.auth_account_tier = account_tier
 
 
-def get_account_tier(prefs=None):
+def get_licence_code(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
     return _normalize_account_plan_code(
-        getattr(prefs, "auth_account_tier", "")
-        or getattr(prefs, "auth_plan_code", "")
+        getattr(prefs, "auth_plan_code", "")
         or getattr(prefs, "auth_stored_plan_code", "")
     )
 
 
-def get_account_plan_name(prefs=None):
+def get_licence_name(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
-    return str(getattr(prefs, "auth_plan_name", "") or _account_plan_name(get_account_tier(prefs))).strip()
+    return str(getattr(prefs, "auth_plan_name", "") or _account_plan_name(get_licence_code(prefs))).strip()
 
 
 def is_commercial_licence(prefs=None):
-    return get_account_tier(prefs) == "commercial"
+    del prefs
+    return True
 
 
-def account_access_summary(prefs=None):
-    tier = get_account_tier(prefs)
-    if tier == "commercial":
+def licence_access_summary(prefs=None):
+    licence_code = get_licence_code(prefs)
+    if licence_code == "commercial":
         return "Commercial licence: all Planetka features for commercial and personal use."
     return "Personal licence: all Planetka features for personal use only."
 
@@ -673,29 +613,6 @@ def allows_full_quality_for_context(prefs=None, source=None):
 def allows_animation_render_for_context(prefs=None, source=None, requested_mode=None):
     del prefs, source, requested_mode
     return True
-
-
-def get_upgrade_url(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return DEFAULT_UPGRADE_URL
-    value = str(getattr(prefs, "auth_upgrade_url", "") or "").strip()
-    return value or DEFAULT_UPGRADE_URL
-
-
-def get_contact_url(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return DEFAULT_CONTACT_URL
-    value = str(getattr(prefs, "auth_contact_url", "") or "").strip()
-    return value or DEFAULT_CONTACT_URL
-def _mask_api_key(value):
-    token = str(value or "").strip()
-    if not token:
-        return ""
-    if len(token) <= 12:
-        return f"{token[:4]}***"
-    return f"{token[:8]}...{token[-4:]}"
 
 
 def _ensure_device_id(prefs=None):
@@ -808,100 +725,12 @@ def _read_local_addon_version():
     return version_text
 
 
-def connect_with_api_key(api_key, prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-
-    token = str(api_key or "").strip()
-    if not token:
-        raise AuthApiError(400, "invalid_api_key")
-
-    device_id = _ensure_device_id(prefs)
-    payload = {
-        "api_key": token,
-        "device_id": device_id,
-        "device_name": _build_device_name(),
-    }
-    _status, response = _json_request("POST", "/auth/api-key/exchange", payload)
-    _apply_auth_payload(prefs, response, login_state="authenticated")
-    prefs.auth_api_key = token
-    prefs.auth_api_key_input = token
-    prefs.auth_api_key_mask = _mask_api_key(token)
-    _save_user_prefs()
-    _tag_ui_redraw()
-    return response
-
-
-def connect_anonymous(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-
-    device_id = _ensure_device_id(prefs)
-    payload = {
-        "device_id": device_id,
-        "device_name": _build_device_name(),
-        "addon_version": _read_local_addon_version(),
-    }
-    headers = {}
-    if device_id:
-        headers["X-Planetka-Device-Id"] = device_id
-    _status, response = _json_request("POST", "/auth/anonymous", payload, headers=headers, timeout=15)
-    _apply_auth_payload(prefs, response, login_state="authenticated")
-    prefs.auth_api_key = ""
-    prefs.auth_api_key_input = ""
-    prefs.auth_api_key_mask = ""
-    _save_user_prefs()
-    _tag_ui_redraw()
-    return response
-
-
-def ensure_authenticated_session(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if is_authenticated(prefs):
-        return True
-    connect_anonymous(prefs)
-    return True
-
-
-def _reauth_with_api_key(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    api_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
-    if not api_key:
-        raise AuthApiError(401, "missing_api_key")
-    return connect_with_api_key(api_key, prefs=prefs)
-
-
-def connect_with_prefs_api_key(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    entered = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
-    if not entered:
-        entered = str(getattr(prefs, "auth_api_key", "") or "").strip()
-    if not entered:
-        raise AuthApiError(400, "invalid_api_key")
-    return connect_with_api_key(entered, prefs=prefs)
-
 
 def _apply_auth_payload(prefs, payload, login_state="authenticated", status_message=""):
     prefs.auth_email = str(payload.get("email", "") or "").strip()
     prefs.auth_access_token = str(payload.get("access_token", "") or "").strip()
     prefs.auth_refresh_token = str(payload.get("refresh_token", "") or "").strip()
-    api_key_mask = str(payload.get("api_key_mask", "") or "").strip()
-    if api_key_mask:
-        prefs.auth_api_key_mask = api_key_mask
     _apply_account_plan_fields(prefs, payload)
-    prefs.auth_contact_url = _first_non_empty(
-        payload.get("contact_url"),
-        payload.get("support_url"),
-    )
-    prefs.auth_upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     prefs.auth_login_state = str(login_state or "authenticated")
     prefs.auth_status_message = str(status_message or "")
     _require_valid_authenticated_tier(prefs, context="auth_payload")
@@ -918,17 +747,41 @@ def _apply_account_profile_fields(prefs, payload):
 
     _apply_account_plan_fields(prefs, payload)
 
-    contact_url = _first_non_empty(
-        payload.get("contact_url"),
-        payload.get("support_url"),
-    )
-    if contact_url:
-        prefs.auth_contact_url = contact_url
-
-    upgrade_url = _first_non_empty(payload.get("upgrade_url"))
-    if upgrade_url:
-        prefs.auth_upgrade_url = upgrade_url
     _require_valid_authenticated_tier(prefs, context="account_profile")
+
+
+def connect_anonymous(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+
+    device_id = _ensure_device_id(prefs)
+    headers = {}
+    if device_id:
+        headers["X-Planetka-Device-Id"] = device_id
+    _status, payload = _json_request(
+        "POST",
+        "/auth/anonymous",
+        {
+            "device_id": device_id,
+            "device_name": _build_device_name(),
+            "addon_version": _read_local_addon_version(),
+        },
+        headers=headers,
+        timeout=15,
+    )
+    _apply_auth_payload(prefs, payload, login_state="authenticated")
+    return payload
+
+
+def ensure_authenticated_session(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+    if is_authenticated(prefs):
+        return True
+    connect_anonymous(prefs)
+    return True
 
 
 def sync_account_profile(prefs=None):
@@ -950,49 +803,6 @@ def sync_account_profile(prefs=None):
     return True
 
 
-def create_commercial_licence_checkout(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, payload = _json_request("POST", "/billing/lemonsqueezy/checkout", {}, headers=headers, timeout=30)
-    if not isinstance(payload, dict) or not payload.get("ok"):
-        raise AuthApiError(_status or 0, payload.get("error") if isinstance(payload, dict) else "checkout_create_failed", payload=payload)
-    if payload.get("already_commercial"):
-        _apply_account_profile_fields(prefs, payload)
-        _save_user_prefs()
-        _tag_ui_redraw()
-        return {"already_commercial": True, "checkout_url": ""}
-    checkout_url = str(payload.get("checkout_url", "") or "").strip()
-    if not checkout_url:
-        raise AuthApiError(_status or 0, "checkout_url_missing", payload=payload)
-    return payload
-
-
-def restore_commercial_licence_with_license_key(license_key, prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-    if not is_authenticated(prefs):
-        ensure_authenticated_session(prefs)
-    token = str(license_key or "").strip()
-    if not token:
-        raise AuthApiError(400, "missing_license_key")
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, payload = _json_request(
-        "POST",
-        "/billing/lemonsqueezy/restore",
-        {"license_key": token},
-        headers=headers,
-        timeout=30,
-    )
-    if not isinstance(payload, dict) or not payload.get("ok"):
-        raise AuthApiError(_status or 0, payload.get("error") if isinstance(payload, dict) else "commercial_restore_failed", payload=payload)
-    sync_account_profile(prefs)
-    return payload
-
 
 def refresh_auth_session(prefs=None):
     prefs = prefs or get_prefs()
@@ -1001,32 +811,8 @@ def refresh_auth_session(prefs=None):
 
     refresh_token = str(getattr(prefs, "auth_refresh_token", "") or "").strip()
     if not refresh_token:
-        if not str(getattr(prefs, "auth_api_key", "") or "").strip():
-            connect_anonymous(prefs)
-            return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        try:
-            _reauth_with_api_key(prefs)
-            return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        except AuthApiError as reauth_error:
-            if is_terminal_auth_error(reauth_error):
-                _report_critical_disconnect(
-                    prefs,
-                    "refresh_auth_session_missing_refresh_token_reauth_failed",
-                    primary_error=reauth_error,
-                )
-                _clear_auth_session_preserve_api_key(
-                    prefs,
-                    state="logged_out",
-                    status_message=_critical_disconnect_status_message(reauth_error),
-                )
-            else:
-                logger.warning(
-                    "Planetka: transient auth reauth failure while refresh token missing; preserving local session "
-                    "(error=%s status=%s).",
-                    _auth_error_code(reauth_error),
-                    int(getattr(reauth_error, "status", 0) or 0),
-                )
-            raise reauth_error
+        connect_anonymous(prefs)
+        return str(getattr(prefs, "auth_access_token", "") or "").strip()
 
     _status = None
     payload = None
@@ -1045,36 +831,27 @@ def refresh_auth_session(prefs=None):
             headers=headers,
         )
     except AuthApiError as refresh_error:
-        if not str(getattr(prefs, "auth_api_key", "") or "").strip():
-            try:
-                connect_anonymous(prefs)
-                return str(getattr(prefs, "auth_access_token", "") or "").strip()
-            except AuthApiError:
-                raise refresh_error
         try:
-            _reauth_with_api_key(prefs)
+            connect_anonymous(prefs)
             return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        except AuthApiError as reauth_error:
-            if is_terminal_auth_error(refresh_error) or is_terminal_auth_error(reauth_error):
+        except AuthApiError:
+            if is_terminal_auth_error(refresh_error):
                 _report_critical_disconnect(
                     prefs,
-                    "refresh_auth_session_refresh_and_reauth_failed",
+                    "refresh_auth_session_refresh_failed",
                     primary_error=refresh_error,
-                    secondary_error=reauth_error,
                 )
-                _clear_auth_session_preserve_api_key(
+                _clear_auth_session_preserve_device_id(
                     prefs,
                     state="logged_out",
-                    status_message=_critical_disconnect_status_message(refresh_error, reauth_error),
+                    status_message=_critical_disconnect_status_message(refresh_error),
                 )
             else:
                 logger.warning(
                     "Planetka: transient auth refresh failure; preserving local session "
-                    "(refresh_error=%s refresh_status=%s reauth_error=%s reauth_status=%s).",
+                    "(refresh_error=%s refresh_status=%s).",
                     _auth_error_code(refresh_error),
                     int(getattr(refresh_error, "status", 0) or 0),
-                    _auth_error_code(reauth_error),
-                    int(getattr(reauth_error, "status", 0) or 0),
                 )
             raise refresh_error
 
@@ -1095,17 +872,8 @@ def get_access_token(prefs=None, allow_refresh=True):
     if access_token and not allow_refresh:
         return access_token
     if not str(getattr(prefs, "auth_refresh_token", "") or "").strip():
-        if not str(getattr(prefs, "auth_api_key", "") or "").strip():
-            connect_anonymous(prefs)
-            return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        try:
-            _reauth_with_api_key(prefs)
-            return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        except AuthApiError as exc:
-            if is_terminal_auth_error(exc):
-                recover_from_terminal_auth_error(exc, prefs=prefs, source="get_access_token_reauth_failed")
-                return ""
-            return access_token
+        connect_anonymous(prefs)
+        return str(getattr(prefs, "auth_access_token", "") or "").strip()
     return refresh_auth_session(prefs)
 
 

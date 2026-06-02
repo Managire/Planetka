@@ -165,88 +165,6 @@ export async function handleAdminAnalyticsTileMapImage(request, env, deps) {
   return new Response(object.body, { status: 200, headers });
 }
 
-export async function handleAdminSetPricingSettings(request, env, deps) {
-  const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  if (String(request.method || "GET").trim().toUpperCase() !== "POST") {
-    return deps.json({ ok: false, error: "method_not_allowed" }, 405, env);
-  }
-  return deps.json(
-    {
-      ok: false,
-      error: "pricing_settings_removed",
-      message: "Planetka now uses fixed Personal and Commercial licences. Legacy pricing controls have been removed.",
-    },
-    410,
-    env,
-  );
-}
-
-export async function handleAdminSetProductDiscount(request, env, deps) {
-  const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  if (String(request.method || "GET").trim().toUpperCase() !== "POST") {
-    return deps.json({ ok: false, error: "method_not_allowed" }, 405, env);
-  }
-  return deps.json(
-    {
-      ok: false,
-      error: "product_discount_removed",
-      message: "Product discounts are not used by the Personal/Commercial licence model.",
-    },
-    410,
-    env,
-  );
-}
-
-export async function handleAdminAnalyticsProductsPage(request, env, deps) {
-  const url = new URL(request.url);
-  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
-    return deps.json({ ok: false, error: "query_token_not_allowed" }, 400, env);
-  }
-  const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { user } = auth;
-  const htmlContent = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Planetka Analytics - Licence Pricing</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 20px; background: #0b1020; color: #e5e7eb; }
-    h1 { margin: 0 0 8px; font-size: 24px; }
-    .muted { color: #9ca3af; font-size: 13px; }
-    .controls { display:flex; gap:10px; align-items:center; flex-wrap: wrap; margin: 8px 0 16px; }
-    .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:14px; margin: 12px 0; }
-    a { color:#93c5fd; text-decoration:none; }
-    a:hover { text-decoration:underline; }
-  </style>
-</head>
-<body>
-  <h1>Licence Pricing</h1>
-  <div class="muted">Signed in as ${deps.escapeHtml(String(user.email || ""))}.</div>
-  <div class="controls">
-    <a href="/admin/analytics">Back to analytics</a>
-    <a href="/admin/analytics/users">All users</a>
-    <a href="/admin/session/logout" style="color:#fca5a5;">Sign Out</a>
-  </div>
-  <section class="card">
-    <h2 style="margin:0 0 10px;">Planetka Commercial Licence</h2>
-    <p>Commercial licence. Commercial includes all quality levels, commercial licence, final animation rendering, panoramic camera support, and standalone export.</p>
-    <p class="muted">Only fixed Personal and Commercial licences are active. Legacy data-pack and coefficient pricing controls are disabled.</p>
-  </section>
-</body>
-</html>`;
-  return deps.html(htmlContent, 200, env);
-}
-
 export async function handleAdminAnalyticsPage(request, env, deps) {
   const url = new URL(request.url);
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
@@ -464,7 +382,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   <div class="muted">Signed in as ${deps.escapeHtml(String(user.email || ""))}</div>
   <div class="controls">
     <a href="/admin/analytics" style="color:#93c5fd; text-decoration:none;">Back to analytics</a>
-    <a href="/admin/analytics/products" style="color:#93c5fd; text-decoration:none;">Licence pricing</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
   <form class="controls" method="GET" action="/admin/analytics/users">

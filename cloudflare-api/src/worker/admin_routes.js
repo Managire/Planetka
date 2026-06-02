@@ -5,12 +5,9 @@ export function isAdminRoutePath(path) {
 export async function dispatchAdminRoute(request, env, path, deps) {
   const {
     handleAdminAnalyticsPage,
-    handleAdminAnalyticsProductsPage,
     handleAdminAnalyticsUsersPage,
     handleAdminAnalyticsData,
     handleAdminAnalyticsTileMapImage,
-    handleAdminSetPricingSettings,
-    handleAdminSetProductDiscount,
     handleAdminLoginPage,
     handleAdminPasswordLogin,
     handleAdminSessionStartPage,
@@ -32,11 +29,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/analytics/users":
       if (request.method === "GET") {
         return await handleAdminAnalyticsUsersPage(request, env);
-      }
-      return null;
-    case "/admin/analytics/products":
-      if (request.method === "GET") {
-        return await handleAdminAnalyticsProductsPage(request, env);
       }
       return null;
     case "/admin/analytics/data":
@@ -68,16 +60,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/session/logout":
       if (request.method === "GET") {
         return await handleAdminSessionLogout(request, env);
-      }
-      return null;
-    case "/admin/settings/pricing":
-      if (request.method === "POST") {
-        return await handleAdminSetPricingSettings(request, env);
-      }
-      return null;
-    case "/admin/settings/product-discount":
-      if (request.method === "POST") {
-        return await handleAdminSetProductDiscount(request, env);
       }
       return null;
     case "/admin/users/block":

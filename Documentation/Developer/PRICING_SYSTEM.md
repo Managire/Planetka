@@ -15,8 +15,8 @@ The add-on does not use scene-specific purchases, animation purchases, square-ki
 
 ## Access Control
 
-Recommended production access model:
+Current production access model:
 
-- users activate Planetka through a Planetka-controlled licence/API flow;
+- users connect to Planetka Cloud through automatic anonymous install/session tokens;
 - payment providers and marketplaces only prove purchase;
-- Planetka remains the source of truth for licence state, abuse control, revocation, device/session protection, and support.
+- Planetka remains the source of truth for hosted-data access policy, abuse control, revocation, device/session protection, and support.

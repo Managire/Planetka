@@ -203,9 +203,7 @@ def _tick():
 
             prefs = extension_prefs.get_prefs()
             auth_payload_path = str(os.environ.get("PLANETKA_AUTH_PAYLOAD") or "").strip()
-            api_key = str(os.environ.get("PLANETKA_API_KEY") or "").strip()
-            api_key_path = str(os.environ.get("PLANETKA_API_KEY_PATH") or "").strip()
-            STATE["auth"] = ensure_authenticated(auth, prefs, payload_path=auth_payload_path, api_key=api_key, api_key_path=api_key_path)
+            STATE["auth"] = ensure_authenticated(auth, prefs, payload_path=auth_payload_path)
 
             scene = bpy.context.scene
             props = getattr(scene, "planetka", None)

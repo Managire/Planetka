@@ -454,7 +454,7 @@ def _download_public_cloud_asset(folder, file_name, progress_label=""):
             headers.update(get_authorized_headers(allow_refresh=True))
         except Exception:
             # Preview/Balanced public cloud assets remain accessible without
-            # auth; Full d001 assets are rejected by the backend for Free.
+            # auth; requested cloud quality is authorized by the active Planetka session.
             pass
         request = urllib.request.Request(url, method="GET", headers=headers)
         with urllib.request.urlopen(request, timeout=120) as response, open(temp_path, "wb") as handle:

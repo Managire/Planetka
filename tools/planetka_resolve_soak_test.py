@@ -15,8 +15,7 @@ Optional env:
   PLANETKA_SOAK_CASES=1000
   PLANETKA_SOAK_SEED=20260328
   PLANETKA_SOAK_REPORT_DIR=/Volumes/SSDA/Renders
-  PLANETKA_API_KEY=<api-key>            # optional: authenticate via API key
-  PLANETKA_DEVICE_ID=<device-id>        # optional: force stable device id for this run
+    PLANETKA_DEVICE_ID=<device-id>        # optional: force stable device id for this run
   PLANETKA_EXPECTED_EMAIL=tom.griger@gmail.com
   PLANETKA_SOAK_RENDER=1                # render PNG after each resolve
   PLANETKA_SOAK_RENDER_MODE=dual        # dual|cycles|eevee
@@ -769,7 +768,6 @@ def main():
     render_prefix = str(os.environ.get("PLANETKA_SOAK_RENDER_PREFIX") or "planetka_soak_render").strip() or "planetka_soak_render"
     render_noise_threshold = float(os.environ.get("PLANETKA_SOAK_RENDER_NOISE_THRESHOLD") or "0.05")
     expected_email = str(os.environ.get("PLANETKA_EXPECTED_EMAIL") or EXPECTED_ADMIN_EMAIL).strip().lower()
-    forced_api_key = str(os.environ.get("PLANETKA_API_KEY") or "").strip()
     forced_device_id = str(os.environ.get("PLANETKA_DEVICE_ID") or "").strip()
     os.makedirs(report_dir, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -796,15 +794,14 @@ def main():
         _assert(prefs is not None, "Planetka preferences unavailable.")
         if forced_device_id:
             prefs.auth_device_id = forced_device_id
-        if forced_api_key:
-            auth_module.connect_with_api_key(forced_api_key, prefs=prefs)
-        _assert(auth_module.is_authenticated(prefs), "Account is not logged in.")
+        auth_module.ensure_authenticated_session(prefs)
+        _assert(auth_module.is_authenticated(prefs), "Planetka session is not active.")
         auth_module.sync_account_profile(prefs)
         user_email = str(auth_module.get_connected_email(prefs) or "").strip().lower()
         plan_code = str(getattr(prefs, "auth_plan_code", "") or "").strip().lower()
         if expected_email:
             _assert(user_email == expected_email, f"Logged-in account mismatch. expected={expected_email} got={user_email}")
-        _log(f"Authenticated account: email={user_email} plan={plan_code}")
+        _log(f"Planetka session: email={user_email} licence={plan_code}")
 
         scene = bpy.context.scene
         _ensure_active_camera(scene)

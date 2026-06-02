@@ -418,19 +418,15 @@ def main():
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
         # Streaming quality flow guardrails. This gate is hermetic/offline, so
-        # it validates the full texture path with a synthetic Pro entitlement
-        # instead of opening the paid-scene checkout.
+        # it validates the full texture path with a synthetic Commercial licence.
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before quality flow: {full_globe_result}")
         auth.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
         prefs.auth_access_token = "planetka_core_user_flow_gate_token"
-        prefs.auth_account_tier = "pro"
-        prefs.auth_plan_code = "pro"
-        prefs.auth_plan_name = "Pro"
-        prefs.auth_stored_plan_code = "pro"
-        prefs.auth_stored_plan_name = "Pro"
-        prefs.auth_stored_account_tier = "pro"
-        auth.is_pro_account = lambda prefs=None: True
+        prefs.auth_plan_code = "commercial"
+        prefs.auth_plan_name = "Commercial"
+        prefs.auth_stored_plan_code = "commercial"
+        prefs.auth_stored_plan_name = "Commercial"
         auth.is_authenticated = lambda prefs=None: True
         operators_module.is_authenticated = lambda prefs=None: True
         operators_module.allows_texture_quality_for_context = lambda prefs=None, requested_mode=None: True
