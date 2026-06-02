@@ -15,7 +15,7 @@ async function resolveTargetUser(db, body, deps) {
 }
 
 const DEFAULT_INTERNAL_QA_RESET_EMAILS = [
-  "personal@planetka.io",
+  "qa@planetka.io",
   "tom.griger@gmail.com",
 ].join(",");
 
@@ -34,20 +34,20 @@ function isAllowedQaResetEmail(email, env, deps) {
   return parseQaResetEmailSet(env, deps).has(normalized);
 }
 
-function resolveQaResetPlanCode(email, requestedPlanCode, existingUser, deps) {
-  const explicitPlan = deps.normalizeRequestedPlan(requestedPlanCode || "");
-  if ([deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL].includes(explicitPlan)) {
-    return explicitPlan;
+function resolveQaResetAccessStatus(email, requestedAccessStatus, existingUser, deps) {
+  const explicitAccessStatus = deps.normalizeRequestedAccessStatus(requestedAccessStatus || "");
+  if (explicitAccessStatus) {
+    return explicitAccessStatus;
   }
   const normalizedEmail = deps.normalizeEmail(email || "");
   if (normalizedEmail === "tom.griger@gmail.com") {
-    return deps.PLAN_CODE_COMMERCIAL;
+    return deps.ACCESS_STATUS_ACTIVE;
   }
-  const existingPlan = deps.normalizeRequestedPlan(existingUser && existingUser.status || "");
-  if ([deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL].includes(existingPlan)) {
-    return existingPlan;
+  const existingAccessStatus = deps.normalizeRequestedAccessStatus(existingUser && existingUser.status || "");
+  if (existingAccessStatus) {
+    return existingAccessStatus;
   }
-  return deps.PLAN_CODE_COMMERCIAL;
+  return deps.ACCESS_STATUS_ACTIVE;
 }
 
 async function clearRateLimitBucket(db, scope, rawKey, deps) {
@@ -133,7 +133,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetStatus = deps.PLAN_CODE_COMMERCIAL;
+  const targetStatus = deps.ACCESS_STATUS_ACTIVE;
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetStatus, targetUserId]);
   const hardBlocksClearedResult = await deps.dbRun(
@@ -219,14 +219,14 @@ export async function handleAdminQaAuthReset(request, env, deps) {
   }
 
   const existingUser = await deps.findUserByEmail(db, targetEmail);
-  const targetPlan = resolveQaResetPlanCode(targetEmail, body && body.plan_code || "", existingUser, deps);
+  const targetAccessStatus = resolveQaResetAccessStatus(targetEmail, body && body.access_status || "", existingUser, deps);
   const now = deps.nowIso();
   let user = existingUser;
   if (!user) {
-    user = await deps.upsertUserByEmail(db, targetEmail, targetPlan, { signupSource: "admin_qa_reset" }, env);
+    user = await deps.upsertUserByEmail(db, targetEmail, targetAccessStatus, { signupSource: "admin_qa_reset" }, env);
   } else {
-    await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, String(user.id || "").trim()]);
-    user = { ...user, status: targetPlan };
+    await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetAccessStatus, String(user.id || "").trim()]);
+    user = { ...user, status: targetAccessStatus };
   }
 
   const userId = String(user && user.id || "").trim();
@@ -250,8 +250,8 @@ export async function handleAdminQaAuthReset(request, env, deps) {
     [userId, targetEmail, targetEmail],
   );
   const clearedRateLimits = await clearQaAuthRateLimits(db, request, deps);
-  console.log("admin.qa_auth_reset", JSON.stringify({ user_id: userId, user_email: targetEmail, plan_code: targetPlan, admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""), revoked_sessions: revokedSessions, cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult) }));
+  console.log("admin.qa_auth_reset", JSON.stringify({ user_id: userId, user_email: targetEmail, access_status: targetAccessStatus, admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""), revoked_sessions: revokedSessions, cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult) }));
   await invalidateAdminAnalyticsSnapshots(env, deps);
 
-  return deps.json({ ok: true, action: "qa_auth_reset", user_id: userId, user_email: targetEmail, plan_code: targetPlan, revoked_sessions: revokedSessions, cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult), cleared_rate_limits: clearedRateLimits, updated_at: now }, 200, env);
+  return deps.json({ ok: true, action: "qa_auth_reset", user_id: userId, user_email: targetEmail, access_status: targetAccessStatus, revoked_sessions: revokedSessions, cleared_hard_blocks: deps.dbMetaChanges(clearedHardBlocksResult), cleared_rate_limits: clearedRateLimits, updated_at: now }, 200, env);
 }

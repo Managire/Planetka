@@ -1,5 +1,5 @@
 export const ANALYTICS_SNAPSHOT_WINDOWS = [15, 60, 360, 1440, 10080];
-export const ANALYTICS_SNAPSHOT_PLAN_FILTERS = ["all"];
+export const ANALYTICS_SNAPSHOT_FILTERS = ["all"];
 export const ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS = [1, 3, 10];
 const SNAPSHOT_CACHE_CONTROL = "private, max-age=60";
 const DEFAULT_ANALYTICS_SNAPSHOT_MAX_AGE_SECONDS = 300;
@@ -10,10 +10,10 @@ function r2KeyWithPrefix(env, suffix) {
   return prefix ? `${prefix}/${safeSuffix}` : safeSuffix;
 }
 
-export function analyticsSnapshotKey(env, minutes, planFilter, tileMapMinutes) {
+export function analyticsSnapshotKey(env, minutes, access_statusFilter, tileMapMinutes) {
   return r2KeyWithPrefix(
     env,
-    `Admin/analytics_snapshots/m${minutes}_${String(planFilter || "all")}_tm${tileMapMinutes}.json`,
+    `Admin/analytics_snapshots/m${minutes}_${String(access_statusFilter || "all")}_tm${tileMapMinutes}.json`,
   );
 }
 
@@ -82,12 +82,12 @@ export function isAnalyticsSnapshotStale(snapshot, maxAgeSeconds = DEFAULT_ANALY
   return ageSeconds > safeMaxAge;
 }
 
-export async function loadAnalyticsSnapshot(env, minutes, planFilter, tileMapMinutes) {
-  return readJsonSnapshot(env, analyticsSnapshotKey(env, minutes, planFilter, tileMapMinutes));
+export async function loadAnalyticsSnapshot(env, minutes, access_statusFilter, tileMapMinutes) {
+  return readJsonSnapshot(env, analyticsSnapshotKey(env, minutes, access_statusFilter, tileMapMinutes));
 }
 
-export async function storeAnalyticsSnapshot(env, minutes, planFilter, tileMapMinutes, snapshot) {
-  await writeJsonSnapshot(env, analyticsSnapshotKey(env, minutes, planFilter, tileMapMinutes), snapshot);
+export async function storeAnalyticsSnapshot(env, minutes, access_statusFilter, tileMapMinutes, snapshot) {
+  await writeJsonSnapshot(env, analyticsSnapshotKey(env, minutes, access_statusFilter, tileMapMinutes), snapshot);
 }
 
 export async function loadAnalyticsUsersSnapshot(env) {
@@ -100,9 +100,9 @@ export async function storeAnalyticsUsersSnapshot(env, snapshot) {
 
 export async function invalidateAnalyticsSnapshots(env) {
   for (const minutes of ANALYTICS_SNAPSHOT_WINDOWS) {
-    for (const planFilter of ANALYTICS_SNAPSHOT_PLAN_FILTERS) {
+    for (const access_statusFilter of ANALYTICS_SNAPSHOT_FILTERS) {
       for (const tileMapMinutes of ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS) {
-        await deleteJsonSnapshot(env, analyticsSnapshotKey(env, minutes, planFilter, tileMapMinutes));
+        await deleteJsonSnapshot(env, analyticsSnapshotKey(env, minutes, access_statusFilter, tileMapMinutes));
       }
     }
   }
@@ -116,27 +116,27 @@ export async function buildAnalyticsSnapshotMatrix(db, env, deps) {
   let failed = 0;
   const failures = [];
   for (const minutes of ANALYTICS_SNAPSHOT_WINDOWS) {
-    for (const planFilter of ANALYTICS_SNAPSHOT_PLAN_FILTERS) {
+    for (const access_statusFilter of ANALYTICS_SNAPSHOT_FILTERS) {
       for (const tileMapMinutes of ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS) {
         attempted += 1;
         try {
           const snapshot = await deps.collectAnalyticsSnapshot(
             db,
             minutes,
-            planFilter,
+            access_statusFilter,
             tileMapMinutes,
             env,
           );
           await storeAnalyticsSnapshot(
             env,
             minutes,
-            planFilter,
+            access_statusFilter,
             tileMapMinutes,
             {
               ...snapshot,
               generated_at: String(snapshot && snapshot.generated_at || generatedAt),
               snapshot_minutes: minutes,
-              snapshot_plan_filter: planFilter,
+              snapshot_access_status_filter: access_statusFilter,
               snapshot_tile_map_minutes: tileMapMinutes,
               snapshot_source: "scheduled_snapshot",
             },
@@ -146,7 +146,7 @@ export async function buildAnalyticsSnapshotMatrix(db, env, deps) {
           failed += 1;
           const failure = {
             minutes,
-            plan_filter: planFilter,
+            access_status_filter: access_statusFilter,
             tile_map_minutes: tileMapMinutes,
             error: String(error && error.message || "analytics_snapshot_failed"),
           };

@@ -8,18 +8,17 @@ import {
   parseNonNegativeInteger,
 } from "./worker/env.js";
 import {
-  PLAN_CODE_PERSONAL,
-  PLAN_CODE_COMMERCIAL,
-  defaultSignupPlanCode,
+  ACCESS_STATUS_ACTIVE,
+  defaultSignupAccessStatus,
   isBlockedStatus,
-  isQualityModeAllowedForPlan,
-  normalizePlanCode,
+  isQualityModeAllowedForAccess,
+  normalizeAccessStatus,
   normalizeQualityMode,
-  normalizeRequestedPlan,
+  normalizeRequestedAccessStatus,
   parseCsvEmailSet,
   qualityModeNotAllowedMessage,
-  resolvePlanCode,
-  resolvePolicyPlanCode,
+  resolveAccessStatus,
+  resolvePolicyAccessStatus,
 } from "./worker/entitlements.js";
 import {
   createAuthCore,
@@ -55,7 +54,7 @@ import {
   listAnalyticsUsers as listAnalyticsUsersQuery,
   parseAnalyticsUsersSort as parseAnalyticsUsersSortQuery,
   parseAnalyticsUsersSortDirection as parseAnalyticsUsersSortDirectionQuery,
-  parseHeavyUserPlanFilter as parseHeavyUserPlanFilterQuery,
+  parseHeavyUserAccessStatusFilter as parseHeavyUserAccessStatusFilterQuery,
   sanitizeAnalyticsMinutes as sanitizeAnalyticsMinutesQuery,
   sanitizeLiveTileMapMinutes as sanitizeLiveTileMapMinutesQuery,
 } from "./worker/admin_analytics_queries.js";
@@ -145,7 +144,7 @@ const DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY = "planetka-assets/Admin/suppor
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 
-const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({});
+const FIXED_INTERNAL_ACCESS_STATUS_BY_EMAIL = Object.freeze({});
 
 let rateLimitsTableReady = false;
 let adminHardBlocksTableReady = false;
@@ -390,13 +389,13 @@ function normalizeDeviceId(value) {
   return raw.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128);
 }
 
-function normalizeTierCodeStrict(value) {
-  const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_PERSONAL) {
-    return PLAN_CODE_PERSONAL;
+function normalizeAccessStatusStrict(value) {
+  const normalized = normalizeAccessStatus(value);
+  if (normalized === ACCESS_STATUS_ACTIVE) {
+    return ACCESS_STATUS_ACTIVE;
   }
-  if (normalized === PLAN_CODE_COMMERCIAL) {
-    return PLAN_CODE_COMMERCIAL;
+  if (normalized === "blocked") {
+    return "blocked";
   }
   return "";
 }
@@ -726,16 +725,16 @@ async function ensureRefreshSessionColumns(db) {
   refreshSessionColumnsReady = true;
 }
 
-function fixedInternalPlanForEmail(email) {
-  return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizeEmail(email)] || "";
+function fixedInternalAccessStatusForEmail(email) {
+  return FIXED_INTERNAL_ACCESS_STATUS_BY_EMAIL[normalizeEmail(email)] || "";
 }
 
-function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_COMMERCIAL) {
-  const fixedPlan = fixedInternalPlanForEmail(email);
-  if (fixedPlan) {
-    return fixedPlan;
+function resolveFixedInternalAccessStatusForEmail(email, requestedAccessStatus = ACCESS_STATUS_ACTIVE) {
+  const fixedAccessStatus = fixedInternalAccessStatusForEmail(email);
+  if (fixedAccessStatus) {
+    return fixedAccessStatus;
   }
-  return normalizeTierCodeStrict(requestedPlan);
+  return normalizeAccessStatusStrict(requestedAccessStatus);
 }
 
 async function findUserByEmail(db, email) {
@@ -797,18 +796,18 @@ async function sendNewUserLoginAlert(env, details = {}) {
   }
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_COMMERCIAL, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = ACCESS_STATUS_ACTIVE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
-  const requestedStatus = resolveFixedInternalPlanForEmail(normalizedEmail, status);
+  const requestedStatus = resolveFixedInternalAccessStatusForEmail(normalizedEmail, status);
   if (!requestedStatus) {
-    throw new Error("invalid_plan_code");
+    throw new Error("invalid_access_status_code");
   }
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
-    if (!isBlockedStatus(currentStatus) && !normalizeTierCodeStrict(currentStatus)) {
+    if (!isBlockedStatus(currentStatus) && !normalizeAccessStatusStrict(currentStatus)) {
       throw new Error("invalid_user_status");
     }
     const termsAcceptedAt = String(options.termsAcceptedAt || "").trim();
@@ -855,7 +854,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_COMMERCIAL, optio
       await sendNewUserLoginAlert(env, {
         email: normalizedEmail,
         source: String(options.signupSource || options.source || "unknown").trim() || "unknown",
-        planCode: requestedStatus,
+        accessStatus: requestedStatus,
         createdAt,
       });
     } catch (error) {
@@ -865,13 +864,13 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_COMMERCIAL, optio
   return findUserByEmail(db, normalizedEmail);
 }
 
-async function enforceUserPlanPolicy(db, user, env = {}) {
+async function enforceUserAccessStatusPolicy(db, user, env = {}) {
   void db;
   void env;
   if (!user || !user.id || isBlockedStatus(user.status)) {
     return user;
   }
-  const currentStatus = normalizeTierCodeStrict(user.status);
+  const currentStatus = normalizeAccessStatusStrict(user.status);
   if (!currentStatus) {
     throw new Error("invalid_user_status");
   }
@@ -881,14 +880,14 @@ async function enforceUserPlanPolicy(db, user, env = {}) {
 async function resolveUserQualityAccessState(db, user, env = {}) {
   void db;
   void env;
-  const storedPlanCode = normalizeTierCodeStrict(user && user.status);
+  const storedAccessStatus = normalizeAccessStatusStrict(user && user.status);
   if (!user || !user.id) {
-    return { storedPlanCode: PLAN_CODE_COMMERCIAL, qualityAccessPlanCode: PLAN_CODE_COMMERCIAL };
+    return { storedAccessStatus: ACCESS_STATUS_ACTIVE, qualityAccessStatus: ACCESS_STATUS_ACTIVE };
   }
-  if (!storedPlanCode && !isBlockedStatus(user && user.status)) {
+  if (!storedAccessStatus && !isBlockedStatus(user && user.status)) {
     throw new Error("invalid_user_status");
   }
-  return { storedPlanCode: storedPlanCode || "", qualityAccessPlanCode: storedPlanCode || "" };
+  return { storedAccessStatus: storedAccessStatus || "", qualityAccessStatus: storedAccessStatus || "" };
 }
 
 function getPreviewFairUsageHoldForUserFromRow(user) {
@@ -914,28 +913,28 @@ function getPreviewFairUsageHoldForUserFromRow(user) {
 
 async function buildAccountState(db, user, env) {
   const qualityAccess = await resolveUserQualityAccessState(db, user, env);
-  const storedPlanCode = normalizeTierCodeStrict(qualityAccess.storedPlanCode);
-  if (!storedPlanCode) {
+  const storedAccessStatus = normalizeAccessStatusStrict(qualityAccess.storedAccessStatus);
+  if (!storedAccessStatus) {
     throw new Error("invalid_user_status");
   }
   return {
-    planCode: storedPlanCode,
-    storedPlanCode,
-    qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
+    accessStatus: storedAccessStatus,
+    storedAccessStatus,
+    qualityAccessStatus: qualityAccess.qualityAccessStatus,
     previewFairUsageHold: getPreviewFairUsageHoldForUserFromRow(user),
   };
 }
 
 function serializeAccountState(state) {
   const safeState = state || {};
-  const planCode = normalizeTierCodeStrict(safeState.planCode);
-  const storedPlanCode = normalizeTierCodeStrict(safeState.storedPlanCode);
-  const qualityAccessPlanCode = normalizeTierCodeStrict(safeState.qualityAccessPlanCode);
+  const accessStatus = normalizeAccessStatusStrict(safeState.accessStatus);
+  const storedAccessStatus = normalizeAccessStatusStrict(safeState.storedAccessStatus);
+  const qualityAccessStatus = normalizeAccessStatusStrict(safeState.qualityAccessStatus);
   return {
-    plan: { code: planCode || "" },
-    plan_code: planCode || "",
-    stored_plan_code: storedPlanCode || "",
-    quality_access_plan_code: qualityAccessPlanCode || "",
+    access_status: { code: accessStatus || "" },
+    access_status_code: accessStatus || "",
+    stored_access_status_code: storedAccessStatus || "",
+    quality_access_status_code: qualityAccessStatus || "",
     preview_fair_usage_hold: safeState.previewFairUsageHold || { held: false },
     previewFairUsageHold: safeState.previewFairUsageHold || { held: false },
   };
@@ -1067,11 +1066,11 @@ const authSessionDepsBase = {
   verifyJwt,
   requireSecret,
   normalizeDeviceId,
-  normalizeTierCodeStrict,
+  normalizeAccessStatusStrict,
   findUserById,
   isBlockedStatus,
   blockedAccountResponse,
-  enforceUserPlanPolicy,
+  enforceUserAccessStatusPolicy,
   resolveUserQualityAccessState,
   isAnalyticsAdmin,
   isPrimaryAnalyticsAdmin,
@@ -1082,15 +1081,15 @@ const readBearerUser = (request, env) => readBearerUserRoute(request, env, authS
 const requireAuthenticatedUserContext = (request, env, options = {}) => requireAuthenticatedUserContextRoute(request, env, options, authSessionDeps);
 
 const authCoreDeps = {
-  PLAN_CODE_PERSONAL,
+  ACCESS_STATUS_ACTIVE,
   DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
   requireSecret,
   dbAll,
   dbGet,
   dbRun,
   ensureRefreshSessionColumns,
-  normalizeRequestedPlan,
-  resolvePolicyPlanCode,
+  normalizeRequestedAccessStatus,
+  resolvePolicyAccessStatus,
   normalizeDeviceId,
   parseRateLimitInteger,
   requestClientIp,
@@ -1103,7 +1102,7 @@ const authCoreDeps = {
   signJwt,
   verifyJwt,
   normalizeQualityMode,
-  isQualityModeAllowedForPlan,
+  isQualityModeAllowedForAccess,
   qualityModeNotAllowedMessage,
   json,
   authContextCacheGet,
@@ -1134,8 +1133,8 @@ const authSessionRouteDeps = {
   dbMetaChanges,
   isBlockedStatus,
   blockedAccountResponse,
-  normalizeTierCodeStrict,
-  enforceUserPlanPolicy,
+  normalizeAccessStatusStrict,
+  enforceUserAccessStatusPolicy,
   nowIso,
   buildAccountState,
   createAccessToken: authCore.createAccessToken,
@@ -1477,8 +1476,7 @@ const ANALYTICS_QUERY_DEPS = {
   DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
   INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
   MAX_ANALYTICS_WINDOW_MINUTES,
-  PLAN_CODE_PERSONAL,
-  PLAN_CODE_COMMERCIAL,
+  ACCESS_STATUS_ACTIVE,
   clampNonNegativeInt,
   countRowsFromQuery,
   dbAll,
@@ -1492,7 +1490,7 @@ const ANALYTICS_QUERY_DEPS = {
   monthStartIso,
   monthStartUnix,
   normalizeEmail,
-  normalizePlanCode,
+  normalizeAccessStatus,
   nowIso,
   parseNonNegativeInteger,
   publicErrorMessage: () => "Analytics data is temporarily unavailable.",
@@ -1512,8 +1510,8 @@ const requireAnalyticsAdmin = (request, env) => requireAnalyticsAdminRoute(reque
 const ADMIN_ANALYTICS_DEPS = {
   buildAdminSessionCookie,
   buildAnalyticsUsersSnapshot: (db, env) => buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS),
-  collectAnalyticsSnapshot: (db, minutes, planFilter, liveTileMapWindowMinutes, env) =>
-    collectAnalyticsSnapshotQuery(db, minutes, planFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
+  collectAnalyticsSnapshot: (db, minutes, access_statusFilter, liveTileMapWindowMinutes, env) =>
+    collectAnalyticsSnapshotQuery(db, minutes, access_statusFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
   DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY,
   DEFAULT_ANALYTICS_WINDOW_MINUTES,
   DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
@@ -1524,13 +1522,13 @@ const ADMIN_ANALYTICS_DEPS = {
   listAnalyticsUsers: (db, env, options = {}) => listAnalyticsUsersQuery(db, env, options, ANALYTICS_QUERY_DEPS),
   loadAnalyticsSnapshot,
   loadAnalyticsUsersSnapshot,
-  normalizePlanCode,
+  normalizeAccessStatus,
   nowIso,
   parseAnalyticsUsersSort: (value) => parseAnalyticsUsersSortQuery(value),
   parseAnalyticsUsersSortDirection: (value) => parseAnalyticsUsersSortDirectionQuery(value),
-  parseHeavyUserPlanFilter: (value) => parseHeavyUserPlanFilterQuery(value, ANALYTICS_QUERY_DEPS),
+  parseHeavyUserAccessStatusFilter: (value) => parseHeavyUserAccessStatusFilterQuery(value, ANALYTICS_QUERY_DEPS),
   parseNonNegativeInteger,
-  PLAN_CODE_PERSONAL,
+  ACCESS_STATUS_ACTIVE,
   publicErrorMessage: (message) => message,
   requireAnalyticsAdmin,
   sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
@@ -1561,7 +1559,7 @@ const ADMIN_SESSION_DEPS = {
   buildAdminSessionCookie,
   createAccessToken: authCore.createAccessToken,
   DEFAULT_ADMIN_LOGIN_EMAIL,
-  enforceUserPlanPolicy,
+  enforceUserAccessStatusPolicy,
   ensureRateLimitsTable,
   isAnalyticsAdmin,
   json,
@@ -1570,8 +1568,7 @@ const ADMIN_SESSION_DEPS = {
   nowIso,
   parseJson,
   parseRateLimitInteger,
-  PLAN_CODE_PERSONAL,
-  PLAN_CODE_COMMERCIAL,
+  ACCESS_STATUS_ACTIVE,
   rateLimitedResponse,
   requestClientIp,
   requireAuthenticatedUserContext,
@@ -1600,15 +1597,14 @@ const ADMIN_USER_DEPS = {
   json,
   normalizeDeviceId,
   normalizeEmail,
-  normalizePlanCode,
-  normalizeRequestedPlan,
+  normalizeAccessStatus,
+  normalizeRequestedAccessStatus,
   nowIso,
   parseJson,
   parseCsvEmailSet,
   parseBooleanFlag,
   isBlockedStatus,
-  PLAN_CODE_PERSONAL,
-  PLAN_CODE_COMMERCIAL,
+  ACCESS_STATUS_ACTIVE,
   requestClientIp,
   requireDb,
   requireAnalyticsAdmin,

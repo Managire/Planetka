@@ -163,7 +163,7 @@ def _wait_for_queued_resolve(state_module, scene, *, timeout_sec=90.0, sleep_sec
                     "code": code,
                     "at_ms": _round_ms((now - started) * 1000.0),
                     "text": str(status.get("text", "") or ""),
-                    "pending_count": int(_numeric(status.get("pending_count"), 0)),
+                    "active_count": int(_numeric(status.get("active_count"), 0)),
                     "running": bool(status.get("running", False)),
                 })
             last_code = code
@@ -171,8 +171,8 @@ def _wait_for_queued_resolve(state_module, scene, *, timeout_sec=90.0, sleep_sec
             final_status = status
 
             running = bool(status.get("running", False))
-            pending_count = int(_numeric(status.get("pending_count"), 0))
-            if not running and pending_count <= 0 and code in {"", "IDLE", "MONITORING"}:
+            active_count = int(_numeric(status.get("active_count"), 0))
+            if not running and active_count <= 0 and code in {"", "IDLE", "MONITORING"}:
                 return {
                     "settled": True,
                     "elapsed_ms": _round_ms((now - started) * 1000.0),
@@ -270,13 +270,13 @@ def main():
             log(TAG, f"Profiling {mode}.")
             for iteration in range(ITERATIONS):
                 before = time.perf_counter()
-                result = bpy.ops.planetka.set_texture_quality_and_resolve(texture_quality_mode=mode)
+                result = bpy.ops.planetka.set_texture_quality(texture_quality_mode=mode)
                 enqueue_wall_ms = (time.perf_counter() - before) * 1000.0
                 if "FINISHED" not in result:
                     raise E2EError(f"{mode} resolve failed: {result}")
                 queued = _wait_for_queued_resolve(state, scene)
                 if not bool(queued.get("settled", False)):
-                    raise E2EError(f"{mode} queued resolve did not settle: {queued}")
+                    raise E2EError(f"{mode} resolve did not settle: {queued}")
                 runtime_status = dict(queued.get("final_status", {}) or {})
                 diag = _read_diag(diagnostics, scene)
                 record = {
@@ -284,8 +284,8 @@ def main():
                     "operator_result": list(result),
                     "wall_ms": _round_ms(float(queued.get("elapsed_ms", 0.0) or 0.0)),
                     "enqueue_wall_ms": _round_ms(enqueue_wall_ms),
-                    "queued_status_durations_ms": dict(queued.get("status_durations_ms", {}) or {}),
-                    "queued_status_sequence": list(queued.get("status_sequence", ()) or ()),
+                    "status_durations_ms": dict(queued.get("status_durations_ms", {}) or {}),
+                    "status_sequence": list(queued.get("status_sequence", ()) or ()),
                     "runtime_status": dict(runtime_status or {}),
                     **diag,
                 }
@@ -295,7 +295,7 @@ def main():
                     (
                         f"{mode} {iteration + 1}/{ITERATIONS}: "
                         f"enqueue={record['enqueue_wall_ms']:.1f}ms "
-                        f"queued={record['wall_ms']:.1f}ms "
+                        f"status_wait={record['wall_ms']:.1f}ms "
                         f"resolve={record['last_resolve_ms']:.1f}ms "
                         f"stream={record['resolve_stream_ms']:.1f}ms "
                         f"mesh={record['resolve_mesh_ms']:.1f}ms "

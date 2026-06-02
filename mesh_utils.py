@@ -983,7 +983,7 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
         if existing_cull:
             temp.modifiers.remove(existing_cull)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing legacy surface cull modifier", exc_info=True)
+        logger.debug("Planetka: failed removing obsolete surface cull modifier", exc_info=True)
 
     subsurf_mod = temp.modifiers.get("Adaptive Subdivision")
     if subsurf_mod is None or subsurf_mod.type != 'SUBSURF':

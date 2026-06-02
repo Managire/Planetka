@@ -176,7 +176,6 @@ _RESOLVE_DOWNLOAD_LOCK = threading.Lock()
 _RESOLVE_DOWNLOAD_TIMER_RUNNING = False
 _RESOLVE_DOWNLOAD_THREAD = None
 _RESOLVE_DOWNLOAD_ACTIVE_JOB = None
-_RESOLVE_DOWNLOAD_PENDING_JOB = None
 _RESOLVE_DOWNLOAD_COMPLETED = None
 _RESOLVE_DOWNLOAD_REQUEST_COUNTER = 0
 _RESOLVE_DOWNLOAD_EPOCH = 0
@@ -859,12 +858,12 @@ def _last_resolved_tiles(scene):
     return _view_telemetry.last_resolved_tiles(scene, _VIEW_TELEMETRY_CTX)
 
 
-def queue_resolve_download(*args, **kwargs):
-    return _resolve.queue_resolve_download(*args, **kwargs)
+def start_resolve_download(*args, **kwargs):
+    return _resolve.start_resolve_download(*args, **kwargs)
 
 
-def _mark_manual_queued_resolve_error(*args, **kwargs):
-    return _resolve._mark_manual_queued_resolve_error(*args, **kwargs)
+def _mark_manual_resolve_error(*args, **kwargs):
+    return _resolve._mark_manual_resolve_error(*args, **kwargs)
 
 
 def _read_scene_last_resolve_error(*args, **kwargs):
@@ -1052,7 +1051,6 @@ def _build_resolve_contexts():
         download_timer_running=_RESOLVE_DOWNLOAD_TIMER_RUNNING,
         download_thread=_RESOLVE_DOWNLOAD_THREAD,
         download_active_job=_RESOLVE_DOWNLOAD_ACTIVE_JOB,
-        download_pending_job=_RESOLVE_DOWNLOAD_PENDING_JOB,
         download_completed=_RESOLVE_DOWNLOAD_COMPLETED,
         download_request_counter=_RESOLVE_DOWNLOAD_REQUEST_COUNTER,
         download_epoch=_RESOLVE_DOWNLOAD_EPOCH,

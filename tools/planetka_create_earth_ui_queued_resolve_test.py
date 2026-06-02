@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""UI-mode Create Earth queued-resolve regression test.
+"""UI-mode Create Earth manual-resolve regression test.
 
 Purpose:
 - exercise the real default Create Earth path
 - do not call explicit Resolve operator after Create Earth
-- verify queued resolve settles back to IDLE and writes a non-zero tile count
+- verify resolve settles back to IDLE and writes a non-zero tile count
 
 Run:
   /Applications/Blender5.0.app/Contents/MacOS/Blender --python \
@@ -251,7 +251,7 @@ def _start_test():
 
         STATE["started"] = True
         STATE["start_time"] = time.time()
-        _log("Create Earth returned FINISHED; waiting for queued resolve to finalize.")
+        _log("Create Earth returned FINISHED; waiting for resolve to finalize.")
         return 0.25
     except TOOL_RECOVERABLE_EXCEPTIONS as exc:
         traceback.print_exc()
@@ -274,11 +274,11 @@ def _poll_test():
         if (
             str(status.get("code", "") or "IDLE") == "IDLE"
             and not bool(status.get("running", False))
-            and int(status.get("pending_count", 0) or 0) <= 0
+            and int(status.get("active_count", 0) or 0) <= 0
             and int(status.get("last_tile_count", 0) or 0) > 0
             and bool(status.get("surface_exists", False))
         ):
-            _log("PASS: queued Create Earth resolve completed and returned to IDLE.")
+            _log("PASS: Create Earth resolve completed and returned to IDLE.")
             _write_report(True)
             _cleanup_temp_source()
             bpy.ops.wm.quit_blender()

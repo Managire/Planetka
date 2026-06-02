@@ -852,7 +852,7 @@ def estimate_download_availability_for_visible_tiles(tiles, base_path, runtime=N
         estimate = estimate_fn(
             safe_tiles,
             str(base_path or ""),
-            allow_remote_probe=True,
+            allow_remote_probe=False,
             texture_quality_mode=normalized_mode,
         )
     except recoverable_exceptions:
@@ -863,7 +863,7 @@ def estimate_download_availability_for_visible_tiles(tiles, base_path, runtime=N
             estimate = estimate_fn(
                 safe_tiles,
                 str(base_path or ""),
-                allow_remote_probe=True,
+                allow_remote_probe=False,
             )
         except recoverable_exceptions:
             logger.debug("Planetka: resolve-size estimate failed", exc_info=True)

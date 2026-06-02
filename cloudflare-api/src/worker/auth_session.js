@@ -121,22 +121,22 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   const deviceId = deps.normalizeDeviceId(
     access.device_id || request.headers.get("X-Planetka-Device-Id") || "",
   );
-  const tokenPlanRaw = String(
-    access.plan_code || access.user_status || access.plan || access.planCode || access.userStatus || "",
+  const tokenAccessStatusRaw = String(
+    access.access_status_code || access.user_status || access.access_status || access.accessStatus || access.userStatus || "",
   ).trim();
-  const tokenPlanCode = tokenPlanRaw && typeof deps.normalizeTierCodeStrict === "function"
-    ? deps.normalizeTierCodeStrict(tokenPlanRaw)
+  const tokenAccessStatus = tokenAccessStatusRaw && typeof deps.normalizeAccessStatusStrict === "function"
+    ? deps.normalizeAccessStatusStrict(tokenAccessStatusRaw)
     : "";
-  const tokenQualityAccessPlanRaw = String(
-    access.quality_access_plan_code || access.qualityAccessPlanCode || tokenPlanRaw || "",
+  const tokenQualityAccessAccessStatusRaw = String(
+    access.quality_access_status_code || access.qualityAccessStatus || tokenAccessStatusRaw || "",
   ).trim();
-  const tokenQualityAccessPlanCode = tokenQualityAccessPlanRaw && typeof deps.normalizeTierCodeStrict === "function"
-    ? deps.normalizeTierCodeStrict(tokenQualityAccessPlanRaw)
-    : tokenPlanCode;
+  const tokenQualityAccessAccessStatus = tokenQualityAccessAccessStatusRaw && typeof deps.normalizeAccessStatusStrict === "function"
+    ? deps.normalizeAccessStatusStrict(tokenQualityAccessAccessStatusRaw)
+    : tokenAccessStatus;
   if (
     lightweightAccessClaims
     && !requireAdmin
-    && tokenPlanCode
+    && tokenAccessStatus
   ) {
     if (authCacheKey && tokenSource !== "bearer_cache") {
       deps.authContextCacheSet(
@@ -152,11 +152,11 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
         user: {
           id: String(access.sub || "").trim(),
           email: String(access.email || "").trim(),
-          status: tokenPlanCode,
+          status: tokenAccessStatus,
         },
         access,
-        planCode: tokenPlanCode,
-        qualityAccessPlanCode: tokenQualityAccessPlanCode || tokenPlanCode,
+        accessStatus: tokenAccessStatus,
+        qualityAccessStatus: tokenQualityAccessAccessStatus || tokenAccessStatus,
         authMethod,
         deviceId,
         tokenSource,
@@ -170,13 +170,13 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   if (deps.isBlockedStatus(user.status)) {
     return { error: deps.blockedAccountResponse(env) };
   }
-  user = await deps.enforceUserPlanPolicy(db, user, env);
+  user = await deps.enforceUserAccessStatusPolicy(db, user, env);
   if (!user) {
     return { error: deps.json({ ok: false, error: "user_not_found" }, 404, env) };
   }
   const qualityAccess = await deps.resolveUserQualityAccessState(db, user, env);
-  const planCode = qualityAccess.storedPlanCode;
-  const qualityAccessPlanCode = qualityAccess.qualityAccessPlanCode;
+  const accessStatus = qualityAccess.storedAccessStatus;
+  const qualityAccessStatus = qualityAccess.qualityAccessStatus;
   if (requireAdmin && !deps.isAnalyticsAdmin(user, env)) {
     return { error: deps.json({ ok: false, error: "admin_access_required" }, 403, env) };
   }
@@ -184,8 +184,8 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     db,
     user,
     access,
-    planCode,
-    qualityAccessPlanCode,
+    accessStatus,
+    qualityAccessStatus,
     authMethod,
     deviceId,
     tokenSource,

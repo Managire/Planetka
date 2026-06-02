@@ -79,21 +79,11 @@ export function sanitizeLiveTileMapMinutes(value, fallback, deps) {
   return parsed;
 }
 
-function normalizeTierCodeStrict(value, deps) {
-  const normalized = String(deps.normalizePlanCode(value) || "").trim().toLowerCase();
-  if (normalized === deps.PLAN_CODE_PERSONAL) return deps.PLAN_CODE_PERSONAL;
-  if (normalized === deps.PLAN_CODE_COMMERCIAL) return deps.PLAN_CODE_COMMERCIAL;
+function normalizeAccessStatusStrict(value, deps) {
+  const normalized = String(deps.normalizeAccessStatus(value) || "").trim().toLowerCase();
+  if (normalized === deps.ACCESS_STATUS_ACTIVE) return deps.ACCESS_STATUS_ACTIVE;
+  if (normalized === "blocked") return "blocked";
   return "";
-}
-
-function analyticsTierSqlExpression(columnExpression) {
-  const column = String(columnExpression || "status").trim() || "status";
-  return `
-    CASE
-      WHEN LOWER(COALESCE(${column}, '')) IN ('commercial', 'paid', 'unlimited') THEN 'commercial'
-      ELSE 'personal'
-    END
-  `;
 }
 
 function _normalizeErrorCode(value) {
@@ -226,7 +216,7 @@ function parseAnalyticsRevenueExcludedEmailPatterns(env = {}, deps) {
   const revenueSource = String(
     env.ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS
       || deps.DEFAULT_ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS
-      || "tom.griger@gmail.com,info@planetka.io,personal@planetka.io",
+      || "tom.griger@gmail.com,info@planetka.io,qa@planetka.io",
   ).trim();
   return uniqueEmailPatternsFromSources([
     baseSource,
@@ -259,13 +249,13 @@ function buildAnalyticsRevenueExcludedEmailFilter(emailColumnSql, env = {}, deps
   return { condition, bindings: patterns };
 }
 
-function buildTileActivityPlanFilterSql(planFilter, deps) {
-  void planFilter;
+function buildTileActivityAccessStatusFilterSql(access_statusFilter, deps) {
+  void access_statusFilter;
   void deps;
   return { clause: "", bindings: [] };
 }
 
-export function parseHeavyUserPlanFilter(value, deps) {
+export function parseHeavyUserAccessStatusFilter(value, deps) {
   void value;
   void deps;
   return "all";
@@ -592,7 +582,7 @@ async function fetchCloudflareR2BillableUsage(env, db = null, deps) {
 export async function collectAnalyticsSnapshot(
   db,
   minutes,
-  planFilter = "all",
+  access_statusFilter = "all",
   liveTileMapWindowMinutes,
   env = {},
   deps,
@@ -604,7 +594,7 @@ export async function collectAnalyticsSnapshot(
   const windowMinutes = sanitizeAnalyticsMinutes(minutes, deps.DEFAULT_ANALYTICS_WINDOW_MINUTES, deps);
   const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
   const rollupStart30d = Math.max(0, nowUnix - (30 * 86400));
-  const safePlanFilter = parseHeavyUserPlanFilter(planFilter, deps);
+  const safeAccessStatusFilter = parseHeavyUserAccessStatusFilter(access_statusFilter, deps);
   const authRefreshWindowSeconds = Math.max(
     3600,
     deps.parseNonNegativeInteger(env.AUTH_REFRESH_HEALTH_WINDOW_SECONDS, deps.DEFAULT_AUTH_REFRESH_HEALTH_WINDOW_SECONDS),
@@ -640,8 +630,6 @@ export async function collectAnalyticsSnapshot(
     db,
     `
       SELECT
-        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'personal' THEN 1 ELSE 0 END), 0) AS personal_users,
-        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'commercial' THEN 1 ELSE 0 END), 0) AS commercial_users,
         COUNT(*) AS total_users
       FROM users
       WHERE 1 = 1
@@ -653,25 +641,13 @@ export async function collectAnalyticsSnapshot(
   const topLineTraffic = await deps.dbGet(
     db,
     `
-      WITH traffic AS (
-        SELECT
-          r.request_count,
-          r.bytes_served,
-          r.user_id,
-          ${analyticsTierSqlExpression("u.status")} AS user_tier
-        FROM tile_request_rollup_daily_account r
-        LEFT JOIN users u ON u.id = r.user_id
-        WHERE 1 = 1
-        ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
-      )
       SELECT
-        COALESCE(SUM(CASE WHEN user_tier = 'personal' THEN request_count ELSE 0 END), 0) AS personal_requests,
-        COALESCE(SUM(CASE WHEN user_tier = 'commercial' THEN request_count ELSE 0 END), 0) AS commercial_requests,
-        COALESCE(SUM(request_count), 0) AS total_requests,
-        COALESCE(SUM(CASE WHEN user_tier = 'personal' THEN bytes_served ELSE 0 END), 0) AS personal_bytes,
-        COALESCE(SUM(CASE WHEN user_tier = 'commercial' THEN bytes_served ELSE 0 END), 0) AS commercial_bytes,
-        COALESCE(SUM(bytes_served), 0) AS total_bytes
-      FROM traffic
+        COALESCE(SUM(r.request_count), 0) AS total_requests,
+        COALESCE(SUM(r.bytes_served), 0) AS total_bytes
+      FROM tile_request_rollup_daily_account r
+      LEFT JOIN users u ON u.id = r.user_id
+      WHERE 1 = 1
+      ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
     `,
     [...rollupEmailFilterAliasR.bindings],
   );
@@ -682,8 +658,7 @@ export async function collectAnalyticsSnapshot(
       WITH tagged_resolves AS (
         SELECT DISTINCT
           e.user_id,
-          e.resolve_id,
-          ${analyticsTierSqlExpression("u.status")} AS user_tier
+          e.resolve_id
         FROM tile_request_events e
         LEFT JOIN users u ON u.id = e.user_id
         WHERE
@@ -692,8 +667,6 @@ export async function collectAnalyticsSnapshot(
           ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(CASE WHEN user_tier = 'personal' THEN 1 ELSE 0 END), 0) AS personal_resolves,
-        COALESCE(SUM(CASE WHEN user_tier = 'commercial' THEN 1 ELSE 0 END), 0) AS commercial_resolves,
         COUNT(*) AS total_resolves
       FROM tagged_resolves
     `,
@@ -716,7 +689,7 @@ export async function collectAnalyticsSnapshot(
       SELECT
         e.user_id,
         MAX(e.created_at_unix) AS last_seen_unix,
-        NULLIF(TRIM(LOWER(u.status)), '') AS plan_norm
+        NULLIF(TRIM(LOWER(u.status)), '') AS access_status_norm
       FROM tile_request_events e
       LEFT JOIN users u ON u.id = e.user_id
       WHERE
@@ -734,18 +707,16 @@ export async function collectAnalyticsSnapshot(
     ],
   );
 
-  const makeActiveSplit = () => ({
-    personal: 0,
-    commercial: 0,
+  const makeActiveCounts = () => ({
     total: 0,
   });
   const activeWindows = {
-    users_6m: makeActiveSplit(),
-    users_3m: makeActiveSplit(),
-    users_1m: makeActiveSplit(),
-    users_1w: makeActiveSplit(),
-    users_1d: makeActiveSplit(),
-    users_1h: makeActiveSplit(),
+    users_6m: makeActiveCounts(),
+    users_3m: makeActiveCounts(),
+    users_1m: makeActiveCounts(),
+    users_1w: makeActiveCounts(),
+    users_1d: makeActiveCounts(),
+    users_1h: makeActiveCounts(),
   };
   const activeThresholds = [
     ["users_6m", activeWindow6mStartUnix],
@@ -755,33 +726,22 @@ export async function collectAnalyticsSnapshot(
     ["users_1d", activeWindow1dStartUnix],
     ["users_1h", activeWindow1hStartUnix],
   ];
-  const resolveAnalyticsTierCode = (planValue) => {
-    const normalized = normalizeTierCodeStrict(planValue, deps);
-    if (normalized === deps.PLAN_CODE_PERSONAL) return "personal";
-    if (normalized === deps.PLAN_CODE_COMMERCIAL) return "commercial";
-    return "personal";
-  };
   for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
     const lastSeenUnix = deps.clampNonNegativeInt(row && row.last_seen_unix);
     if (lastSeenUnix <= 0) {
       continue;
     }
-    const tierCode = resolveAnalyticsTierCode(row && row.plan_norm);
     for (const [windowKey, thresholdUnix] of activeThresholds) {
       if (lastSeenUnix < thresholdUnix) {
         continue;
       }
       const windowCounts = activeWindows[windowKey];
-      if (!windowCounts) {
-        continue;
+      if (windowCounts) {
+        windowCounts.total += 1;
       }
-      if (!tierCode) {
-        continue;
-      }
-      windowCounts.total += 1;
-      windowCounts[tierCode] += 1;
     }
   }
+
 
   let activeUsers10m = [];
   try {
@@ -867,7 +827,7 @@ export async function collectAnalyticsSnapshot(
   );
   const tileMapStartUnix = Math.max(0, nowUnix - tileMapWindowSeconds);
   const tileMapRowLimit = 2500;
-  const tileActivityFilter = buildTileActivityPlanFilterSql(safePlanFilter, deps);
+  const tileActivityFilter = buildTileActivityAccessStatusFilterSql(safeAccessStatusFilter, deps);
   const tileMapRows = await deps.dbAll(
     db,
     `
@@ -919,7 +879,7 @@ export async function collectAnalyticsSnapshot(
     return {
       user_id: userId,
       user_email: userEmail,
-      user_status: normalizeTierCodeStrict(row && row.user_status, deps),
+      user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
       tile_key: tileKey,
       last_seen_unix: deps.clampNonNegativeInt(row && row.last_seen_unix),
       request_count: deps.clampNonNegativeInt(row && row.request_count),
@@ -1149,7 +1109,7 @@ export async function collectAnalyticsSnapshot(
   let heavyUsers30d = (Array.isArray(topHeavyLifetime) ? topHeavyLifetime : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
-    user_status: normalizeTierCodeStrict(row && row.user_status, deps),
+    user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
     lifetime_bytes: deps.clampNonNegativeInt(row && row.lifetime_bytes),
     month_bytes: deps.clampNonNegativeInt(row && row.month_bytes),
     request_count_month: deps.clampNonNegativeInt(row && row.request_count_month),
@@ -1211,7 +1171,7 @@ export async function collectAnalyticsSnapshot(
   const normalizedActiveUsers10m = (Array.isArray(activeUsers10m) ? activeUsers10m : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
-    user_status: normalizeTierCodeStrict(row && row.user_status, deps),
+    user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
     request_count: deps.clampNonNegativeInt(row && row.request_count),
     resolve_count: deps.clampNonNegativeInt(row && row.resolve_count),
     bytes_served: deps.clampNonNegativeInt(row && row.bytes_served),
@@ -1226,23 +1186,15 @@ export async function collectAnalyticsSnapshot(
     window_start_unix: windowStartUnix,
     top_line: {
       users: {
-        personal: deps.clampNonNegativeInt(topLineUsers && topLineUsers.personal_users),
-        commercial: deps.clampNonNegativeInt(topLineUsers && topLineUsers.commercial_users),
         total: deps.clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
       },
       resolves: {
-        personal: deps.clampNonNegativeInt(topLineResolves && topLineResolves.personal_resolves),
-        commercial: deps.clampNonNegativeInt(topLineResolves && topLineResolves.commercial_resolves),
         total: deps.clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
       },
       tile_requests: {
-        personal: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_requests),
-        commercial: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_requests),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
       },
       gb_served: {
-        personal: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_bytes),
-        commercial: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_bytes),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
       },
       earned_eur: {
@@ -1270,27 +1222,21 @@ export async function collectAnalyticsSnapshot(
       users_1h: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
       windows: {
         "6m": {
-          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
         },
         "3m": {
-          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
         },
         "1m": {
-          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
         },
         "1w": {
-          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
         },
         "1d": {
-          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
         },
         "1h": {
-          personal: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.personal),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
         },
       },
@@ -1331,7 +1277,7 @@ export async function collectAnalyticsSnapshot(
         : [],
     },
     heavy_users: {
-      plan_filter: safePlanFilter,
+      access_status_filter: safeAccessStatusFilter,
       top_lifetime: attachHeavyResolveCounts(topHeavyLifetime),
       top_month: attachHeavyResolveCounts(topHeavyMonth),
       top_week: attachHeavyResolveCounts(topHeavyWeek),
@@ -1342,7 +1288,7 @@ export async function collectAnalyticsSnapshot(
     live_tile_map: {
       generated_at: deps.nowIso(),
       window_seconds: tileMapWindowSeconds,
-      plan_filter: safePlanFilter,
+      access_status_filter: safeAccessStatusFilter,
       users_active: activeTileUsersSet.size,
       tiles_active: activeTileKeysSet.size,
       row_limit: tileMapRowLimit,

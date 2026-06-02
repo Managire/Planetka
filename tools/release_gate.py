@@ -349,19 +349,19 @@ def main() -> int:
                 "(expected checks for both /admin/analytics and /admin/analytics/data)."
             )
 
-    # 8) Legacy auth/throttle/claim systems must be absent from the worker surface
+    # 8) Removed auth/throttle/claim systems must be absent from the worker surface
     if combined_worker_src:
         forbidden_worker_markers = [
-            ("legacy auth route", '"/auth/start"'),
-            ("legacy auth route", '"/auth/verify"'),
-            ("legacy device-login route", '"/device/start"'),
-            ("legacy device-login route", '"/device/poll"'),
-            ("legacy device-login route", '"/device/login"'),
-            ("legacy download table", "user_download_counters"),
+            ("removed auth route", '"/auth/start"'),
+            ("removed auth route", '"/auth/verify"'),
+            ("removed device-login route", '"/device/start"'),
+            ("removed device-login route", '"/device/poll"'),
+            ("removed device-login route", '"/device/login"'),
+            ("removed download table", "user_download_counters"),
             ("download throttle config", "DOWNLOAD_THROTTLE_"),
             ("download throttle response", "download_throttled"),
-            ("legacy paid-claim workflow", "paid_claim_workflow_disabled"),
-            ("legacy provisional claim audit", "provisional_claim_audit"),
+            ("removed paid-claim workflow", "paid_claim_workflow_disabled"),
+            ("removed provisional claim audit", "provisional_claim_audit"),
             ("claim rejection alert", "PROD_ALERT_CLAIM_REJECTION"),
         ]
         for label, marker in forbidden_worker_markers:
@@ -389,7 +389,7 @@ def main() -> int:
             if isinstance(vars_table, dict):
                 for var_name in forbidden_vars:
                     if var_name in vars_table:
-                        errors.append(f"{wrangler_path.name} still defines legacy var '{var_name}'")
+                        errors.append(f"{wrangler_path.name} still defines removed var '{var_name}'")
         except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001 - release gate hard-fail
             errors.append(f"{wrangler_path.name} parse failed: {exc}")
 

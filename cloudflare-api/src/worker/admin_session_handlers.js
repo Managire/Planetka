@@ -288,11 +288,11 @@ export async function handleAdminPasswordLogin(request, env, deps) {
   let user = await deps.upsertUserByEmail(
     db,
     adminEmail,
-    deps.PLAN_CODE_COMMERCIAL,
+    deps.ACCESS_STATUS_ACTIVE,
     {},
     env,
   );
-  user = await deps.enforceUserPlanPolicy(db, user, env);
+  user = await deps.enforceUserAccessStatusPolicy(db, user, env);
   if (!user || !deps.isAnalyticsAdmin(user, env)) {
     return deps.json({ ok: false, error: "admin_access_required" }, 403, env);
   }

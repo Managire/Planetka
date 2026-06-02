@@ -429,7 +429,7 @@ def drain_queued_resolve(state_module, scene, timeout_sec=60.0, sleep_sec=0.05):
             except TOOL_RECOVERABLE_EXCEPTIONS:
                 last_status = {}
         running = bool(last_status.get("running", False))
-        pending_count = int(last_status.get("pending_count", 0) or 0)
+        active_count = int(last_status.get("active_count", 0) or 0)
         code = str(last_status.get("code", "") or "")
         scene_error = read_scene_last_resolve_error(scene)
         if scene_error and scene_error != baseline_error:
@@ -439,7 +439,7 @@ def drain_queued_resolve(state_module, scene, timeout_sec=60.0, sleep_sec=0.05):
                 except TOOL_RECOVERABLE_EXCEPTIONS:
                     pass
             raise E2EError(f"Queued resolve failed: {scene_error}")
-        if not running and pending_count <= 0 and code in {"", "IDLE", "MONITORING"}:
+        if not running and active_count <= 0 and code in {"", "IDLE", "MONITORING"}:
             return last_status
         if (time.monotonic() - started) > float(timeout_sec):
             if callable(stop_fn):

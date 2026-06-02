@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Planetka hermetic core user-flow gate.
+"""Planetka core user-flow gate.
 
 Purpose:
-- validate common user flow end-to-end with local fallback textures
+- validate common user flow end-to-end against the current Planetka Cloud data source
 - assert real outcomes (camera/light/material state and render sanity), not only operator return flags
-- verify Preview/Full Quality user flow using a synthetic auth payload (no network)
+- verify Preview/Balanced/Full quality switching through the manual Resolve path
 
 Run:
   /Applications/Blender.app/Contents/MacOS/Blender --background --debug-python \
@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -51,19 +50,6 @@ from planetka_e2e_common import (
 
 TAG = "[Planetka Core User Flow Gate]"
 REPORT_PATH = Path(tempfile.gettempdir()) / "planetka_core_user_flow_gate_report.json"
-FALLBACK_DIR = Path(_REPO_ROOT) / "Resources" / "Fallback Images"
-
-# Deterministic full-globe fixture tile set used by this hermetic gate.
-# These exact IDs are requested by the Full Globe camera in PREVIEW/FULL modes.
-_FIXTURE_TILE_IDS = (
-    "x000_y000_z180_d720",
-    "x180_y000_z180_d720",
-    "x000_y000_z180_d360",
-    "x180_y000_z180_d360",
-    "x000_y000_z180_d180",
-    "x180_y000_z180_d180",
-)
-
 
 def _log(message):
     print(f"{TAG} {message}", flush=True)
@@ -98,28 +84,6 @@ def _wait_for_camera_change(scene, previous_signature, timeout_sec=3.0):
         time.sleep(0.05)
     current = _camera_signature(getattr(scene, "camera", None))
     return current, bool(current is not None and current != previous_signature)
-
-
-def _make_texture_source_tree(base_dir):
-    base = Path(base_dir)
-    base.mkdir(parents=True, exist_ok=True)
-    rules = (
-        ("S2", "S2_", "ocean_pixel_final_20.exr"),
-        ("EL", "EL_", "black_pixel_20.exr"),
-        ("WT", "WT_", "blue_pixel_20.exr"),
-    )
-    for folder_name, prefix, source_name in rules:
-        source = FALLBACK_DIR / source_name
-        _assert(source.is_file(), f"Missing fallback texture sample: {source}")
-        folder = base / folder_name
-        folder.mkdir(parents=True, exist_ok=True)
-        for tile_id in _FIXTURE_TILE_IDS:
-            shutil.copyfile(source, folder / f"{prefix}{tile_id}.exr")
-        # Keep one sentinel pair used by general texture-source health checks.
-        shutil.copyfile(source, folder / f"{prefix}x000_y000_z360_d360.exr")
-        shutil.copyfile(source, folder / f"{prefix}x180_y000_z180_d180.exr")
-    (base / "PO").mkdir(parents=True, exist_ok=True)
-
 
 
 def _get_material_displacement_mode(material):
@@ -157,7 +121,7 @@ def _operator_cancelled(result):
 
 def _set_quality_and_expect(mode, expected_ok, report_entry):
     try:
-        result = bpy.ops.planetka.set_texture_quality_and_resolve(texture_quality_mode=str(mode))
+        result = bpy.ops.planetka.set_texture_quality(texture_quality_mode=str(mode))
     except RuntimeError as exc:
         error_text = str(exc or "")
         report_entry["exception"] = error_text
@@ -296,19 +260,14 @@ def main():
         geonames = import_submodule(base_module, "geonames_db")
         state = import_submodule(base_module, "state")
         auth = import_submodule(base_module, "auth")
-        operators_module = import_submodule(base_module, "operators")
         r2_source = import_submodule(base_module, "r2_source")
 
         prefs = extension_prefs.get_prefs()
         _assert(prefs is not None, "Planetka preferences unavailable.")
 
-        source_root = tempfile.mkdtemp(prefix="planetka_core_flow_source_")
-        temp_dirs.append(source_root)
-        _make_texture_source_tree(source_root)
-        prefs.texture_base_path = source_root
         _assert(
-            not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
-            f"Hermetic gate expected local texture source, got: {prefs.texture_base_path}",
+            bool(r2_source.is_remote_source_configured(None)),
+            "Planetka Cloud data source is not configured.",
         )
 
         output_dir = tempfile.mkdtemp(prefix="planetka_core_flow_renders_")
@@ -397,27 +356,19 @@ def main():
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
-        # Streaming quality flow guardrails. This gate is hermetic/offline, so
-        # it validates the full texture path with a synthetic cloud session.
+        # Streaming quality flow guardrails. Quality buttons are pure switches;
+        # Resolve Planetka is the single path that applies data.
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before quality flow: {full_globe_result}")
-        auth.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
-        prefs.auth_access_token = "planetka_core_user_flow_gate_token"
-        auth.is_authenticated = lambda prefs=None: True
-        operators_module.is_authenticated = lambda prefs=None: True
-        operators_module.allows_texture_quality_for_context = lambda prefs=None, requested_mode=None: True
-        prefs.texture_base_path = source_root
-        _assert(
-            not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
-            f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
-        )
+        auth.ensure_authenticated_session(prefs)
         for mode in ("PREVIEW", "BALANCED", "FULL"):
             entry = {
-                "session": "synthetic_local_fixture",
+                "session": "planetka_cloud",
                 "mode": mode,
                 "expected_ok": True,
             }
             _set_quality_and_expect(mode, True, entry)
+            resolve_textures(state, scene, texture_quality_mode=mode)
             shader_s2_tiles = _wait_for_shader_quality(state, scene, mode, timeout_sec=120.0)
             entry["shader_s2_tiles"] = shader_s2_tiles
             entry["expected_shader_s2_tiles"] = _expected_shader_s2_tiles_for_mode(scene, mode)
@@ -447,6 +398,7 @@ def main():
     finally:
         for path in temp_dirs:
             try:
+                import shutil
                 shutil.rmtree(path, ignore_errors=True)
             except Exception:
                 pass

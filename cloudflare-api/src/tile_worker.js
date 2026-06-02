@@ -260,9 +260,6 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     device_id: String(auth && auth.deviceId || "").trim(),
     client_ip_scope: String(auth && auth.access && (auth.access.client_ip_scope || auth.access.clientIpScope) || "").trim(),
     scene_id: String(options && options.sceneId || "").trim(),
-    allowed_tile_files: Array.isArray(options && options.allowedTileFiles)
-      ? options.allowedTileFiles.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 128)
-      : [],
     exp,
   };
   const token = await signJwt(payload, requireSecret(env, "JWT_SIGNING_SECRET"));
@@ -306,9 +303,6 @@ async function readTileSessionClaims(request, env) {
     authMethod,
     deviceId: normalizeDeviceId(payload.device_id || ""),
     sceneId: String(payload.scene_id || payload.sceneId || "").trim(),
-    allowedTileFiles: Array.isArray(payload.allowed_tile_files || payload.allowedTileFiles)
-      ? (payload.allowed_tile_files || payload.allowedTileFiles).map((value) => String(value || "").trim()).filter(Boolean).slice(0, 128)
-      : [],
   };
   authCacheSet(cacheKey, claims);
   return { claims };

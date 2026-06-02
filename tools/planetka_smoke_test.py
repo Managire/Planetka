@@ -238,9 +238,9 @@ def _drain_queued_resolve(state_module, scene, timeout_sec=8.0):
             except TOOL_RECOVERABLE_EXCEPTIONS:
                 last_status = {}
         running = bool(last_status.get("running", False))
-        pending_count = int(last_status.get("pending_count", 0) or 0)
+        active_count = int(last_status.get("active_count", 0) or 0)
         code = str(last_status.get("code", "") or "")
-        if not running and pending_count <= 0 and code in {"", "IDLE"}:
+        if not running and active_count <= 0 and code in {"", "IDLE"}:
             return
         if time.monotonic() - start > float(timeout_sec):
             if callable(stop_fn):

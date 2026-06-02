@@ -3552,7 +3552,7 @@ def _ensure_embedded_material_library(scene=None):
         _load_embedded_material_library()
     # Hard reset image-node bindings on every Create Earth asset ensure so
     # stale/missing cached paths from prior sessions cannot trigger GPU texture
-    # creation errors before queued resolve or preview rebinding completes.
+    # creation errors before resolve or preview rebinding completes.
     _sanitize_embedded_assets()
     _bind_static_images()
 

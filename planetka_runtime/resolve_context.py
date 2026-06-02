@@ -18,7 +18,6 @@ class ResolveSharedState:
     download_timer_running: bool = False
     download_thread: Any = None
     download_active_job: Any = None
-    download_pending_job: Any = None
     download_completed: Any = None
     download_request_counter: int = 0
     download_epoch: int = 0

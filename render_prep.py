@@ -56,11 +56,10 @@ from .state import (
     ensure_planetka_temp_collection,
     logger,
     mark_resolve_clean_after_resolve,
-    queue_resolve_download,
+    start_resolve_download,
     remove_object_and_unused_mesh,
     replace_tiles,
     _store_resolve_summary,
-    update_resolve_size_estimates,
 )
 
 
@@ -72,8 +71,6 @@ LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
 LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
 LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
-FULL_QUALITY_DOWNLOAD_SUCCESS_KEY = "planetka_full_quality_download_success"
-FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY = "planetka_full_quality_download_success_at"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_MANUAL_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
@@ -310,7 +307,7 @@ def _validate_texture_source(base_path):
         return normalized, ""
 
     # Remote resolves validate access while fetching the exact requested assets.
-    # A sentinel HEAD request here blocks every queued resolve and can refresh
+    # A sentinel HEAD request here blocks every resolve and can refresh
     # auth on the UI/operator path before the background worker even starts.
     return normalized, ""
 
@@ -1107,32 +1104,23 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     )
                 )
                 return ResolveEarlyResult(response={'CANCELLED'}, ui_reports=ui_reports)
-            try:
-                update_resolve_size_estimates(
-                    scene,
-                    scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
-                    base_path=normalized,
-                    full_tiles_override=tuple(full_source_tiles or ()),
-                )
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed updating resolve-size estimates before queued resolve", exc_info=True)
-            queued = queue_resolve_download(
+            started = start_resolve_download(
                 scene,
                 [str(tile) for tile in (tiles or ()) if str(tile or "").strip()],
                 manual_request=True,
                 texture_quality_mode_override=texture_quality_mode,
             )
-            if not queued:
+            if not started:
                 return ResolveEarlyResult(
                     response=fail(
                         self,
-                        "Planetka could not queue resolve download.",
+                        "Planetka could not start resolve download.",
                         code=ErrorCode.RESOLVE_REFRESH_FAILED,
                         logger=logger,
                     ),
                     ui_reports=ui_reports,
                 )
-            ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Preparing textures in background."))
+            ui_reports.append(self._ui_report("INFO", "Planetka resolve started. Preparing textures in background."))
             return ResolveEarlyResult(response={'FINISHED'}, ui_reports=ui_reports)
 
         _ = props
@@ -1321,7 +1309,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
         if int(payload_data.prefetch_missing_count) > 0:
             if _prefetch_missing_details_indicate_access_failure(payload_data.prefetch_missing_details):
-                access_message = "Full Quality download could not be confirmed. Please retry."
+                access_message = "Planetka data download could not be confirmed. Please retry."
                 coded_access_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, access_message)
                 _store_last_resolve_error(
                     scene,
@@ -1865,18 +1853,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         try:
             resolved_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
             scene[LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = resolved_quality_mode
-            if resolved_quality_mode == "FULL":
-                scene[FULL_QUALITY_DOWNLOAD_SUCCESS_KEY] = True
-                scene[FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY] = time.time()
-            else:
-                if FULL_QUALITY_DOWNLOAD_SUCCESS_KEY in scene:
-                    del scene[FULL_QUALITY_DOWNLOAD_SUCCESS_KEY]
-                if FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY in scene:
-                    del scene[FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY]
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed storing last resolved texture quality/success state", exc_info=True)
+            logger.debug("Planetka: failed storing last resolved texture quality state", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed storing last resolved texture quality/success state", exc_info=True)
+            logger.debug("Planetka: failed storing last resolved texture quality state", exc_info=True)
         mark_resolve_clean_after_resolve(scene)
 
         self._flush_ui_reports(ui_reports)

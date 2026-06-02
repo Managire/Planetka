@@ -341,10 +341,8 @@ def _status_icon(code):
         return "TIME"
     if token == "DOWNLOADING":
         return "IMPORT"
-    if token in {"FINALIZING", "FINALIZE_QUEUED"}:
+    if token in {"FINALIZING", "APPLYING"}:
         return "MOD_REMESH"
-    if token == "QUEUED":
-        return "SORTTIME"
     if token == "MONITORING":
         return "VIEW_CAMERA"
     if token == "IDLE":
@@ -637,7 +635,7 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
         factor = 1.0
     elif total_bytes > 0:
         factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
-    elif status_token in {"FINALIZING", "FINALIZE_QUEUED"}:
+    elif status_token in {"FINALIZING", "APPLYING"}:
         factor = 1.0
 
     if total_bytes > 0:
@@ -650,11 +648,9 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
         progress_text = "Preparing download"
     elif animation_waiting_for_download:
         progress_text = "Data ready"
-    elif status_token == "QUEUED":
-        progress_text = "Waiting to start"
     elif status_token == "PREPARING":
         progress_text = "Preparing download"
-    elif status_token in {"FINALIZING", "FINALIZE_QUEUED"}:
+    elif status_token in {"FINALIZING", "APPLYING"}:
         progress_text = "Download finished"
     elif resolve_failure_message:
         progress_text = "Resolve failed"
@@ -665,7 +661,7 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     else:
         progress_text = "Waiting for data"
 
-    active_status = status_token in {"QUEUED", "PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED"}
+    active_status = status_token in {"PREPARING", "DOWNLOADING", "FINALIZING", "APPLYING"}
     active = bool(progress_download_active or active_status or runtime.get("running", False))
     quality_mode = progress_quality_mode if active else ""
     if not quality_mode and active:
@@ -1245,13 +1241,6 @@ def _draw_new_earth(layout):
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
     row.enabled = (not has_earth) and connected
-    row.operator("planetka.optimize_render_settings", text="Optimize Render Settings", icon="RENDER_STILL")
-
-    row = layout.row()
-    row.scale_x = ADD_EARTH_BUTTON_SCALE_X
-    row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
-    row.alert = False
-    row.enabled = (not has_earth) and connected
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
     rebuild_row = layout.row()
     rebuild_row.scale_x = ADD_EARTH_BUTTON_SCALE_X
@@ -1271,7 +1260,7 @@ def _draw_live_telemetry(layout, scene):
     prefs = get_prefs()
 
     # Keep informational auto-fix notices visible until the next resolve starts.
-    if runtime_code in {"PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}:
+    if runtime_code in {"PREPARING", "DOWNLOADING", "FINALIZING", "APPLYING"}:
         try:
             if scene is not None and CLIPPING_AUTO_NOTICE_KEY in scene:
                 del scene[CLIPPING_AUTO_NOTICE_KEY]
@@ -1321,7 +1310,7 @@ def _draw_live_telemetry(layout, scene):
             operator_row = mode_col.row(align=True)
             operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
             operator_row.operator(
-                "planetka.set_texture_quality_and_resolve",
+                "planetka.set_texture_quality",
                 text=button_label,
                 depress=(selected_auto_quality == mode_key),
             ).texture_quality_mode = mode_key
@@ -1338,7 +1327,7 @@ def _draw_live_telemetry(layout, scene):
         resolve_row.scale_y = 1.45
         resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")
 
-        if runtime_code in {"QUEUED", "PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED"} or bool(runtime.get("running", False)):
+        if runtime_code in {"PREPARING", "DOWNLOADING", "FINALIZING", "APPLYING"} or bool(runtime.get("running", False)):
             _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
         try:
             from . import clouds_local as cloud_runtime

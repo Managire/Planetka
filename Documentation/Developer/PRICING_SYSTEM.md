@@ -1,22 +1,7 @@
-# Planetka Pricing System
+# Pricing Notes
 
-## Active Add-on Pricing
+Pricing is handled by external marketplaces and payment pages, not by the Blender add-on runtime.
 
-Planetka has two single-seat licence options:
+The add-on does not calculate prices or make runtime feature decisions from purchase source.
 
-- Personal Licence.
-- Commercial Licence.
-
-Both licences have the same technical feature set and data access. The difference is legal usage rights only: commercial use requires a Commercial Licence.
-
-Preview, Balanced, and Full Quality are quality modes, not purchasable products.
-
-The add-on does not use scene-specific purchases, animation purchases, square-kilometre pricing, data-pack pricing, discounts, product coefficients, tile-price calculations, or purchase-history restores.
-
-## Access Control
-
-Current production access model:
-
-- users connect to Planetka Cloud through automatic anonymous install/session tokens;
-- payment providers and marketplaces only prove purchase;
-- Planetka remains the source of truth for hosted-data access policy, abuse control, revocation, device/session protection, and support.
+Runtime access is intentionally simple: an install is either `active` or `blocked`; feature availability does not branch on purchase source.

@@ -15,13 +15,6 @@ def _quality_mode_for_job(deps, job):
         return "PREVIEW"
 
 
-def _signature_token(signature):
-    try:
-        return json.dumps(signature, sort_keys=True, separators=(",", ":"), default=str)
-    except (RuntimeError, TypeError, ValueError):
-        return repr(signature)
-
-
 def _scene_last_resolve_quality(scene, deps):
     if scene is None:
         return "PREVIEW"
@@ -40,54 +33,6 @@ def _require_download_ctx():
     if ctx is None:
         raise RuntimeError("Planetka resolve download context is not configured.")
     return ctx
-
-
-def _ctx_resolve_download_job_signature(ctx, job):
-    deps = ctx.deps
-    if not deps.is_resolve_download_job(job):
-        return None
-    return (
-        int(deps.job_field(job, "scene_id", 0) or 0),
-        tuple(deps.job_field(job, "target_tiles", ()) or ()),
-        deps.job_field(job, "camera_signature"),
-        deps.job_field(job, "output_signature"),
-        deps.normalize_texture_quality_mode(deps.job_field(job, "texture_quality_mode", "PREVIEW")),
-    )
-
-
-def _ctx_job_request_id(ctx, job):
-    deps = ctx.deps
-    if not deps.is_resolve_download_job(job):
-        return -1
-    try:
-        return int(deps.job_field(job, "request_id", -1) or -1)
-    except (TypeError, ValueError):
-        return -1
-
-
-def _ctx_completed_payload_job(ctx, payload):
-    if not isinstance(payload, dict):
-        return None
-    job = payload.get("job")
-    return job if ctx.deps.is_resolve_download_job(job) else None
-
-
-def _ctx_job_supersedes_completed_payload(ctx, newer_job, completed_payload):
-    completed_job = _ctx_completed_payload_job(ctx, completed_payload)
-    if not ctx.deps.is_resolve_download_job(newer_job) or not ctx.deps.is_resolve_download_job(completed_job):
-        return False
-    newer_request_id = _ctx_job_request_id(ctx, newer_job)
-    completed_request_id = _ctx_job_request_id(ctx, completed_job)
-    if newer_request_id <= completed_request_id:
-        return False
-    return (
-        _ctx_resolve_download_job_signature(ctx, newer_job)
-        != _ctx_resolve_download_job_signature(ctx, completed_job)
-    )
-
-
-def _resolve_download_job_signature(job):
-    return _ctx_resolve_download_job_signature(_require_download_ctx(), job)
 
 
 def _ctx_arm_resolve_timer(ctx):
@@ -134,10 +79,6 @@ def _ctx_start_resolve_download_thread(ctx, job):
     )
     state.download_thread = worker
     worker.start()
-
-
-def _start_resolve_download_thread(job):
-    return _ctx_start_resolve_download_thread(_require_download_ctx(), job)
 
 
 def _ctx_resolve_texture_quality_mode(
@@ -207,12 +148,25 @@ def _ctx_schedule_resolve_download(
     except (RuntimeError, TypeError, ValueError, AttributeError):
         nav_altitude_km = 0.0
 
-    job_to_start = None
-    should_arm_timer = False
     with state.download_lock:
+        # Manual resolve is authoritative. Any older worker is cancelled by epoch
+        # mismatch and must not apply or store data after this point.
+        state.download_epoch = int(state.download_epoch) + 1
         epoch = int(state.download_epoch)
         state.download_request_counter += 1
         request_id = int(state.download_request_counter)
+
+        active_job = state.download_active_job
+        if deps.is_resolve_download_job(active_job):
+            cancel_event = deps.job_field(active_job, "cancel_event")
+            if cancel_event is not None:
+                try:
+                    cancel_event.set()
+                except deps.recoverable_exceptions:
+                    deps.logger.debug("Planetka: failed signaling active resolve cancellation", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    deps.logger.debug("Planetka: failed signaling active resolve cancellation", exc_info=True)
+
         new_job = deps.build_resolve_download_job(
             epoch=epoch,
             request_id=request_id,
@@ -227,94 +181,19 @@ def _ctx_schedule_resolve_download(
             nav_longitude_deg=nav_longitude_deg,
             nav_altitude_km=nav_altitude_km,
         )
+        state.download_completed = None
+        state.download_active_job = new_job
+        job_to_start = new_job
+        deps.resolve_trace(
+            f"resolve start request_id={request_id} manual={bool(manual_request)} scene={scene_id} "
+            f"tiles={len(target_tiles_tuple)} epoch={epoch}"
+        )
 
-        new_sig = _ctx_resolve_download_job_signature(ctx, new_job)
-        active_sig = _ctx_resolve_download_job_signature(ctx, state.download_active_job)
-        pending_sig = _ctx_resolve_download_job_signature(ctx, state.download_pending_job)
-        completed_payload = state.download_completed
-        completed_sig = _ctx_resolve_download_job_signature(ctx, _ctx_completed_payload_job(ctx, completed_payload))
-        if (
-            isinstance(completed_payload, dict)
-            and not bool(manual_request)
-        ):
-            deps.resolve_trace(
-                "queue deferred resolve while completed payload is waiting to finalize "
-                f"(request_id={request_id}, completed_signature={completed_sig!r}, new_signature={new_sig!r})"
-            )
-            should_arm_timer = True
-        elif _ctx_job_supersedes_completed_payload(ctx, new_job, state.download_completed):
-            completed_job = _ctx_completed_payload_job(ctx, state.download_completed)
-            deps.resolve_trace(
-                "queue dropped stale completed resolve "
-                f"(completed_request_id={_ctx_job_request_id(ctx, completed_job)}, "
-                f"new_request_id={request_id})"
-            )
-            state.download_completed = None
-        if should_arm_timer and isinstance(completed_payload, dict) and not bool(manual_request):
-            pass
-        elif new_sig == active_sig or new_sig == pending_sig:
-            if bool(manual_request):
-                if new_sig == active_sig and deps.is_resolve_download_job(state.download_active_job):
-                    deps.job_set_field(state.download_active_job, "manual_request", True)
-                if new_sig == pending_sig and deps.is_resolve_download_job(state.download_pending_job):
-                    deps.job_set_field(state.download_pending_job, "manual_request", True)
-            deps.resolve_trace(
-                f"queue dedupe request_id={request_id} manual={bool(manual_request)} signature={new_sig!r}"
-            )
-            should_arm_timer = (
-                state.download_active_job is not None
-                or state.download_pending_job is not None
-                or state.download_completed is not None
-            )
-        else:
-            state.download_pending_job = new_job
-            # Cancel in-flight download immediately when a newer request arrives.
-            # The latest request should start as soon as possible.
-            if deps.is_resolve_download_job(state.download_active_job):
-                active_cancel_event = deps.job_field(state.download_active_job, "cancel_event")
-                if active_cancel_event is not None:
-                    try:
-                        active_cancel_event.set()
-                    except deps.recoverable_exceptions:
-                        deps.logger.debug("Planetka: failed signaling active resolve cancellation", exc_info=True)
-                    except (RuntimeError, TypeError, ValueError, AttributeError):
-                        deps.logger.debug("Planetka: failed signaling active resolve cancellation", exc_info=True)
-            if state.download_active_job is None:
-                state.download_active_job = state.download_pending_job
-                state.download_pending_job = None
-                job_to_start = state.download_active_job
-            deps.resolve_trace(
-                f"queue request_id={request_id} manual={bool(manual_request)} scene={scene_id} tiles={len(target_tiles_tuple)}"
-            )
-            should_arm_timer = True
+    _ctx_start_resolve_download_thread(ctx, job_to_start)
+    _ctx_arm_resolve_timer(ctx)
+    return True
 
-    if deps.is_resolve_download_job(job_to_start):
-        _ctx_start_resolve_download_thread(ctx, job_to_start)
-    if should_arm_timer:
-        _ctx_arm_resolve_timer(ctx)
-    return should_arm_timer
-
-
-def _schedule_resolve_download(
-    scene,
-    target_tiles,
-    camera_signature,
-    output_signature,
-    manual_request=False,
-    texture_quality_mode_override=None,
-):
-    return _ctx_schedule_resolve_download(
-        _require_download_ctx(),
-        scene,
-        target_tiles,
-        camera_signature,
-        output_signature,
-        manual_request=manual_request,
-        texture_quality_mode_override=texture_quality_mode_override,
-    )
-
-
-def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
+def _ctx_start_resolve_download(ctx, scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
     deps = ctx.deps
     state = ctx.state
     if scene is None:
@@ -326,7 +205,7 @@ def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, 
         lock_reason = _ctx_blend_data_write_lock_reason(ctx)
         if lock_reason:
             deps.logger.info(
-                "Planetka: ignoring deferred queued resolve request during active render lock (%s).",
+                "Planetka: ignoring deferred resolve request during active render lock (%s).",
                 str(lock_reason),
             )
             return False
@@ -334,7 +213,7 @@ def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, 
     if camera_signature is None:
         return False
     output_signature = deps.output_resolution_signature(scene)
-    queued = _ctx_schedule_resolve_download(
+    started = _ctx_schedule_resolve_download(
         ctx,
         scene,
         tuple(target_tiles or ()),
@@ -343,11 +222,11 @@ def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, 
         manual_request=bool(manual_request),
         texture_quality_mode_override=texture_quality_mode_override,
     )
-    return bool(queued)
+    return bool(started)
 
 
-def queue_resolve_download(scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
-    return _ctx_queue_resolve_download(
+def start_resolve_download(scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
+    return _ctx_start_resolve_download(
         _require_download_ctx(),
         scene,
         target_tiles,
@@ -356,22 +235,22 @@ def queue_resolve_download(scene, target_tiles, manual_request=False, texture_qu
     )
 
 
-def _ctx_mark_manual_queued_resolve_error(ctx, scene, message):
+def _ctx_mark_manual_resolve_error(ctx, scene, message):
     deps = ctx.deps
-    text = str(message or "Unknown queued resolve error")
-    deps.logger.error("Planetka queued resolve failed: %s", text)
+    text = str(message or "Unknown resolve error")
+    deps.logger.error("Planetka resolve failed: %s", text)
     if scene is None:
         return
     try:
         scene["planetka_last_resolve_error"] = text
     except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed storing queued resolve error on scene", exc_info=True)
+        deps.logger.debug("Planetka: failed storing resolve error on scene", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
-        deps.logger.debug("Planetka: failed storing queued resolve error on scene", exc_info=True)
+        deps.logger.debug("Planetka: failed storing resolve error on scene", exc_info=True)
 
 
-def _mark_manual_queued_resolve_error(scene, message):
-    return _ctx_mark_manual_queued_resolve_error(_require_download_ctx(), scene, message)
+def _mark_manual_resolve_error(scene, message):
+    return _ctx_mark_manual_resolve_error(_require_download_ctx(), scene, message)
 
 
 def _ctx_read_scene_last_resolve_error(_ctx, scene):
@@ -439,7 +318,7 @@ def _ctx_write_last_resolve_summary(ctx, scene, tile_count, summary_total_bytes,
         tile_count,
         summary_total_bytes,
         total_seconds,
-        log_label="Planetka: failed storing queued resolve summary",
+        log_label="Planetka: failed storing resolve summary",
     )
 
 
@@ -516,7 +395,7 @@ def _ctx_handle_apply_readonly_failure(ctx, scene, job, manual_request, lock_rea
             f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
             f"attempts={lock_attempts}, reason={reason})"
         )
-        # Keep completed payload queued; pump will retry the same apply later.
+        # Keep the completed payload until the pump can retry the same apply.
         return None
 
     deps.resolve_trace(
@@ -534,7 +413,7 @@ def _ctx_handle_apply_readonly_failure(ctx, scene, job, manual_request, lock_rea
     )
     deps.job_set_field(job, "apply_operator_lock_since", 0.0)
     deps.job_set_field(job, "apply_operator_lock_attempts", 0)
-    _ctx_mark_manual_queued_resolve_error(
+    _ctx_mark_manual_resolve_error(
         ctx,
         scene,
         (
@@ -590,7 +469,7 @@ def _ctx_wait_or_drop_completed_during_guard(ctx, scene, job, manual_request, *,
     )
     deps.job_set_field(job, f"{field_prefix}_since", 0.0)
     deps.job_set_field(job, f"{field_prefix}_attempts", 0)
-    _ctx_mark_manual_queued_resolve_error(ctx, scene, str(user_message or "Resolve was blocked."))
+    _ctx_mark_manual_resolve_error(ctx, scene, str(user_message or "Resolve was blocked."))
     return True, None, None, None
 
 
@@ -627,7 +506,7 @@ def _ctx_handle_resolve_download_failure(ctx, job, error_message):
             f"(manual={bool(deps.job_field(job, 'manual_request', False))}, request_id={deps.job_field(job, 'request_id')}, "
             f"error={str(error_message or '').strip() or 'unknown'})"
         )
-        _ctx_mark_manual_queued_resolve_error(
+        _ctx_mark_manual_resolve_error(
             ctx,
             scene,
             f"Download failed: {str(error_message or '').strip() or 'Unknown error'}",
@@ -660,7 +539,7 @@ def _handle_resolve_download_failure(job, error_message):
     return _ctx_handle_resolve_download_failure(_require_download_ctx(), job, error_message)
 
 
-def _ctx_resolve_completion_epoch_state(ctx, job):
+def _ctx_resolve_completion_epoch_matches(ctx, job):
     deps = ctx.deps
     state = ctx.state
     try:
@@ -669,12 +548,7 @@ def _ctx_resolve_completion_epoch_state(ctx, job):
         job_epoch = -1
     with state.download_lock:
         current_epoch = int(state.download_epoch)
-        pending_job = state.download_pending_job
-    return (job_epoch == current_epoch), pending_job
-
-
-def _resolve_completion_epoch_state(job):
-    return _ctx_resolve_completion_epoch_state(_require_download_ctx(), job)
+    return job_epoch == current_epoch
 
 
 def _ctx_resolve_handle_cancel_or_failure(ctx, result, job, manual_request):
@@ -694,28 +568,6 @@ def _ctx_resolve_handle_cancel_or_failure(ctx, result, job, manual_request):
 
 def _resolve_handle_cancel_or_failure(result, job, manual_request):
     return _ctx_resolve_handle_cancel_or_failure(_require_download_ctx(), result, job, manual_request)
-
-
-def _ctx_resolve_log_pending_request_overlap(ctx, job, pending_job):
-    deps = ctx.deps
-    # Never drop a completed download just because a newer request exists.
-    # Finalize this resolve first; pending jobs will run immediately after.
-    if deps.is_resolve_download_job(pending_job):
-        try:
-            pending_request_id = int(deps.job_field(pending_job, "request_id", 0) or 0)
-            job_request_id = int(deps.job_field(job, "request_id", 0) or 0)
-            if pending_request_id > job_request_id:
-                deps.logger.debug(
-                    "Planetka: finalizing completed resolve %d while newer request %d is pending.",
-                    job_request_id,
-                    pending_request_id,
-                )
-        except (TypeError, ValueError):
-            pass
-
-
-def _resolve_log_pending_request_overlap(job, pending_job):
-    return _ctx_resolve_log_pending_request_overlap(_require_download_ctx(), job, pending_job)
 
 
 def _ctx_blend_data_write_lock_reason(ctx):
@@ -814,7 +666,7 @@ def _ctx_resolve_prepare_apply_context(ctx, job, manual_request):
             int(lock_attempts),
             str(lock_reason),
         )
-        _ctx_mark_manual_queued_resolve_error(
+        _ctx_mark_manual_resolve_error(
             ctx,
             scene,
             (
@@ -829,20 +681,20 @@ def _ctx_resolve_prepare_apply_context(ctx, job, manual_request):
 
     if deps.is_render_job_active():
         deps.logger.info(
-            "Planetka: applying queued resolve despite render guard because Blender data is writable "
+            "Planetka: applying resolve despite render guard because Blender data is writable "
             "(request_id=%s).",
             str(deps.job_field(job, "request_id", "")),
         )
 
     props = getattr(scene, "planetka", None)
     if deps.is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
-        _ctx_mark_manual_queued_resolve_error(ctx, scene, "Blocked by animation playback lock.")
+        _ctx_mark_manual_resolve_error(ctx, scene, "Blocked by animation playback lock.")
         return True, None, None, None
 
     if manual_request:
         current_output_signature = deps.output_resolution_signature(scene)
         if current_output_signature != deps.job_field(job, "output_signature"):
-            deps.logger.warning("Planetka queued resolve continuing despite output signature change.")
+            deps.logger.warning("Planetka resolve continuing despite output signature change.")
     return True, scene, scene_id, job_target_tiles
 
 
@@ -895,11 +747,11 @@ def _ctx_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_reques
                     apply_error,
                 )
             deps.logger.warning(
-                "Planetka queued resolve apply returned %s for %d tile(s).",
+                "Planetka resolve apply returned %s for %d tile(s).",
                 str(op_result),
                 len(job_target_tiles),
             )
-            _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
+            _ctx_mark_manual_resolve_error(ctx, scene, apply_error)
             return False
     except deps.recoverable_exceptions as exc:
         deps.resolve_trace(
@@ -924,7 +776,7 @@ def _ctx_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_reques
             int(len(job_target_tiles)),
             str(exc_text or "unknown"),
         )
-        _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
+        _ctx_mark_manual_resolve_error(ctx, scene, apply_error)
         return False
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
         deps.resolve_trace(
@@ -949,7 +801,7 @@ def _ctx_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_reques
             int(len(job_target_tiles)),
             str(exc_text or "unknown"),
         )
-        _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
+        _ctx_mark_manual_resolve_error(ctx, scene, apply_error)
         return False
     finally:
         state.in_flight = False
@@ -1021,9 +873,9 @@ def _ctx_finalize_resolve_apply(ctx, scene, scene_id, job, manual_request, job_t
         if "planetka_last_resolve_error" in scene:
             del scene["planetka_last_resolve_error"]
     except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
+        deps.logger.debug("Planetka: failed clearing resolve error marker", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
-        deps.logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
+        deps.logger.debug("Planetka: failed clearing resolve error marker", exc_info=True)
     if manual_request:
         try:
             scene[_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = job_quality_mode
@@ -1032,7 +884,7 @@ def _ctx_finalize_resolve_apply(ctx, scene, scene_id, job, manual_request, job_t
         except (RuntimeError, TypeError, ValueError, AttributeError):
             deps.logger.debug("Planetka: failed storing last manual resolve quality", exc_info=True)
         deps.logger.warning(
-            "Planetka queued resolve applied successfully (%d tile(s)).",
+            "Planetka resolve applied successfully (%d tile(s)).",
             len(job_target_tiles),
         )
     deps.resolve_trace(
@@ -1062,14 +914,11 @@ def _ctx_handle_resolve_download_complete(ctx, result):
         return True
     manual_request = bool(deps.job_field(job, "manual_request", False))
 
-    epoch_matches, pending_job = _ctx_resolve_completion_epoch_state(ctx, job)
-    if not epoch_matches:
+    if not _ctx_resolve_completion_epoch_matches(ctx, job):
         return True
 
     if _ctx_resolve_handle_cancel_or_failure(ctx, result, job, manual_request):
         return True
-
-    _ctx_resolve_log_pending_request_overlap(ctx, job, pending_job)
 
     consume, scene, scene_id, job_target_tiles = _ctx_resolve_prepare_apply_context(ctx, job, manual_request)
     if not consume:
@@ -1086,7 +935,7 @@ def _ctx_handle_resolve_download_complete(ctx, result):
         job_target_tiles,
     )
     if apply_result is None:
-        # Keep completed payload queued; pump will retry apply after transient read-only states clear.
+        # Keep the completed payload until transient read-only states clear.
         return False
     if not apply_result:
         return True
@@ -1183,23 +1032,12 @@ def _ctx_resolve_download_worker(ctx, job):
     finally:
         result["completed_at"] = float(time.monotonic())
         with state.download_lock:
-            if state.download_active_job is job:
-                state.download_active_job = None
-            state.download_thread = None
             job_epoch = int(deps.job_field(job, "epoch", -1))
             current_epoch = int(state.download_epoch)
-            store_completed = (job_epoch == current_epoch)
-            if store_completed and _ctx_job_supersedes_completed_payload(
-                ctx,
-                state.download_pending_job,
-                {"job": job},
-            ):
-                store_completed = False
-                deps.resolve_trace(
-                    "Worker dropped completed resolve because a newer request is pending "
-                    f"(completed_request_id={_ctx_job_request_id(ctx, job)}, "
-                    f"pending_request_id={_ctx_job_request_id(ctx, state.download_pending_job)})"
-                )
+            store_completed = bool(state.download_active_job is job and job_epoch == current_epoch)
+            if state.download_active_job is job:
+                state.download_active_job = None
+                state.download_thread = None
             if store_completed:
                 state.download_completed = result
             deps.resolve_trace(
@@ -1218,10 +1056,9 @@ def _ctx_resume_or_stop_download_pump_after_error(ctx):
     settings = ctx.settings
     with state.download_lock:
         has_active = state.download_active_job is not None
-        has_pending = state.download_pending_job is not None
         has_completed = state.download_completed is not None
     has_thread = state.download_thread is not None
-    if has_active or has_pending or has_completed or has_thread:
+    if has_active or has_completed or has_thread:
         state.download_timer_running = True
         return settings.download_pump_interval_sec
     state.download_timer_running = False
@@ -1248,22 +1085,6 @@ def _ctx_resolve_pump_timer(ctx):
         if isinstance(completed, dict):
             completed_job = completed.get("job") if isinstance(completed, dict) else None
             completed_request_id = deps.job_field(completed_job, "request_id")
-            with state.download_lock:
-                superseding_pending_job = (
-                    state.download_pending_job
-                    if _ctx_job_supersedes_completed_payload(ctx, state.download_pending_job, completed)
-                    else None
-                )
-            if deps.is_resolve_download_job(superseding_pending_job):
-                deps.resolve_trace(
-                    "Pump dropped stale completed resolve before apply "
-                    f"(completed_request_id={completed_request_id}, "
-                    f"pending_request_id={_ctx_job_request_id(ctx, superseding_pending_job)})"
-                )
-                with state.download_lock:
-                    if state.download_completed is completed:
-                        state.download_completed = None
-                completed = None
             if completed is not None:
                 now = time.monotonic()
                 try:
@@ -1324,25 +1145,9 @@ def _ctx_resolve_pump_timer(ctx):
                             if state.download_completed is completed:
                                 state.download_completed = None
 
-        job_to_start = None
         with state.download_lock:
-            can_start_pending = state.download_completed is None
-            if (
-                can_start_pending
-                and state.download_active_job is None
-                and deps.is_resolve_download_job(state.download_pending_job)
-            ):
-                state.download_active_job = state.download_pending_job
-                state.download_pending_job = None
-                job_to_start = state.download_active_job
-
             has_active = state.download_active_job is not None
-            has_pending = state.download_pending_job is not None
             has_completed = state.download_completed is not None
-
-        if deps.is_resolve_download_job(job_to_start):
-            _ctx_start_resolve_download_thread(ctx, job_to_start)
-            has_active = True
 
         try:
             scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
@@ -1353,9 +1158,9 @@ def _ctx_resolve_pump_timer(ctx):
         if scene is not None:
             deps.tag_view3d_redraw()
 
-        if not has_active and not has_pending and not has_completed:
+        if not has_active and not has_completed:
             state.download_timer_running = False
-            deps.resolve_trace("Pump stop: no active/pending/completed jobs")
+            deps.resolve_trace("Pump stop: no active/completed jobs")
             return None
 
         state.download_timer_running = True
@@ -1399,7 +1204,6 @@ def _ctx_stop_resolve(ctx):
                     deps.logger.debug("[PKA-STATE-001] Planetka: failed signaling resolve cancel event", exc_info=True)
 
         state.download_active_job = None
-        state.download_pending_job = None
         state.download_completed = None
 
     try:

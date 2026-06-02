@@ -156,7 +156,7 @@ def main():
 
         resolve_results = {}
         for quality in ("PREVIEW", "FULL"):
-            op_result = bpy.ops.planetka.set_texture_quality_and_resolve(texture_quality_mode=quality)
+            op_result = bpy.ops.planetka.set_texture_quality(texture_quality_mode=quality)
             if "FINISHED" not in op_result:
                 raise E2EError(f"Texture quality resolve failed for {quality}: {op_result}")
             immediate_runtime_status = state.get_resolve_runtime_status(scene)

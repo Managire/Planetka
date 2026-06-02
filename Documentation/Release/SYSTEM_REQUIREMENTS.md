@@ -2,16 +2,11 @@
 
 Planetka is developed primarily for Blender 5.0 and should be verified on Blender 4.5 LTS and newer supported Blender versions before release.
 
-Planetka is an online streaming product. Creating Earth, checking updates, and resolving Preview, Balanced, or Full Quality data require internet access and Planetka Cloud availability.
+Planetka is an online texture-streaming product. Creating Earth, checking updates, and resolving Preview, Balanced, or Full Quality data require internet access and Planetka Cloud availability.
 
-## Licence Model
+## Runtime Access
 
-Planetka has two single-seat licence options:
-
-- Personal Licence: personal and non-commercial use only.
-- Commercial Licence: required for commercial use.
-
-Both licences provide the same technical feature access and the same quality modes.
+Planetka connects to Planetka Cloud automatically through an anonymous install session. No email, access key, API key, or in-Blender account activation is required.
 
 ## Hardware
 

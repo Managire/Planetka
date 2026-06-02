@@ -23,4 +23,4 @@ Current payload includes:
 ## Notes
 
 - This is intentionally minimal for public support workflows.
-- It does not include legacy driver/rig/shading diagnostics.
+- It does not include obsolete driver/rig/shading diagnostics.

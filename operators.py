@@ -62,7 +62,6 @@ from .planetka_ops.navigation_ops import (
     PLANETKA_OT_SunlightPreset,
 )
 from .planetka_ops.scene_setup_ops import (
-    PLANETKA_OT_OptimizeRenderSettings,
     PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_SetBackgroundBlack,
 )
@@ -148,7 +147,6 @@ from .state import (
     remove_object_and_unused_mesh,
     resume_navigation_shot_updates,
     suspend_navigation_shot_updates,
-    update_resolve_size_estimates,
     warm_base_sphere_mesh_cache,
 )
 from .updater import kickoff_background_update_check
@@ -231,8 +229,8 @@ from .planetka_ops.navigation_helpers import (
 )
 
 
-class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
-    bl_idname = "planetka.set_texture_quality_and_resolve"
+class PLANETKA_OT_SetTextureQuality(bpy.types.Operator):
+    bl_idname = "planetka.set_texture_quality"
     bl_label = "Set Quality Level"
     bl_description = "Set Planetka Quality Level. Press Resolve Planetka to apply it."
 

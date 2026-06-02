@@ -1,10 +1,10 @@
-# Internal Test Accounts
+# Internal Test Access
 
-Use purpose-specific accounts rather than relying on licence differences for feature tests.
+Use purpose-specific test identities for admin, abuse-control, and data-streaming checks. The add-on does not use runtime account classs for feature access.
 
-Recommended accounts:
+Recommended identities:
 
-- `tom.griger@gmail.com`: owner/admin workflow and Commercial licence checks.
-- `personal@planetka.io`: Personal licence workflow checks.
+- `tom.griger@gmail.com`: owner/admin workflow checks.
+- `qa@planetka.io`: non-owner workflow checks.
 
-Both Personal and Commercial licences must have identical technical feature access. Tests should focus on activation, recovery, abuse controls, analytics labelling, and data-streaming reliability.
+Tests should focus on anonymous session creation, token refresh, admin block/unblock, analytics labelling, and data-streaming reliability.

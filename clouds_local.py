@@ -36,10 +36,10 @@ def _log_recoverable_once(code, message):
         logger.debug("[%s] %s (further occurrences suppressed)", code, message)
     _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
-COMMERCIAL_REFERENCE_BLEND_PATH = os.path.abspath(
+CLOUDS_REFERENCE_BLEND_PATH = os.path.abspath(
     os.getenv(
         "PLANETKA_CLOUDS_REFERENCE_BLEND_PATH",
-        "/Volumes/SSDA/Projects/planetka_commercial/Planetka.blend",
+        "/Volumes/SSDA/Projects/planetka/Planetka.blend",
     ),
 )
 GLOBAL_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
@@ -1959,7 +1959,7 @@ def _clear_cloud_drivers(obj):
 
 
 def _append_from_reference(object_names=(), material_names=(), blend_path=None):
-    blend_path = os.path.abspath(blend_path or COMMERCIAL_REFERENCE_BLEND_PATH)
+    blend_path = os.path.abspath(blend_path or CLOUDS_REFERENCE_BLEND_PATH)
     if not os.path.isfile(blend_path):
         raise RuntimeError(f"Planetka clouds reference blend missing: {blend_path}")
 

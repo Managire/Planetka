@@ -1,7 +1,7 @@
 export function createAuthSessionRouteHandlers(deps) {
   const strictStoredTier = (value) => {
-    const normalized = typeof deps.normalizeTierCodeStrict === "function"
-      ? deps.normalizeTierCodeStrict(value)
+    const normalized = typeof deps.normalizeAccessStatusStrict === "function"
+      ? deps.normalizeAccessStatusStrict(value)
       : "";
     if (!normalized) {
       throw new Error("invalid_user_status");
@@ -146,7 +146,7 @@ export function createAuthSessionRouteHandlers(deps) {
       email: session.email,
       status: strictSessionStatus,
     };
-    user = await deps.enforceUserPlanPolicy(db, user, env);
+    user = await deps.enforceUserAccessStatusPolicy(db, user, env);
 
     await deps.dbRun(
       db,

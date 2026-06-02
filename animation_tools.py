@@ -3490,9 +3490,9 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         try:
             stop_resolve()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed clearing queued resolve during restore", exc_info=True)
+            logger.debug("Planetka animation: failed clearing resolve during restore", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed clearing queued resolve during restore", exc_info=True)
+            logger.debug("Planetka animation: failed clearing resolve during restore", exc_info=True)
 
         scene = self._scene
         props = self._props
@@ -3986,14 +3986,14 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             runtime_status = {}
         if bool(runtime_status.get("running", False)):
-            self.report({'INFO'}, "Waiting for queued Planetka resolve to finish before Animation Render starts.")
+            self.report({'INFO'}, "Waiting for Planetka resolve to finish before Animation Render starts.")
             idle, final_status = _wait_for_resolve_idle(scene, timeout_sec=90.0, poll_sec=0.1)
             if not idle:
                 try:
                     final_code = str((final_status or {}).get("code", "") or "").strip().upper()
                 except (TypeError, ValueError, AttributeError):
                     final_code = ""
-                if final_code == "FINALIZE_QUEUED":
+                if final_code == "APPLYING":
                     self.report(
                         {'WARNING'},
                         (
@@ -4004,15 +4004,15 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                     try:
                         stop_resolve()
                     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                        logger.debug("Planetka animation: failed refreshing stuck pre-render resolve queue", exc_info=True)
+                        logger.debug("Planetka animation: failed refreshing stuck pre-render resolve", exc_info=True)
                     except (RuntimeError, TypeError, ValueError, AttributeError):
-                        logger.debug("Planetka animation: failed refreshing stuck pre-render resolve queue", exc_info=True)
+                        logger.debug("Planetka animation: failed refreshing stuck pre-render resolve", exc_info=True)
                     idle, final_status = _wait_for_resolve_idle(scene, timeout_sec=10.0, poll_sec=0.1)
             if not idle:
-                status_text = str((final_status or {}).get("text", "Resolve queued") or "Resolve queued")
+                status_text = str((final_status or {}).get("text", "Resolve running") or "Resolve running")
                 return fail(
                     self,
-                    f"Cannot start Animation Render while queued resolve is active ({status_text}).",
+                    f"Cannot start Animation Render while resolve is active ({status_text}).",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
                 )
@@ -4162,9 +4162,9 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             try:
                 stop_resolve()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: failed stopping queued resolve download before segment resolve", exc_info=True)
+                logger.debug("Planetka animation: failed stopping resolve download before segment resolve", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka animation: failed stopping queued resolve download before segment resolve", exc_info=True)
+                logger.debug("Planetka animation: failed stopping resolve download before segment resolve", exc_info=True)
             segment = dict((self._segments or [])[self._segment_index])
             self._active_segment = segment
             seg_start = int(segment.get("start", 1))

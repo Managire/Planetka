@@ -106,7 +106,7 @@ def _test_streaming_quality_ui_has_no_licence_gate() -> dict:
 
 def _test_quality_operator_is_streaming_only() -> dict:
     text = _source_text("operators.py")
-    quality_start = text.find("class PLANETKA_OT_SetTextureQualityAndResolve")
+    quality_start = text.find("class PLANETKA_OT_SetTextureQuality")
     resolve_start = text.find("class PLANETKA_OT_ResolvePlanetka", quality_start)
     next_class = text.find("class ", resolve_start + 1)
     if next_class < 0:
@@ -126,7 +126,7 @@ def _test_quality_operator_is_streaming_only() -> dict:
         "bpy.ops.planetka.load_textures" in resolve_text
         and 'scope_mode="CAMERA"' in resolve_text
         and "defer_download=True" in resolve_text,
-        "Resolve Planetka must queue the shared manual camera resolve path.",
+        "Resolve Planetka must start the shared manual camera resolve path.",
     )
     properties_text = _source_text("properties.py")
     update_text = properties_text[properties_text.find("def update_texture_quality_mode"):properties_text.find("def _show_earth_preview_description")]
@@ -235,23 +235,24 @@ def _test_resolve_has_no_forced_preview_jobs() -> dict:
     )
     return {"checked": True}
 
-def _test_stale_completed_resolve_cannot_override_newer_request() -> dict:
+def _test_manual_resolve_replaces_active_job() -> dict:
     text = _source_text("planetka_runtime/resolve.py")
+    context_text = _source_text("planetka_runtime/resolve_context.py")
+    state_text = _source_text("planetka_runtime/resolve_state.py")
     _assert(
-        "_ctx_job_supersedes_completed_payload" in text,
-        "Download pump must be able to identify stale completed resolves superseded by newer requests.",
+        "second job slot" not in text + context_text + state_text,
+        "Manual resolve must not maintain a second job slot.",
     )
     _assert(
-        "queue dropped stale completed resolve" in text,
-        "Queueing a newer request must clear an older completed payload before it can apply.",
+        "state.download_epoch = int(state.download_epoch) + 1" in text
+        and "state.download_completed = None" in text
+        and "state.download_active_job = new_job" in text,
+        "Starting Resolve Planetka must cancel/replace the active job and clear any ready-to-apply payload.",
     )
     _assert(
-        "Worker dropped completed resolve because a newer request is pending" in text,
-        "Download worker must not store an old completed payload when a newer different request is already pending.",
-    )
-    _assert(
-        "Pump dropped stale completed resolve before apply" in text,
-        "Pump must drop stale completed payloads before shader apply.",
+        "_ctx_job_supersedes" + "_completed_payload" not in text
+        and "state.download_" + "pending" + "_job" not in text,
+        "Stale-completed queue logic must not reappear in the simplified manual resolve pipeline.",
     )
     return {"checked": True}
 
@@ -359,7 +360,7 @@ def main() -> int:
             ("quality_switch_fast_path", _test_quality_switch_fast_path),
             ("obsolete_active_view_quality_override_removed", _test_obsolete_active_view_quality_override_removed),
             ("resolve_has_no_forced_preview_jobs", _test_resolve_has_no_forced_preview_jobs),
-            ("stale_completed_resolve_cannot_override_newer_request", _test_stale_completed_resolve_cannot_override_newer_request),
+            ("manual_resolve_replaces_active_job", _test_manual_resolve_replaces_active_job),
             ("animation_stop_is_cooperative", _test_animation_stop_is_cooperative),
             ("animation_restart_ignores_old_cancel_epoch", _test_animation_restart_ignores_old_cancel_epoch),
             ("full_quality_details_removed_from_data_control", _test_full_quality_details_removed_from_data_control),

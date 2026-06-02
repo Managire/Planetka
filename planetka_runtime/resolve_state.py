@@ -121,8 +121,6 @@ def _is_resolve_busy(ctx=None):
     with state.download_lock:
         if _is_resolve_download_job(state.download_active_job):
             return True
-        if _is_resolve_download_job(state.download_pending_job):
-            return True
         if isinstance(state.download_completed, dict):
             return True
     return False
@@ -146,20 +144,16 @@ def get_resolve_runtime_status(scene=None, ctx=None):
 
     with state.download_lock:
         active_job = state.download_active_job if _is_resolve_download_job(state.download_active_job) else None
-        pending_job = state.download_pending_job if _is_resolve_download_job(state.download_pending_job) else None
         completed_payload = dict(state.download_completed) if isinstance(state.download_completed, dict) else None
 
     thread_running = state.download_thread is not None
     in_flight = bool(state.in_flight)
-    pending_count = int((1 if active_job else 0) + (1 if pending_job else 0))
+    active_count = int(1 if active_job else 0)
     active_request_id = None
     active_quality_mode = ""
     if _is_resolve_download_job(active_job):
         active_request_id = _job_field(active_job, "request_id")
         active_quality_mode = _job_quality_mode(active_job, deps)
-    elif _is_resolve_download_job(pending_job):
-        active_request_id = _job_field(pending_job, "request_id")
-        active_quality_mode = _job_quality_mode(pending_job, deps)
     if not active_quality_mode and isinstance(completed_payload, dict):
         active_quality_mode = _job_quality_mode(completed_payload.get("job"), deps)
 
@@ -168,8 +162,8 @@ def get_resolve_runtime_status(scene=None, ctx=None):
         "text": "Idle",
         "running": False,
         "active_request_id": active_request_id,
-        "pending_count": pending_count,
-        "completed_pending": bool(completed_payload),
+        "active_count": active_count,
+        "apply_pending": bool(completed_payload),
         "quality_mode": active_quality_mode,
     }
 
@@ -199,7 +193,7 @@ def get_resolve_runtime_status(scene=None, ctx=None):
         return status
 
     if isinstance(completed_payload, dict):
-        can_orphan = not bool(in_flight) and not bool(thread_running) and active_job is None and pending_job is None
+        can_orphan = not bool(in_flight) and not bool(thread_running) and active_job is None
         if can_orphan:
             render_running = False
             try:
@@ -224,11 +218,7 @@ def get_resolve_runtime_status(scene=None, ctx=None):
                     completed_payload = None
 
     if isinstance(completed_payload, dict):
-        status.update({"code": "FINALIZE_QUEUED", "text": "Download finished, waiting to finalize", "running": True})
-        return status
-
-    if pending_count > 0:
-        status.update({"code": "QUEUED", "text": "Resolve queued", "running": True})
+        status.update({"code": "APPLYING", "text": "Applying Resolve", "running": True})
         return status
 
     return status

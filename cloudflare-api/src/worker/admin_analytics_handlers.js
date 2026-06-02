@@ -20,18 +20,12 @@ function fmtMbLocal(value, parseNonNegativeInteger) {
 
 const ANALYTICS_TILE_COLOR = "#60a5fa";
 
-function snapshotHasTierSplit(snapshot) {
+function snapshotHasTopLineTotals(snapshot) {
   const topLine = snapshot && snapshot.top_line && typeof snapshot.top_line === "object" ? snapshot.top_line : {};
-  const users = topLine.users && typeof topLine.users === "object" ? topLine.users : {};
-  const resolves = topLine.resolves && typeof topLine.resolves === "object" ? topLine.resolves : {};
-  const tileRequests = topLine.tile_requests && typeof topLine.tile_requests === "object" ? topLine.tile_requests : {};
-  const gbServed = topLine.gb_served && typeof topLine.gb_served === "object" ? topLine.gb_served : {};
-  return ["personal", "commercial", "total"].every((key) =>
-    Object.prototype.hasOwnProperty.call(users, key)
-    && Object.prototype.hasOwnProperty.call(resolves, key)
-    && Object.prototype.hasOwnProperty.call(tileRequests, key)
-    && Object.prototype.hasOwnProperty.call(gbServed, key)
-  );
+  return ["users", "resolves", "tile_requests", "gb_served"].every((key) => {
+    const section = topLine[key] && typeof topLine[key] === "object" ? topLine[key] : {};
+    return Object.prototype.hasOwnProperty.call(section, "total");
+  });
 }
 
 function parseLiveMapTile(tileKey) {
@@ -95,19 +89,19 @@ export async function handleAdminAnalyticsData(request, env, deps) {
     url.searchParams.get("tile_map_minutes"),
     deps.DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
   );
-  const planFilter = "all";
+  const access_statusFilter = "all";
   try {
-    let snapshot = await deps.loadAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes);
-    if (!snapshot || deps.isAnalyticsSnapshotStale(snapshot) || !snapshotHasTierSplit(snapshot)) {
-      snapshot = await deps.collectAnalyticsSnapshot(db, windowMinutes, planFilter, tileMapMinutes, env);
+    let snapshot = await deps.loadAnalyticsSnapshot(env, windowMinutes, access_statusFilter, tileMapMinutes);
+    if (!snapshot || deps.isAnalyticsSnapshotStale(snapshot) || !snapshotHasTopLineTotals(snapshot)) {
+      snapshot = await deps.collectAnalyticsSnapshot(db, windowMinutes, access_statusFilter, tileMapMinutes, env);
       snapshot = {
         ...snapshot,
         snapshot_minutes: windowMinutes,
-        snapshot_plan_filter: planFilter,
+        snapshot_access_status_filter: access_statusFilter,
         snapshot_tile_map_minutes: tileMapMinutes,
         snapshot_source: "live_rebuild",
       };
-      await deps.storeAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes, snapshot);
+      await deps.storeAnalyticsSnapshot(env, windowMinutes, access_statusFilter, tileMapMinutes, snapshot);
     }
     return deps.json(
       {
@@ -126,7 +120,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
         error: message,
         user_id: String(user && user.id || ""),
         user_email: String(user && user.email || ""),
-        plan_filter: "all",
+        access_status_filter: "all",
         window_minutes: windowMinutes,
         tile_map_minutes: tileMapMinutes,
       }),
@@ -178,7 +172,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   let initialSnapshot = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
-    if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot) || !snapshotHasTierSplit(initialSnapshot)) {
+    if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot) || !snapshotHasTopLineTotals(initialSnapshot)) {
       initialSnapshot = await deps.collectAnalyticsSnapshot(
         auth.db,
         10080,
@@ -189,7 +183,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
       initialSnapshot = {
         ...initialSnapshot,
         snapshot_minutes: 10080,
-        snapshot_plan_filter: "all",
+        snapshot_access_status_filter: "all",
         snapshot_tile_map_minutes: 10,
         snapshot_source: "live_rebuild",
       };
@@ -333,7 +327,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     return `<tr>
       <td>${userEmail}</td>
       <td><code>${deps.escapeHtml(userIdRaw)}</code></td>
-      <td><span class="plan-pill ${deps.escapeHtml(accountState)}">${deps.escapeHtml(accountStateLabel)}</span></td>
+      <td><span class="access_status-pill ${deps.escapeHtml(accountState)}">${deps.escapeHtml(accountStateLabel)}</span></td>
       <td>${fmtInt(row && (row.total_resolve_count ?? row.resolve_count))}</td>
       <td>${fmtMb(row && row.data_downloaded_bytes)} MB</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
@@ -361,8 +355,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
     .action-wrap { white-space: normal; min-width: 300px; }
-    .plan-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
-    .plan-pill.active { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.20); }
+    .access_status-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
+    .access_status-pill.active { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.20); }
     .error { color: #fca5a5; }
   </style>
 </head>
