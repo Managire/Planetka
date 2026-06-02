@@ -236,8 +236,6 @@ def _update_anim_preset_defaults(self, context):
         preset = "ZOOM"
     elif preset in {"ARC_LEFT", "ARC_RIGHT"}:
         preset = "ARC"
-    elif preset == "FLYBY":
-        preset = "NONE"
     if preset in {"", "NONE"}:
         return
 
@@ -270,8 +268,6 @@ def _update_anim_preview_keyframes(self, context):
         preset = "ZOOM"
     elif preset in {"ARC_LEFT", "ARC_RIGHT"}:
         preset = "ARC"
-    elif preset == "FLYBY":
-        preset = "NONE"
     if preset in {"", "NONE"}:
         return
 
@@ -932,15 +928,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         description="Interpolation style used for cinematic preview keyframes",
     )
 
-    anim_start_altitude_km: FloatProperty(
-        name="Start Altitude (km)",
-        default=100.0,
-        min=0.0,
-        max=50000.0,
-        precision=2,
-        description="Legacy start altitude value kept for compatibility with older animation files",
-    )
-
     anim_end_altitude_km: FloatProperty(
         name="End Altitude (km)",
         default=400.0,
@@ -967,24 +954,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         ),
         default="CLOCKWISE",
         description="Direction used by the Circle cinematic preset",
-    )
-
-    anim_flyby_degrees: FloatProperty(
-        name="Arc Travel Degrees",
-        default=1.0,
-        min=0.1,
-        max=120.0,
-        precision=2,
-        description="Legacy angular travel distance value kept for compatibility with older animation files",
-    )
-
-    anim_flyby_camera_heading_deg: FloatProperty(
-        name="Legacy Camera Heading (°)",
-        default=0.0,
-        soft_min=-180.0,
-        soft_max=180.0,
-        precision=2,
-        description="Legacy camera heading offset kept for compatibility with older animation files",
     )
 
     anim_zoom_rotate_degrees: FloatProperty(
@@ -1117,7 +1086,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     anim_waypoints: CollectionProperty(
         name="Waypoints",
         type=PlanetkaAnimationWaypoint,
-        description="Legacy waypoint data kept for compatibility with older animation files",
+        description="Saved camera waypoints used by the Waypoints animation preset",
     )
 
     anim_waypoint_active_index: IntProperty(

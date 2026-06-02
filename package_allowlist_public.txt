@@ -27,13 +27,11 @@ properties.py
 r2_source.py
 render_prep.py
 sanity_utils.py
-scene_schema.py
 shader_utils.py
 state.py
 streaming_utils.py
 tile_utils.py
 ui.py
-unsupported.py
 updater.py
 validation.py
 

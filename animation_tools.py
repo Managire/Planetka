@@ -51,7 +51,6 @@ _ACTIVE_ANIMATION_RENDER_OPERATOR = None
 
 
 ANIMATION_COLLECTION_NAME = "Planetka Animation Preview"
-LEGACY_ANIMATION_COLLECTION_NAMES = ("Planetka Animation Prepared",)
 ANIMATION_SEGMENT_OBJECT_PREFIX = "Planetka Anim Preview"
 ANIMATION_SEGMENT_MATERIAL_PREFIX = "Planetka Anim Material"
 ANIMATION_SEGMENT_TAG_KEY = "planetka_animation_segment"
@@ -1103,13 +1102,7 @@ def clear_prepared_animation_assets(scene):
         except (RuntimeError, TypeError, ValueError):
             continue
 
-    collection_names = [str(ANIMATION_COLLECTION_NAME or "").strip()]
-    collection_names.extend(
-        str(name or "").strip()
-        for name in tuple(LEGACY_ANIMATION_COLLECTION_NAMES or ())
-        if str(name or "").strip()
-    )
-    for collection_name in dict.fromkeys(collection_names):
+    for collection_name in (str(ANIMATION_COLLECTION_NAME or "").strip(),):
         collection = bpy.data.collections.get(collection_name)
         if collection is None or collection.objects:
             continue
@@ -1648,9 +1641,9 @@ def _iter_action_fcurves(action):
     if action is None:
         return
 
-    legacy_fcurves = getattr(action, "fcurves", None)
-    if legacy_fcurves is not None:
-        for fcurve in legacy_fcurves:
+    action_fcurves = getattr(action, "fcurves", None)
+    if action_fcurves is not None:
+        for fcurve in action_fcurves:
             yield fcurve
         return
 
@@ -1736,8 +1729,6 @@ def _normalize_cinematic_preset(value):
         return "ZOOM"
     if token in {"ARC_LEFT", "ARC_RIGHT"}:
         return "ARC"
-    if token == "FLYBY":
-        return "NONE"
     if token in {"NONE", "ORBIT", "ARC", "ZOOM", "A_TO_B", "WAYPOINTS"}:
         return token
     return "NONE"
@@ -2095,21 +2086,6 @@ def _build_shot_pair(scene, props, base_shot=None):
     return start, end
 
 
-def _build_simple_flyby(scene, props, base_shot=None):
-    strength = 1.0
-    base = dict(base_shot) if isinstance(base_shot, dict) else _current_camera_base_shot(scene, props)
-    return {
-        "lon": _normalize_longitude(float(base.get("lon", 0.0))),
-        "lat": _clamp_latitude(float(base.get("lat", 0.0))),
-        "alt_km": max(0.0, float(base.get("alt_km", 400.0))),
-        "heading_deg": float(base.get("heading_deg", 0.0)),
-        "tilt_deg": float(base.get("tilt_deg", 25.0)),
-        "roll_deg": float(base.get("roll_deg", 0.0)),
-        "flyby_degrees": max(0.1, abs(float(getattr(props, "anim_flyby_degrees", 12.0)) * strength)),
-        "camera_heading_deg": float(getattr(props, "anim_flyby_camera_heading_deg", 0.0)),
-    }
-
-
 def _apply_sampled_navigation_preview(scene, start_shot, end_shot, start_frame, end_frame, motion_curve):
     total = max(1, int(end_frame) - int(start_frame))
     compat_euler = None
@@ -2119,119 +2095,6 @@ def _apply_sampled_navigation_preview(scene, start_shot, end_shot, start_frame, 
         shot = _interpolate_shot(start_shot, end_shot, t)
         pose = _set_camera_from_shot(scene, shot, frame, rotation_compat_euler=compat_euler)
         compat_euler = pose.get("rotation_euler")
-
-
-def _apply_simple_flyby_preview(scene, flyby, start_frame, end_frame, motion_curve):
-    base_shot = {
-        "lon": float(flyby.get("lon", 0.0)),
-        "lat": float(flyby.get("lat", 0.0)),
-        "alt_km": float(flyby.get("alt_km", 0.0)),
-        "heading_deg": float(flyby.get("heading_deg", 0.0)),
-        "tilt_deg": float(flyby.get("tilt_deg", 0.0)),
-        "roll_deg": float(flyby.get("roll_deg", 0.0)),
-    }
-    base_pose = _compute_navigation_pose(scene, base_shot)
-    base_position = base_pose["location"].copy()
-    base_rotation = base_pose["rotation"].copy()
-    camera_heading_deg = float(flyby.get("camera_heading_deg", 0.0))
-    if abs(camera_heading_deg) > 1e-9:
-        try:
-            up_axis = base_pose["up_world"].copy()
-            if up_axis.length_squared <= 1e-12:
-                up_axis = Vector((0.0, 0.0, 1.0))
-            up_axis.normalize()
-            base_rotation = Quaternion(up_axis, math.radians(camera_heading_deg)) @ base_rotation
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, KeyError, AttributeError):
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-    north = base_pose["north_world"].copy()
-    east = base_pose["east_world"].copy()
-    heading_rad = math.radians(float(flyby.get("heading_deg", 0.0)))
-    travel_direction = (north * math.cos(heading_rad)) + (east * math.sin(heading_rad))
-    if travel_direction.length_squared <= 1e-12:
-        travel_direction = north
-    travel_direction.normalize()
-
-    travel_distance = float(base_pose["earth_radius_bu"]) * math.radians(float(flyby.get("flyby_degrees", 12.0)))
-    half_distance = max(1e-6, travel_distance * 0.5)
-    start_position = base_position.copy()
-    end_position = base_position + (travel_direction * (half_distance * 2.0))
-
-    camera = getattr(scene, "camera", None)
-    if camera is None:
-        raise RuntimeError("Active camera is missing.")
-
-    total = max(1, int(end_frame) - int(start_frame))
-    compat_euler = None
-    for frame in range(int(start_frame), int(end_frame) + 1):
-        raw_t = 0.0 if total <= 0 else float(frame - int(start_frame)) / float(total)
-        t = _eased_progress(raw_t, motion_curve)
-        position = start_position.lerp(end_position, t)
-        rotation_euler = _quaternion_to_camera_euler(camera, base_rotation, compat_euler=compat_euler)
-        compat_euler = rotation_euler.copy()
-        _write_camera_transform_keyframe(camera, int(frame), position, rotation_euler)
-
-
-def _compute_simple_flyby_endpoints(scene, flyby):
-    base_shot = {
-        "lon": float(flyby.get("lon", 0.0)),
-        "lat": float(flyby.get("lat", 0.0)),
-        "alt_km": float(flyby.get("alt_km", 0.0)),
-        "heading_deg": float(flyby.get("heading_deg", 0.0)),
-        "tilt_deg": float(flyby.get("tilt_deg", 0.0)),
-        "roll_deg": float(flyby.get("roll_deg", 0.0)),
-    }
-    base_pose = _compute_navigation_pose(scene, base_shot)
-    base_position = base_pose["location"].copy()
-    base_rotation = base_pose["rotation"].copy()
-    camera_heading_deg = float(flyby.get("camera_heading_deg", 0.0))
-    if abs(camera_heading_deg) > 1e-9:
-        try:
-            up_axis = base_pose["up_world"].copy()
-            if up_axis.length_squared <= 1e-12:
-                up_axis = Vector((0.0, 0.0, 1.0))
-            up_axis.normalize()
-            base_rotation = Quaternion(up_axis, math.radians(camera_heading_deg)) @ base_rotation
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, KeyError, AttributeError):
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-    camera_scale = base_pose["scale"]
-    north = base_pose["north_world"].copy()
-    east = base_pose["east_world"].copy()
-    heading_rad = math.radians(float(flyby.get("heading_deg", 0.0)))
-    travel_direction = (north * math.cos(heading_rad)) + (east * math.sin(heading_rad))
-    if travel_direction.length_squared <= 1e-12:
-        travel_direction = north
-    travel_direction.normalize()
-
-    travel_distance = float(base_pose["earth_radius_bu"]) * math.radians(float(flyby.get("flyby_degrees", 12.0)))
-    half_distance = max(1e-6, travel_distance * 0.5)
-    start_position = base_position.copy()
-    end_position = base_position + (travel_direction * (half_distance * 2.0))
-    return {
-        "start_position": start_position,
-        "end_position": end_position,
-        "rotation": base_rotation,
-        "scale": camera_scale,
-    }
-
-
-def _apply_simple_flyby_keyframes(scene, flyby, start_frame, end_frame):
-    camera = getattr(scene, "camera", None)
-    if camera is None:
-        raise RuntimeError("Active camera is missing.")
-    endpoints = _compute_simple_flyby_endpoints(scene, flyby)
-    start_position = endpoints.get("start_position")
-    end_position = endpoints.get("end_position")
-    base_rotation = endpoints.get("rotation")
-    if start_position is None or end_position is None or base_rotation is None:
-        raise RuntimeError("Failed to compute flyby camera path.")
-    start_euler = _quaternion_to_camera_euler(camera, base_rotation)
-    end_euler = _quaternion_to_camera_euler(camera, base_rotation, compat_euler=start_euler)
-    _write_camera_transform_keyframe(camera, int(start_frame), start_position, start_euler)
-    _write_camera_transform_keyframe(camera, int(end_frame), end_position, end_euler)
 
 
 def _ensure_camera_and_earth(scene):
@@ -2607,7 +2470,7 @@ def _set_material_displacement_bump_only(material):
         "displacement_method",
         ("BUMP", "BUMP_ONLY"),
     ) or changed_any
-    # Legacy cycles-level property (kept for compatibility).
+    # Some Blender builds still expose displacement mode under material.cycles.
     cycles_settings = getattr(material, "cycles", None)
     changed_any = _set_enum_property_if_available(
         cycles_settings,

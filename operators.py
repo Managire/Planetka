@@ -53,10 +53,7 @@ from .planetka_ops.earth_lifecycle_helpers import (
     _validate_create_earth_texture_source,
 )
 from .planetka_ops.import_export_ops import (
-    PLANETKA_OT_ConfirmImportNewData,
     PLANETKA_OT_CreateStandaloneFile,
-    PLANETKA_OT_ImportNewData,
-    PLANETKA_OT_SelectTextureSource,
 )
 from .planetka_ops import earth_lifecycle_ops as _earth_lifecycle_ops
 from .planetka_ops import navigation_ops as _navigation_ops

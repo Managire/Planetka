@@ -407,10 +407,6 @@ def _ctx_store_resolve_summary(
         scene[deps.last_resolve_downloaded_mb_key] = float(
             max(0.0, float(summary_total_bytes) / float(1024.0 ** 2))
         )
-        # Keep legacy key updated for backward compatibility with older UI builds.
-        scene[deps.last_resolve_downloaded_gb_key] = float(
-            max(0.0, float(summary_total_bytes) / float(1024.0 ** 3))
-        )
         scene[deps.last_resolve_total_seconds_key] = float(max(0.0, float(total_seconds)))
     except deps.recoverable_exceptions:
         deps.logger.debug(str(log_label or "Planetka: failed storing resolve summary"), exc_info=True)

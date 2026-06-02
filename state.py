@@ -70,7 +70,6 @@ from .planetka_runtime.handler_runtime_context import (
     HandlerRuntimeState,
 )
 from .planetka_runtime import handler_runtime as _handler_runtime
-from .scene_schema import migrate_scene_schema
 
 
 logger = logging.getLogger(__name__)
@@ -125,11 +124,9 @@ _SYNC_IDPROP_MAP = {
     "anim_frame_end": "planetka_anim_frame_end",
     "anim_camera_strength": "planetka_anim_camera_strength",
     "anim_motion_curve": "planetka_anim_motion_curve",
-    "anim_start_altitude_km": "planetka_anim_start_altitude_km",
     "anim_end_altitude_km": "planetka_anim_end_altitude_km",
     "anim_orbit_degrees": "planetka_anim_orbit_degrees",
     "anim_circle_direction": "planetka_anim_circle_direction",
-    "anim_flyby_degrees": "planetka_anim_flyby_degrees",
     "anim_zoom_rotate_degrees": "planetka_anim_zoom_rotate_degrees",
     "anim_prepare_max_segments": "planetka_anim_prepare_max_segments",
     "anim_prepare_max_textures_mb": "planetka_anim_prepare_max_textures_mb",
@@ -161,22 +158,6 @@ SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
 _MESH_UTILS_MODULE = None
 _SHADER_UTILS_MODULE = None
 _OPERATORS_MODULE = None
-_LEGACY_SCENE_IDPROPS = (
-    "planetka_view_elevation",
-    "planetka_sampling_grid_density",
-    "planetka_mesh_expansion",
-    "planetka_resolve_scope",
-    "planetka_nav_look_offset_km",
-    "planetka_nav_keep_facing_anchor",
-    "planetka_nav_azimuth_step_deg",
-    "planetka_nav_tilt_step_deg",
-    "planetka_nav_altitude_step_km",
-    "planetka_nav_look_offset_horizontal_km",
-    "planetka_nav_look_offset_vertical_km",
-    "planetka_anim_prepare_frame_step",
-    "planetka_anim_flyby_look_mode",
-    "planetka_render_engine_optimization",
-)
 _TILE_UTILS_MODULE = None
 _STREAMING_UTILS_MODULE = None
 
@@ -204,7 +185,6 @@ _RESOLVE_DOWNLOAD_SCENE_WAIT_SEC = 1.5
 _RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC = 15.0
 LAST_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
 LAST_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
-LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
 LAST_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
 RESOLVE_ESTIMATE_FULL_BYTES_KEY = "planetka_resolve_estimate_full_bytes"
 RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY = "planetka_resolve_estimate_preview_bytes"
@@ -416,26 +396,6 @@ def _sync_navigation_idprops_from_props(scene):
             scene,
             props,
             navigation_sync_idprop_map=_NAVIGATION_SYNC_IDPROP_MAP,
-            recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-            logger=logger,
-        )
-    finally:
-        _IDPROP_SYNCING = False
-
-
-def _sync_props_from_idprops(scene):
-    global _IDPROP_SYNCING
-    if _IDPROP_SYNCING:
-        return
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is None:
-        return
-    _IDPROP_SYNCING = True
-    try:
-        _scene_sync.sync_props_from_idprops(
-            scene,
-            props,
-            sync_idprop_map=_SYNC_IDPROP_MAP,
             recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
             logger=logger,
         )
@@ -1014,8 +974,6 @@ def _build_handler_runtime_context():
         reset_navigation_camera_control_runtime_state=_reset_navigation_camera_control_runtime_state,
         iter_scenes=_iter_scenes,
         set_planetka_logging=set_planetka_logging,
-        migrate_scene_schema=migrate_scene_schema,
-        legacy_scene_idprops=_LEGACY_SCENE_IDPROPS,
         sync_idprops_from_props=_sync_idprops_from_props,
         is_navigation_user_edit_active=_is_navigation_user_edit_active,
         scene_has_keyed_runtime_path=_scene_has_keyed_runtime_path,
@@ -1066,10 +1024,6 @@ def mark_render_job_progress(scene=None, frame_written=False):
 
 def _sync_logging_from_scenes():
     return _handler_runtime.sync_logging_from_scenes(_HANDLER_RUNTIME_CTX)
-
-
-def migrate_scene(scene):
-    return _handler_runtime.migrate_scene(scene, _HANDLER_RUNTIME_CTX)
 
 
 def _initialize_props_from_imported_planetka(scene):
@@ -1128,7 +1082,6 @@ def _build_resolve_contexts():
         tag_view3d_redraw=_tag_view3d_redraw,
         last_resolve_tile_count_key=LAST_RESOLVE_TILE_COUNT_KEY,
         last_resolve_downloaded_mb_key=LAST_RESOLVE_DOWNLOADED_MB_KEY,
-        last_resolve_downloaded_gb_key=LAST_RESOLVE_DOWNLOADED_GB_KEY,
         last_resolve_total_seconds_key=LAST_RESOLVE_TOTAL_SECONDS_KEY,
     )
     state_deps = ResolveStateDeps(

@@ -16,7 +16,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminUserBlock,
     handleAdminUserUnblock,
     handleAdminUserHardBlock,
-    handleAdminUserSetPlan,
     handleAdminQaAuthReset,
   } = deps;
 
@@ -75,11 +74,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/users/hard-block":
       if (request.method === "POST") {
         return await handleAdminUserHardBlock(request, env);
-      }
-      return null;
-    case "/admin/users/set-plan":
-      if (request.method === "POST") {
-        return await handleAdminUserSetPlan(request, env);
       }
       return null;
     case "/admin/qa/auth-reset":

@@ -201,35 +201,6 @@ export async function handleAdminUserHardBlock(request, env, deps) {
   return deps.json({ ok: true, action: "hard_block_user", user_id: targetUserId, user_email: targetEmail, status: "blocked", blocked_device_id: blockedDeviceId || null, blocked_ip: blockedIp || null, revoked_sessions: revokedSessions, updated_at: now }, 200, env);
 }
 
-export async function handleAdminUserSetPlan(request, env, deps) {
-  const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) return auth.error;
-  const { db, user: adminUser } = auth;
-  await deps.ensureRefreshSessionColumns(db);
-  const body = await deps.parseJson(request);
-  const target = await resolveTargetUser(db, body, deps);
-  if (target.error) {
-    return deps.json({ ok: false, error: target.error }, target.error === "user_not_found" ? 404 : 400, env);
-  }
-
-  const targetPlan = deps.normalizeRequestedPlan(body && body.plan_code || "");
-  if (![deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL].includes(targetPlan)) {
-    return deps.json({ ok: false, error: "invalid_plan_code" }, 400, env);
-  }
-  if (deps.isBlockedStatus && deps.isBlockedStatus(target.user.status)) {
-    return deps.json({ ok: false, error: "user_blocked", message: "Unblock the user before changing licence type." }, 409, env);
-  }
-
-  const targetUserId = String(target.user.id || "").trim();
-  const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const now = deps.nowIso();
-  await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);
-  const revokedSessions = await revokeRefreshSessions(db, targetUserId, deps);
-  console.log("admin.user_plan_set", JSON.stringify({ user_id: targetUserId, user_email: targetEmail, plan_code: targetPlan, admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""), revoked_sessions: revokedSessions }));
-  await invalidateAdminAnalyticsSnapshots(env, deps);
-  return deps.json({ ok: true, action: "set_user_plan", user_id: targetUserId, user_email: targetEmail, plan_code: targetPlan, revoked_sessions: revokedSessions, updated_at: now }, 200, env);
-}
-
 export async function handleAdminQaAuthReset(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
   if (auth.error) return auth.error;

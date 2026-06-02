@@ -322,27 +322,18 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userEmailRaw = String(row && row.user_email || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
-    const plan = (status === "commercial")
-      ? "commercial"
-      : (status === "blocked" ? "blocked" : "personal");
-    const planLabel = plan === "commercial" ? "Commercial" : (plan === "blocked" ? "Blocked" : "Personal");
-    const planButtons = ["personal", "commercial"]
-      .filter((code) => code !== plan)
-      .map((code) => {
-        const label = code === "commercial" ? "Commercial" : "Personal";
-        return `<button class="action-btn plan" data-action="set-plan" data-plan-code="${encodeURIComponent(code)}" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set ${deps.escapeHtml(label)}</button>`;
-      })
-      .join("");
+    const accountState = status === "blocked" ? "blocked" : "active";
+    const accountStateLabel = accountState === "blocked" ? "Blocked" : "Active";
     let actionButtons = "";
     if (status === "blocked") {
       actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `${planButtons}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td>${userEmail}</td>
       <td><code>${deps.escapeHtml(userIdRaw)}</code></td>
-      <td><span class="plan-pill ${deps.escapeHtml(plan)}">${deps.escapeHtml(planLabel)}</span></td>
+      <td><span class="plan-pill ${deps.escapeHtml(accountState)}">${deps.escapeHtml(accountStateLabel)}</span></td>
       <td>${fmtInt(row && (row.total_resolve_count ?? row.resolve_count))}</td>
       <td>${fmtMb(row && row.data_downloaded_bytes)} MB</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
@@ -367,13 +358,11 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     th { color:#93c5fd; font-weight:600; white-space: nowrap; }
     th a { color:#93c5fd; text-decoration:none; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
-    .action-btn.plan { border-color: #374151; color: #e5e7eb; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
     .action-wrap { white-space: normal; min-width: 300px; }
     .plan-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
-    .plan-pill.commercial { color:#fecaca; border-color:#991b1b; background:rgba(153,27,27,.20); }
-    .plan-pill.personal { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.20); }
+    .plan-pill.active { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.20); }
     .error { color: #fca5a5; }
   </style>
 </head>
@@ -424,29 +413,25 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         tbody.appendChild(tr);
       }
     }
-    async function performUserAction(action, userId, userEmail, planCode) {
+    async function performUserAction(action, userId, userEmail) {
       const safeAction = String(action || "").trim();
       const safeUserId = String(userId || "").trim();
       const safeUserEmail = String(userEmail || "").trim();
-      void planCode;
       const endpointByAction = {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
-        "set-plan": "/admin/users/set-plan",
       };
       const confirmation = {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
-        "set-plan": "Change this user's account type?",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
-      if (safeAction === "set-plan") payload.plan_code = String(planCode || "").trim();
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
       try {
@@ -475,8 +460,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (!action) return;
       const userId = decodeDataValue(button.getAttribute("data-user-id"));
       const userEmail = decodeDataValue(button.getAttribute("data-user-email"));
-      const planCode = decodeDataValue(button.getAttribute("data-plan-code"));
-      performUserAction(action, userId, userEmail, planCode);
+      performUserAction(action, userId, userEmail);
     });
   </script>
 </body>

@@ -36,7 +36,6 @@ TEXTURE_EXTENSIONS = {
 TILE_GROUP_NODE_PREFIXES = ("Planetka Tile_", "Tile_")
 TILE_MASK_NODE_PREFIX = "TileMask_"
 TEXTURE_LOADING_GROUP_NAME = "Planetka Textures Loading Group"
-LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME = "Planetka Textures Loading Group - Testing"
 TILE_PLACEMENT_GROUP_NAME = "Planetka Tile Placement"
 TILE_PLACEMENT_GROUP_360_NAME = "Planetka Tile Placement 360"
 SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
@@ -63,12 +62,8 @@ def _is_dynamic_texture_loading_group_name(name):
     if not token:
         return False
     return bool(
-        token in {
-            TEXTURE_LOADING_GROUP_NAME,
-            LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME,
-        }
+        token == TEXTURE_LOADING_GROUP_NAME
         or token.startswith(f"{TEXTURE_LOADING_GROUP_NAME}_")
-        or token.startswith(f"{LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME}_")
     )
 
 
@@ -552,15 +547,6 @@ def _ensure_testing_texture_loading_group(source_group):
     existing = bpy.data.node_groups.get(TEXTURE_LOADING_GROUP_NAME)
     if existing is not None:
         return existing
-    legacy = bpy.data.node_groups.get(LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME)
-    if legacy is not None:
-        try:
-            legacy.name = TEXTURE_LOADING_GROUP_NAME
-            return legacy
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            _log_recoverable_once("PKA-SHADER-019A", "Failed renaming legacy testing texture loading group")
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-SHADER-019B", "Failed renaming legacy testing texture loading group")
     testing_group = source_group.copy()
     testing_group.name = TEXTURE_LOADING_GROUP_NAME
     try:
@@ -1182,36 +1168,6 @@ def _stabilize_tile_group_mask_sources(tile_group, enable_z360=True):
             _log_recoverable_once("PKA-SHADER-013", "Failed wiring z360/native UV stabilization links")
         except (RuntimeError, TypeError, ValueError, AttributeError):
             _log_recoverable_once("PKA-SHADER-014", "Failed wiring z360/native UV stabilization links")
-
-        # Remove legacy tight-mask gating nodes (introduced experimentally for WT seams).
-        try:
-            for channel_name in ("WT", "SE"):
-                channel_input = group_output.inputs.get(channel_name) if group_output else None
-                if channel_input is None or not channel_input.links:
-                    continue
-                link0 = channel_input.links[0]
-                from_node = getattr(link0, "from_node", None)
-                if from_node is None:
-                    continue
-                from_name = str(getattr(from_node, "name", "") or "")
-                if not from_name.startswith("PKA TightMask Gate"):
-                    continue
-                gate_in = getattr(from_node, "inputs", None)
-                gate_in = gate_in[0] if gate_in and len(gate_in) > 0 else None
-                upstream = gate_in.links[0].from_socket if gate_in and gate_in.links else None
-                if upstream is None:
-                    continue
-                for link in list(channel_input.links):
-                    links.remove(link)
-                links.new(upstream, channel_input)
-
-            for node in list(nodes):
-                if str(getattr(node, "name", "") or "").startswith("PKA TightMask"):
-                    nodes.remove(node)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            _log_recoverable_once("PKA-SHADER-015", "Failed removing legacy tight-mask nodes")
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-SHADER-016", "Failed removing legacy tight-mask nodes")
 
         _layout_tile_group_readable(
             nodes=nodes,

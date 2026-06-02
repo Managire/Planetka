@@ -31,14 +31,6 @@ from .auth import (
 )
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
-try:
-    from .unsupported import (
-        get_unsupported_texture_source_mode,
-    )
-except (ImportError, ModuleNotFoundError):
-    def get_unsupported_texture_source_mode() -> str:
-        return "CLOUD"
-
 logger = logging.getLogger(__name__)
 
 
@@ -284,18 +276,7 @@ def _looks_like_remote_source(base_path):
     return False
 
 
-def _get_texture_source_mode():
-    mode = str(get_unsupported_texture_source_mode() or "CLOUD").strip().upper()
-    if mode == "LOCAL":
-        return "LOCAL"
-    return "CLOUDFLARE"
-
-
 def is_remote_source_configured(base_path=None):
-    if _get_texture_source_mode() == "LOCAL":
-        if base_path is not None and _looks_like_remote_source(base_path):
-            return True
-        return False
     if _get_config() is None:
         return False
     if base_path is not None and str(base_path).strip():

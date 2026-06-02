@@ -125,7 +125,6 @@ VDB_CLOUD_TEMPLATE_OBJECT_NAME = "Planetka Cloud VDB"
 VDB_CLOUD_MATERIAL_TEMPLATE_NAME = "Planetka VDB Cloud Shader"
 
 CLOUD_MATERIAL_GROUP_NAME = "Planetka Cloud Material"
-LEGACY_LOCAL_CLOUD_SHADER_GROUP_NAME = "Planetka Local Clouds Shader Group"
 GLOBAL_CLOUD_SHADER_GROUP_NAME = "Planetka Global Clouds Shader Group"
 CLOUD_PREVIEW_SWITCH_GROUP_NAME = "Cloud Preview Switch"
 LOCAL_CLOUD_PREVIEW_VALUE_NODE_NAME = "Preview_On_Off"
@@ -2279,17 +2278,6 @@ def _link_sockets(node_tree, from_socket, to_socket):
     return False
 
 
-def _cleanup_unused_legacy_local_cloud_group():
-    legacy = bpy.data.node_groups.get(LEGACY_LOCAL_CLOUD_SHADER_GROUP_NAME)
-    if legacy is None:
-        return
-    try:
-        if int(getattr(legacy, "users", 0) or 0) == 0:
-            bpy.data.node_groups.remove(legacy)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka clouds: failed removing unused legacy local cloud shader group", exc_info=True)
-
-
 def _ensure_local_cloud_material_uses_cloud_material(material):
     node_tree = getattr(material, "node_tree", None) if material is not None else None
     if node_tree is None:
@@ -2301,7 +2289,6 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
     nodes = node_tree.nodes
     group_node = None
     duplicate_cloud_nodes = []
-    legacy_nodes = []
     for node in tuple(nodes):
         if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
             continue
@@ -2323,18 +2310,6 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
                 return False
         elif _is_suffixed_cloud_material_group_name(child_name):
             duplicate_cloud_nodes.append(node)
-        elif child_name == LEGACY_LOCAL_CLOUD_SHADER_GROUP_NAME:
-            legacy_nodes.append(node)
-
-    if group_node is None and legacy_nodes:
-        group_node = legacy_nodes.pop(0)
-        try:
-            group_node.node_tree = cloud_group
-            group_node.name = CLOUD_MATERIAL_GROUP_NAME
-            group_node.label = CLOUD_MATERIAL_GROUP_NAME
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed replacing legacy local cloud shader group node", exc_info=True)
-            return False
 
     if group_node is None:
         try:
@@ -2346,11 +2321,6 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
             logger.debug("Planetka clouds: failed creating Planetka Cloud Material group node", exc_info=True)
             return False
 
-    for legacy_node in legacy_nodes:
-        try:
-            nodes.remove(legacy_node)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed removing duplicate legacy local cloud shader group node", exc_info=True)
     for duplicate_node in duplicate_cloud_nodes:
         try:
             nodes.remove(duplicate_node)
@@ -2373,7 +2343,6 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
     _link_sockets(node_tree, shader_output, surface_input)
     _remove_socket_links(node_tree, volume_input)
     _link_sockets(node_tree, displacement_output, displacement_input)
-    _cleanup_unused_legacy_local_cloud_group()
     _remove_unused_suffixed_cloud_material_groups()
     return True
 

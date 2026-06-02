@@ -79,7 +79,6 @@ import {
   handleAdminQaAuthReset as handleAdminQaAuthResetRoute,
   handleAdminUserBlock as handleAdminUserBlockRoute,
   handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
-  handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
@@ -1678,7 +1677,6 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
 };
 

@@ -1,4 +1,3 @@
-import os
 import logging
 
 import bpy
@@ -6,7 +5,7 @@ from bpy.props import PointerProperty
 
 # Includes data from GeoNames (allCountries) licenced under CC BY 4.0.
 
-from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
+from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from . import updater as _planetka_updater
 
 from .animation_tools import (
@@ -82,11 +81,7 @@ from .ui import (
     PLANETKA_PT_SunlightPanel,
     PLANETKA_PT_SettingsPanel,
 )
-from .validation import (
-    PLANETKA_OT_ReportBug,
-    PLANETKA_OT_SceneHealthCheck,
-    PLANETKA_OT_ValidateTextureSource,
-)
+from .validation import PLANETKA_OT_ReportBug, PLANETKA_OT_SceneHealthCheck
 
 bl_info = {
     "name": "Planetka - the Earth",
@@ -101,78 +96,27 @@ bl_info = {
 logger = logging.getLogger(__name__)
 
 
-def _feature_flag_enabled(name, default=False):
-    fallback = "1" if bool(default) else "0"
-    token = str(os.getenv(name, fallback) or fallback).strip().lower()
-    return token in {"1", "true", "yes", "on"}
-
-
-_CLOUD_RUNTIME_ENABLED = _feature_flag_enabled("PLANETKA_ENABLE_CLOUD_RUNTIME", default=True)
-_PUBLIC_BUILD_PROFILE = _feature_flag_enabled("PLANETKA_PUBLIC_BUILD", default=True)
-_LEGACY_RUNTIME_ENABLED = _feature_flag_enabled(
-    "PLANETKA_ENABLE_LEGACY_RUNTIME",
-    default=(not _PUBLIC_BUILD_PROFILE),
+from .clouds_local import (
+    PLANETKA_OT_AddLocalCloud,
+    PLANETKA_OT_DeleteLocalCloud,
+    PLANETKA_OT_ResetLocalCloudToCameraView,
+    register_object_properties as register_cloud_object_properties,
+    unregister_object_properties as unregister_cloud_object_properties,
+)
+from .clouds_vdb import (
+    PLANETKA_OT_AddVDBCloud,
+    PLANETKA_OT_DeleteVDBCloud,
+    PLANETKA_OT_ResetVDBCloudToCameraView,
 )
 
-if _CLOUD_RUNTIME_ENABLED:
-    from .clouds_local import (
-        PLANETKA_OT_AddLocalCloud,
-        PLANETKA_OT_DeleteLocalCloud,
-        PLANETKA_OT_ResetLocalCloudToCameraView,
-        register_object_properties as register_cloud_object_properties,
-        unregister_object_properties as unregister_cloud_object_properties,
-    )
-    from .clouds_vdb import (
-        PLANETKA_OT_AddVDBCloud,
-        PLANETKA_OT_DeleteVDBCloud,
-        PLANETKA_OT_ResetVDBCloudToCameraView,
-    )
-
-    _CLOUD_CLASSES = (
-        PLANETKA_OT_AddLocalCloud,
-        PLANETKA_OT_ResetLocalCloudToCameraView,
-        PLANETKA_OT_DeleteLocalCloud,
-        PLANETKA_OT_AddVDBCloud,
-        PLANETKA_OT_ResetVDBCloudToCameraView,
-        PLANETKA_OT_DeleteVDBCloud,
-    )
-else:
-    def register_cloud_object_properties():
-        return None
-
-
-    def unregister_cloud_object_properties():
-        return None
-
-
-    _CLOUD_CLASSES = ()
-
-
-if _LEGACY_RUNTIME_ENABLED:
-    _LEGACY_CLASSES = (
-        PLANETKA_OT_AnimationPreviewShot,
-        PLANETKA_OT_ValidateTextureSource,
-    )
-else:
-    _LEGACY_CLASSES = ()
-
-_PLANETKA_PROPERTIES_ANNOTATIONS_ORIGINAL = dict(getattr(PlanetkaProperties, "__annotations__", {}) or {})
-_LEGACY_PROPERTY_NAMES = (
-    "anim_start_altitude_km",
-    "anim_flyby_degrees",
-    "anim_flyby_camera_heading_deg",
+_CLOUD_CLASSES = (
+    PLANETKA_OT_AddLocalCloud,
+    PLANETKA_OT_ResetLocalCloudToCameraView,
+    PLANETKA_OT_DeleteLocalCloud,
+    PLANETKA_OT_AddVDBCloud,
+    PLANETKA_OT_ResetVDBCloudToCameraView,
+    PLANETKA_OT_DeleteVDBCloud,
 )
-
-
-def _configure_planetka_properties_for_profile():
-    annotations = getattr(PlanetkaProperties, "__annotations__", None)
-    if not isinstance(annotations, dict):
-        return
-    annotations.clear()
-    annotations.update(_PLANETKA_PROPERTIES_ANNOTATIONS_ORIGINAL)
-    if not _LEGACY_RUNTIME_ENABLED:
-        for key in _LEGACY_PROPERTY_NAMES:
-            annotations.pop(str(key), None)
 
 
 classes = (
@@ -181,7 +125,7 @@ classes = (
     PlanetkaProperties,
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_UpdateNow,
-    *_LEGACY_CLASSES,
+    PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_RebuildEarth,
@@ -413,7 +357,6 @@ def _tag_view3d_ui_redraw():
 
 
 def register():
-    _configure_planetka_properties_for_profile()
     register_cloud_object_properties()
     for cls in classes:
         _safe_unregister_class(cls)
@@ -445,11 +388,6 @@ def register():
         _planetka_updater.kickoff_background_update_check(force=False)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed starting background update check during register", exc_info=True)
-    try:
-        from .unsupported import apply_runtime_unsupported_overrides
-        apply_runtime_unsupported_overrides()
-    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed applying unsupported-runtime overrides during register", exc_info=True)
     try:
         bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:

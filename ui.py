@@ -1081,14 +1081,6 @@ def _is_connected():
     return bool(status.get("online", False))
 
 
-def _is_paid_connected_account():
-    return False
-
-
-def _full_texture_quality_allowed():
-    return _is_connected()
-
-
 def _is_cloud_source_mode():
     return True
 
@@ -2652,8 +2644,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             preset = "ZOOM"
         elif preset in {"ARC_LEFT", "ARC_RIGHT"}:
             preset = "ARC"
-        elif preset == "FLYBY":
-            preset = "NONE"
         if preset != "NONE":
             cinematic_box.prop(props, "anim_motion_curve", text="Motion Curve")
         if preset in {"ORBIT", "ARC"}:

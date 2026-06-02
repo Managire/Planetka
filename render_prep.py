@@ -76,11 +76,8 @@ FULL_QUALITY_DOWNLOAD_SUCCESS_KEY = "planetka_full_quality_download_success"
 FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY = "planetka_full_quality_download_success_at"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
-# Compatibility exports for UI/modules that read the last resolve summary keys
-# from this module.
 LAST_MANUAL_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
 LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
-LAST_MANUAL_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
 LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
 
 

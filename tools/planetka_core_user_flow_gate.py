@@ -121,23 +121,6 @@ def _make_texture_source_tree(base_dir):
     (base / "PO").mkdir(parents=True, exist_ok=True)
 
 
-def _force_hermetic_local_texture_mode(r2_source_module):
-    """Force LOCAL texture-source mode for this process only.
-
-    Production uses cloud mode by default. This test gate is intentionally
-    hermetic and must stay offline, so we pin mode to LOCAL at runtime.
-    """
-    if r2_source_module is None:
-        return
-    try:
-        if hasattr(r2_source_module, "get_unsupported_texture_source_mode"):
-            r2_source_module.get_unsupported_texture_source_mode = lambda: "LOCAL"
-        reset_fn = getattr(r2_source_module, "reset_config_cache", None)
-        if callable(reset_fn):
-            reset_fn()
-    except Exception:
-        pass
-
 
 def _get_material_displacement_mode(material):
     if material is None:
@@ -315,7 +298,6 @@ def main():
         auth = import_submodule(base_module, "auth")
         operators_module = import_submodule(base_module, "operators")
         r2_source = import_submodule(base_module, "r2_source")
-        _force_hermetic_local_texture_mode(r2_source)
 
         prefs = extension_prefs.get_prefs()
         _assert(prefs is not None, "Planetka preferences unavailable.")

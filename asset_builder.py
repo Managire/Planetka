@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
 PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
-LEGACY_PREVIEW_MATERIAL_NAME = "Planetka Preview Shader"
 EARTH_MATERIAL_NAME = "Planetka Earth Material"
 SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
 EARTH_RADIUS_GROUP_NAME = "Planetka Earth Radius"
@@ -61,19 +60,8 @@ _MATERIAL_DISPLACEMENT_MODE_VERSION = 1
 _PREVIEW_TEXTURE_GROUP_VERSION_KEY = "planetka_preview_texture_group_v"
 _PREVIEW_TEXTURE_GROUP_VERSION = 1
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-_LEGACY_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_material_lib_45.blend")
 _FAKE_ATMOSPHERE_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_fake_atmosphere.blend")
 _VOLUMETRIC_ATMOSPHERE_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_volumetric_atmosphere.blend")
-_LEGACY_VOLUMETRIC_ATMOSPHERE_SOURCE_BLEND_PATH = (
-    "/Volumes/SSDA/Projects/Planetka Mini/Planetka 32K/Planetka_Mini_32K.blend"
-)
-_LEGACY_LIBRARY_MATERIALS_TO_PURGE = (
-    LEGACY_PREVIEW_MATERIAL_NAME,
-)
-_LEGACY_LIBRARY_GROUPS_TO_PURGE = (
-    "Planetka Ocean Shader Group",
-    PREVIEW_TEXTURE_LOADING_GROUP_NAME,
-)
 _SURFACE_DETAIL_VERSION_KEY = "planetka_surface_detail_v"
 _SURFACE_DETAIL_VERSION = 1
 _SURFACE_SHADER_UPDATE_VERSION_KEY = "planetka_surface_shader_update_v"
@@ -410,7 +398,7 @@ def _normalize_surface_elevation_defaults(material):
                 roughness_value = float(roughness_socket.default_value)
             except (AttributeError, TypeError, ValueError):
                 roughness_value = None
-            # Preserve user edits; migrate known legacy defaults once.
+            # Preserve user edits while normalizing known reference defaults.
             if roughness_value is not None and (
                 abs(roughness_value - 0.6) <= 1e-6
                 or abs(roughness_value - 0.5) <= 1e-6
@@ -431,7 +419,7 @@ def _normalize_surface_elevation_defaults(material):
                 surface_sat_value = float(surface_sat_socket.default_value)
             except (AttributeError, TypeError, ValueError):
                 surface_sat_value = None
-            # Preserve user edits; migrate known legacy defaults once.
+            # Preserve user edits while normalizing known reference defaults.
             if surface_sat_value is not None and (
                 abs(surface_sat_value - 1.2) <= 1e-6
                 or abs(surface_sat_value - 1.25) <= 1e-6
@@ -2027,11 +2015,10 @@ def _wire_nightday_terminator_shift():
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
-        # Remove legacy unused Map Range node if present.
-        legacy_map_range = nodes.get("Map Range")
-        if legacy_map_range is not None and str(getattr(legacy_map_range, "bl_idname", "")) == "ShaderNodeMapRange":
+        unused_map_range = nodes.get("Map Range")
+        if unused_map_range is not None and str(getattr(unused_map_range, "bl_idname", "")) == "ShaderNodeMapRange":
             try:
-                nodes.remove(legacy_map_range)
+                nodes.remove(unused_map_range)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -2152,10 +2139,6 @@ def _get_embedded_material_library_payload():
     raise RuntimeError("Planetka: embedded material library payload is invalid.")
 
 
-def _legacy_material_library_path():
-    return os.path.join(os.path.dirname(__file__), *_LEGACY_LIBRARY_RELATIVE_PATH)
-
-
 def _fake_atmosphere_library_path():
     return os.path.join(os.path.dirname(__file__), *_FAKE_ATMOSPHERE_LIBRARY_RELATIVE_PATH)
 
@@ -2165,17 +2148,8 @@ def _volumetric_atmosphere_library_path():
 
 
 def _volumetric_atmosphere_library_candidates():
-    candidates = [_volumetric_atmosphere_library_path(), _LEGACY_VOLUMETRIC_ATMOSPHERE_SOURCE_BLEND_PATH]
-    ordered = []
-    seen = set()
-    for path in candidates:
-        normalized = os.path.abspath(str(path))
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        if os.path.isfile(normalized):
-            ordered.append(normalized)
-    return ordered
+    path = os.path.abspath(_volumetric_atmosphere_library_path())
+    return [path] if os.path.isfile(path) else []
 
 
 def _append_material_library_from_blend(blend_path):
@@ -3521,12 +3495,6 @@ def _is_embedded_material_library_ready():
         node_group = bpy.data.node_groups.get(group_name)
         if not node_group or not _has_library_signature(node_group):
             return False
-    for legacy_material in _LEGACY_LIBRARY_MATERIALS_TO_PURGE:
-        if bpy.data.materials.get(legacy_material) is not None:
-            return False
-    for legacy_group in _LEGACY_LIBRARY_GROUPS_TO_PURGE:
-        if bpy.data.node_groups.get(legacy_group) is not None:
-            return False
     for node_group in getattr(bpy.data, "node_groups", ()):
         group_name = str(getattr(node_group, "name", ""))
         if group_name.startswith(f"{NIGHTDAY_GROUP_NAME}."):
@@ -3535,40 +3503,28 @@ def _is_embedded_material_library_ready():
 
 
 def _load_embedded_material_library():
-    for material_name in set(MATERIAL_LIBRARY_MATERIALS).union(_LEGACY_LIBRARY_MATERIALS_TO_PURGE):
+    for material_name in MATERIAL_LIBRARY_MATERIALS:
         _remove_material_if_exists(material_name)
-    for group_name in set(MATERIAL_LIBRARY_NODE_GROUPS).union(_LEGACY_LIBRARY_GROUPS_TO_PURGE):
+    for group_name in MATERIAL_LIBRARY_NODE_GROUPS:
         _remove_node_group_if_exists(group_name)
     for node_group in list(getattr(bpy.data, "node_groups", ())):
         group_name = str(getattr(node_group, "name", ""))
         if group_name.startswith(f"{NIGHTDAY_GROUP_NAME}."):
             _remove_node_group_if_exists(group_name)
 
-    legacy_path = _legacy_material_library_path()
-    if bpy.app.version < (5, 0, 0) and os.path.isfile(legacy_path):
-        _append_material_library_from_blend(legacy_path)
-    else:
-        temp_path = ""
-        load_error = None
-        try:
-            with tempfile.NamedTemporaryFile(prefix="planetka_material_lib_", suffix=".blend", delete=False) as handle:
-                handle.write(_get_embedded_material_library_payload())
-                temp_path = handle.name
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="planetka_material_lib_", suffix=".blend", delete=False) as handle:
+            handle.write(_get_embedded_material_library_payload())
+            temp_path = handle.name
 
-            _append_material_library_from_blend(temp_path)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            load_error = exc
-        finally:
-            if temp_path:
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-        if load_error is not None:
-            if not os.path.isfile(legacy_path):
-                raise load_error
-            _append_material_library_from_blend(legacy_path)
+        _append_material_library_from_blend(temp_path)
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     missing_materials = [name for name in MATERIAL_LIBRARY_MATERIALS if bpy.data.materials.get(name) is None]
     missing_groups = [name for name in MATERIAL_LIBRARY_NODE_GROUPS if bpy.data.node_groups.get(name) is None]
@@ -3606,10 +3562,6 @@ def _ensure_embedded_material_library(scene=None):
     _normalize_surface_elevation_defaults(earth_material)
     _set_material_displacement_and_bump(earth_material, force=True)
     preview_material = bpy.data.materials.get(PREVIEW_MATERIAL_NAME)
-    if preview_material is None:
-        preview_material = bpy.data.materials.get(LEGACY_PREVIEW_MATERIAL_NAME)
-        if preview_material is not None:
-            preview_material.name = PREVIEW_MATERIAL_NAME
     if preview_material is None:
         raise RuntimeError("Planetka: preview material is missing after loading reference shaders.")
     _normalize_surface_elevation_defaults(preview_material)

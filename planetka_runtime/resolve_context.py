@@ -50,7 +50,6 @@ class ResolveDownloadDeps:
     tag_view3d_redraw: Any
     last_resolve_tile_count_key: str
     last_resolve_downloaded_mb_key: str
-    last_resolve_downloaded_gb_key: str
     last_resolve_total_seconds_key: str
 
 

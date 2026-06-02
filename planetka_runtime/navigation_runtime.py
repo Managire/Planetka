@@ -213,28 +213,6 @@ def get_planetka_sunlight_object(runtime=None, scene=None, *, bpy=None, recovera
             if _is_valid_sunlight_object(exact):
                 return exact
 
-            # Backward-compatible Planetka-only fallback:
-            # allow explicitly tagged Planetka sunlight objects, and normalize
-            # their name back to the canonical Planetka Sunlight id.
-            tagged_fallback = None
-            for obj in tuple(scene_objects):
-                if not _is_valid_sunlight_object(obj):
-                    continue
-                try:
-                    role = str(obj.get("planetka_role", "") or "").strip().lower()
-                except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
-                    role = ""
-                if role == "sunlight":
-                    tagged_fallback = obj
-                    break
-            if tagged_fallback is not None:
-                try:
-                    if bpy_module.data.objects.get(deps.sunlight_object_name) is None:
-                        tagged_fallback.name = deps.sunlight_object_name
-                except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
-                    pass
-                return tagged_fallback
-
     # Fallback to exact global object lookup.
     sunlight = bpy_module.data.objects.get(deps.sunlight_object_name)
     if _is_valid_sunlight_object(sunlight):

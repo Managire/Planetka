@@ -2,7 +2,7 @@ import bpy
 import json
 import logging
 from bpy.types import AddonPreferences
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, IntProperty, StringProperty
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
@@ -10,7 +10,6 @@ EARTH_OBJECT_DEFAULT_NAME = "Planetka Earth Surface"
 EARTH_ROLE_KEY = "planetka_role"
 EARTH_ROLE_VALUE = "earth_preview"
 FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
-FALLBACK_TEXTURE_SOURCE_MODE_KEY = "planetka_texture_source_mode"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
 FALLBACK_AUTH_DEVICE_ID_KEY = "planetka_auth_device_id"
 FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
@@ -18,7 +17,6 @@ FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
 FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
 FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_preflight_seen_version"
-TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
 logger = logging.getLogger(__name__)
@@ -34,15 +32,6 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         subtype='DIR_PATH',
         description="Internal Planetka source marker (Cloud only)",
         default=REMOTE_TEXTURE_BASE_DEFAULT,
-    )
-
-    texture_source_mode: EnumProperty(
-        name="Texture Source",
-        description="Planetka resolves tile textures from Cloud",
-        items=(
-            ("CLOUDFLARE", "Cloud", "Stream tiles from Planetka Cloud storage"),
-        ),
-        default=TEXTURE_SOURCE_MODE_DEFAULT,
     )
 
     saved_locations_json: StringProperty(
@@ -133,27 +122,6 @@ def get_prefs():
         def texture_base_path(self, value):
             try:
                 self._owner[FALLBACK_TEXTURE_BASE_PATH_KEY] = str(value or "")
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
-
-        @property
-        def texture_source_mode(self):
-            try:
-                value = str(self._owner.get(FALLBACK_TEXTURE_SOURCE_MODE_KEY, TEXTURE_SOURCE_MODE_DEFAULT) or "")
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                value = TEXTURE_SOURCE_MODE_DEFAULT
-            value = value.strip().upper()
-            if value != "CLOUDFLARE":
-                return TEXTURE_SOURCE_MODE_DEFAULT
-            return "CLOUDFLARE"
-
-        @texture_source_mode.setter
-        def texture_source_mode(self, value):
-            safe = str(value or "").strip().upper()
-            if safe != "CLOUDFLARE":
-                safe = TEXTURE_SOURCE_MODE_DEFAULT
-            try:
-                self._owner[FALLBACK_TEXTURE_SOURCE_MODE_KEY] = safe
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 

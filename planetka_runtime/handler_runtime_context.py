@@ -20,8 +20,6 @@ class HandlerRuntimeDeps:
     reset_navigation_camera_control_runtime_state: Any
     iter_scenes: Any
     set_planetka_logging: Any
-    migrate_scene_schema: Any
-    legacy_scene_idprops: Any
     sync_idprops_from_props: Any
     is_navigation_user_edit_active: Any
     scene_has_keyed_runtime_path: Any

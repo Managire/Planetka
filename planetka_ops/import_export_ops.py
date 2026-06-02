@@ -3,108 +3,10 @@ import subprocess
 import tempfile
 
 import bpy
-from bpy.props import FloatProperty, IntProperty, StringProperty
+from bpy.props import StringProperty
 
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from ..operator_utils import ErrorCode, fail
 from ..state import logger
-
-
-class PLANETKA_OT_ImportNewData(bpy.types.Operator):
-    bl_idname = "planetka.import_new_data"
-    bl_label = "Import New Data"
-    bl_description = "Disabled: Planetka uses Cloud source only"
-
-    directory: StringProperty(subtype='DIR_PATH')
-
-    def execute(self, context):
-        del context
-        return fail(
-            self,
-            "Local texture import is disabled. Planetka uses Cloud source only.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
-
-    def invoke(self, context, event):
-        del context, event
-        return fail(
-            self,
-            "Local texture import is disabled. Planetka uses Cloud source only.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
-
-
-class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
-    bl_idname = "planetka.confirm_import_new_data"
-    bl_label = "Confirm Data Import"
-    bl_description = "Disabled: Planetka uses Cloud source only"
-
-    source_directory: StringProperty(subtype='DIR_PATH', options={'HIDDEN'})
-    destination_directory: StringProperty(subtype='DIR_PATH', options={'HIDDEN'})
-    new_file_count: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
-    update_file_count: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
-    added_size_mb: FloatProperty(default=0.0, min=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    total_file_count: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
-    duplicate_count: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
-
-    def invoke(self, context, event):
-        del context, event
-        return fail(
-            self,
-            "Local texture import is disabled. Planetka uses Cloud source only.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
-
-    def draw(self, context):
-        layout = self.layout
-        col = layout.column(align=True)
-        col.label(text=f"Source: {self.source_directory}")
-        col.label(text=f"Destination: {self.destination_directory}")
-        col.label(text="The following changes will be applied:")
-        col.label(text=f"Total files to copy: {int(self.total_file_count)}")
-        col.label(text=f"New files to import: {int(self.new_file_count)}")
-        col.label(text=f"Existing files to update: {int(self.update_file_count)}")
-        col.label(text=f"New data added: {float(self.added_size_mb):.0f} MB")
-        if int(self.duplicate_count) > 0:
-            col.label(text=f"Duplicate source tiles detected: {int(self.duplicate_count)} (newest file kept)")
-
-    def execute(self, context):
-        del context
-        return fail(
-            self,
-            "Local texture import is disabled. Planetka uses Cloud source only.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
-
-
-class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
-    bl_idname = "planetka.select_texture_source"
-    bl_label = "Set Texture Source"
-    bl_description = "Disabled: Planetka uses Cloud source only"
-
-    directory: StringProperty(subtype='DIR_PATH')
-
-    def execute(self, context):
-        del context
-        return fail(
-            self,
-            "Local texture directories are disabled. Planetka uses Cloud source only.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
-
-    def invoke(self, context, event):
-        del context, event
-        return fail(
-            self,
-            "Local texture directories are disabled. Planetka uses Cloud source only.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
 
 
 class PLANETKA_OT_CreateStandaloneFile(bpy.types.Operator):

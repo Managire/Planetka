@@ -25,7 +25,6 @@ from .auth import (
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail
-from .sanity_utils import invalidate_texture_source_health_cache, validate_known_good_texture_source
 from .asset_builder import (
     EARTH_MATERIAL_NAME,
     NIGHTDAY_GROUP_NAME,
@@ -45,7 +44,6 @@ _BUG_ATTACHMENT_ALLOWED_MIME = {
 }
 _ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 _ANIMATION_PREPARED_COLLECTION_NAME = "Planetka Animation Preview"
-_ANIMATION_PREPARED_COLLECTION_NAMES_LEGACY = ("Planetka Animation Prepared",)
 _HEALTH_CAMERA_DISTANCE_RATIO_WARN = 50000.0
 _HEALTH_CAMERA_DISTANCE_RATIO_ERROR = 120000.0
 _HEALTH_MIN_FACING_DOT_WARN = 0.15
@@ -350,68 +348,6 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         )
 
 
-class PLANETKA_OT_ValidateTextureSource(bpy.types.Operator):
-    bl_idname = "planetka.validate_texture_source"
-    bl_label = "Validate Texture Source"
-    bl_description = "Validate Planetka cloud source access and sentinel availability"
-
-    def execute(self, context):
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-            )
-
-        details = validate_known_good_texture_source(getattr(prefs, "texture_base_path", ""))
-        normalized_path = details.get("normalized_path", "")
-        if normalized_path:
-            prefs.texture_base_path = normalized_path
-            invalidate_texture_source_health_cache(normalized_path)
-
-        issues = details.get("issues", [])
-        has_errors = any(level == "ERROR" for level, _code, _message in issues)
-        has_warnings = any(level == "WARNING" for level, _code, _message in issues)
-
-        lines = []
-        if normalized_path:
-            lines.append(f"Path: {normalized_path}")
-        else:
-            lines.append("Path: <not set>")
-
-        folder_counts = details.get("folder_counts", {})
-        for folder_name in ("S2", "EL", "WT", "PO"):
-            count = int(folder_counts.get(folder_name, 0))
-            lines.append(f"{folder_name} files: {count}")
-
-        present = details.get("known_good_s2_present", [])
-        missing = details.get("known_good_s2_missing", [])
-        if present:
-            lines.append(f"S2 sentinels found: {len(present)}/2")
-        if missing:
-            lines.append(f"S2 sentinels missing: {len(missing)}/2")
-
-        if issues:
-            for level, _code, message in issues[:4]:
-                lines.append(f"{level}: {message}")
-            if len(issues) > 4:
-                lines.append(f"... and {len(issues) - 4} more issue(s)")
-        else:
-            lines.append("No cloud-source issues detected.")
-
-        if has_errors:
-            _show_popup_lines(context, "Texture Source Check", "ERROR", lines)
-            self.report({'ERROR'}, "Texture source validation found blocking issues.")
-        elif has_warnings:
-            _show_popup_lines(context, "Texture Source Check", "QUESTION", lines)
-            self.report({'WARNING'}, "Texture source validation finished with warnings.")
-        else:
-            _show_popup_lines(context, "Texture Source Check", "CHECKMARK", lines)
-            self.report({'INFO'}, "Texture source validation passed.")
-        return {'FINISHED'}
-
-
 def _camera_has_transform_keys(camera):
     if camera is None:
         return False
@@ -466,8 +402,8 @@ def _iter_action_fcurves_health(action):
         except (RuntimeError, TypeError, ValueError, AttributeError):
             return id(fcurve)
 
-    legacy_fcurves = getattr(action, "fcurves", None) or ()
-    for fcurve in legacy_fcurves:
+    action_fcurves = getattr(action, "fcurves", None) or ()
+    for fcurve in action_fcurves:
         token = _token_for_fcurve(fcurve)
         if token in seen:
             continue
@@ -1537,11 +1473,6 @@ def _check_scene_health_animation(ctx, payload):
         except (TypeError, ValueError, AttributeError):
             prepared_segments = 0
     prepared_collection = bpy.data.collections.get(_ANIMATION_PREPARED_COLLECTION_NAME)
-    if prepared_collection is None:
-        for legacy_name in _ANIMATION_PREPARED_COLLECTION_NAMES_LEGACY:
-            prepared_collection = bpy.data.collections.get(str(legacy_name or "").strip())
-            if prepared_collection is not None:
-                break
     prepared_object_count = len(getattr(prepared_collection, "objects", ())) if prepared_collection is not None else 0
     if prepared_segments > 0 and prepared_collection is None:
         _append_scene_health_check(

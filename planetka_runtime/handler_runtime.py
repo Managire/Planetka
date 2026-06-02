@@ -134,19 +134,6 @@ def sync_logging_from_scenes(ctx=None):
         state.logging_syncing = False
 
 
-def migrate_scene(scene, ctx=None):
-    ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
-
-    deps.migrate_scene_schema(scene, sync_idprops_fn=deps.sync_idprops_from_props, logger=deps.logger)
-    for key in deps.legacy_scene_idprops:
-        try:
-            if key in scene:
-                del scene[key]
-        except deps.recoverable_exceptions:
-            deps.logger.debug("Planetka: failed removing legacy scene idprop %s", key, exc_info=True)
-
-
 def initialize_props_from_imported_planetka(scene, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
@@ -306,8 +293,6 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
             preset_token = "ZOOM"
         elif preset_token in {"ARC_LEFT", "ARC_RIGHT"}:
             preset_token = "ARC"
-        elif preset_token == "FLYBY":
-            preset_token = "NONE"
         preset_active = preset_token not in {"", "NONE"}
     if not (deps.is_render_job_active() or deps.is_animation_playing() or keyed_runtime_active or preset_active):
         deps.sync_navigation_controls_from_scene_camera(scene)
@@ -315,15 +300,4 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
 
 def load_post(_dummy, ctx=None):
     ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
     sync_logging_from_scenes(ctx)
-    try:
-        module_name = f"{deps.package_name}.unsupported" if deps.package_name else "unsupported"
-        unsupported_module = deps.import_module(module_name)
-        apply_fn = getattr(unsupported_module, "apply_runtime_unsupported_overrides", None)
-        if callable(apply_fn):
-            apply_fn()
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
-        deps.logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)

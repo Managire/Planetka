@@ -133,18 +133,6 @@ def _import_submodule(base_module_name, submodule_name):
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
 
 
-def _force_hermetic_local_texture_mode(r2_source_module):
-    if r2_source_module is None:
-        return
-    try:
-        if hasattr(r2_source_module, "get_unsupported_texture_source_mode"):
-            r2_source_module.get_unsupported_texture_source_mode = lambda: "LOCAL"
-        reset_fn = getattr(r2_source_module, "reset_config_cache", None)
-        if callable(reset_fn):
-            reset_fn()
-    except TOOL_RECOVERABLE_EXCEPTIONS:
-        pass
-
 
 def _purge_existing_planetka_data():
     for obj in list(bpy.data.objects):
@@ -272,7 +260,6 @@ def main():
         extension_prefs = _import_submodule(base_module_name, "extension_prefs")
         state = _import_submodule(base_module_name, "state")
         r2_source = _import_submodule(base_module_name, "r2_source")
-        _force_hermetic_local_texture_mode(r2_source)
 
         _purge_existing_planetka_data()
 
