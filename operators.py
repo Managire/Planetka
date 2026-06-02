@@ -31,15 +31,10 @@ from .planetka_ops.startup_profile_ops import (
 from .planetka_ops.earth_lifecycle_helpers import (
     _DEFAULT_SCENE_REMOVED_KEY,
     _PLANETKA_CREATE_CAMERA_NAME,
-    _REBUILD_EXCEPTIONS,
-    _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY,
-    _SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY,
     _apply_create_earth_clipping_defaults,
     _apply_radius_based_clipping,
-    _earth_graph_cleanup_for_rebuild,
     _earth_graph_create_bootstrap_surface,
     _earth_graph_rebind,
-    _earth_graph_restore_after_rebuild,
     _ensure_close_clip_limits,
     _ensure_planetka_create_camera,
     _is_planetka_create_camera,
@@ -47,8 +42,6 @@ from .planetka_ops.earth_lifecycle_helpers import (
     _position_planetka_create_camera,
     _require_planetka_cloud_session,
     _restore_view_selection,
-    _snapshot_camera_state_for_rebuild,
-    _snapshot_earth_settings_for_rebuild,
     _snapshot_view_selection,
     _validate_create_earth_texture_source,
 )
@@ -62,8 +55,8 @@ from .planetka_ops.navigation_ops import (
     PLANETKA_OT_SunlightPreset,
 )
 from .planetka_ops.scene_setup_ops import (
-    PLANETKA_OT_RemoveDefaultScene,
-    PLANETKA_OT_SetBackgroundBlack,
+    PLANETKA_OT_OptimizeSettings,
+    PLANETKA_OT_OptimizeSettingsPopup,
 )
 from .asset_builder import (
     PLANETKA_ROOT_OBJECT_NAME,
@@ -265,11 +258,6 @@ class PLANETKA_OT_SetTextureQuality(bpy.types.Operator):
             return "Uses 1/2 width x 1/2 height of Full Quality textures (effective 1/4 resolution)"
         return "Highest quality texture data"
 
-    def invoke(self, context, event):
-        del event
-        target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
-        return self.execute(context)
-
     def draw(self, _context):
         return
 
@@ -290,7 +278,6 @@ class PLANETKA_OT_SetTextureQuality(bpy.types.Operator):
             )
             if previous_mode != target_mode:
                 props.texture_quality_mode = target_mode
-            _tag_view3d_redraw()
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
@@ -357,20 +344,6 @@ class PLANETKA_OT_ResolvePlanetka(bpy.types.Operator):
             )
         _tag_view3d_redraw()
         return {'FINISHED'}
-
-
-class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
-    bl_idname = "planetka.rebuild_earth"
-    bl_label = "Rebuild Earth"
-    bl_description = (
-        "Emergency rebuild: remove Planetka objects/shaders/runtime data from memory, "
-        "preserve camera transform and keyframes, then run Create Earth"
-    )
-
-    def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Rebuild Earth"):
-            return {'CANCELLED'}
-        return _earth_lifecycle_ops.rebuild_earth_execute(self, context, globals())
 
 
 class PLANETKA_OT_AddEarth(bpy.types.Operator):

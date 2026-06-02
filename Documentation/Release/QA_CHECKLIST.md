@@ -3,7 +3,6 @@
 ## Core Workflow
 
 - [ ] Create Earth works in a new `.blend` file.
-- [ ] Rebuild Earth keeps atmosphere and clouds intact.
 - [ ] Search, navigation presets, camera movement, and clipping controls work.
 - [ ] Scene Health Check reports valid state for a clean scene.
 

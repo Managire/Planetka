@@ -75,21 +75,6 @@ _ATMOSPHERE_MODE_ITEMS = (
     ("EEVEE", "EEVEE Optimized", "Use the lightweight EEVEE supplement atmosphere object"),
 )
 
-_GLOBAL_CLOUD_TEXTURE_SOURCE_ITEMS = (
-    ("CLOUD", "Planetka Cloud", "Download the Planetka global clouds texture from Planetka Cloud"),
-    ("LOCAL", "Local File", "Use a local global clouds texture file"),
-)
-
-_LOCAL_CLOUD_TEXTURE_SOURCE_ITEMS = (
-    ("CLOUD", "Planetka Cloud", "Download a Planetka texture-based cloud mask from Planetka Cloud"),
-    ("LOCAL", "Local EXR File", "Use a local EXR cloud mask file"),
-)
-
-_VDB_CLOUD_SOURCE_ITEMS = (
-    ("CLOUD", "Planetka Cloud", "Download a Planetka VDB preset from Planetka Cloud"),
-    ("LOCAL", "Local VDB File", "Use a local VDB file"),
-)
-
 _CLOUD_VIEW_MODE_ITEMS = (
     ("PREVIEW", "Preview", "Disable viewport subdivision for Global Clouds and Texture-Based Clouds"),
     ("FINAL", "Final Look", "Enable viewport subdivision for Global Clouds and Texture-Based Clouds"),
@@ -632,30 +617,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_cloud_view_mode,
     )
 
-    global_cloud_texture_source: EnumProperty(
-        name="Global Clouds Source",
-        description="Choose whether Global Clouds use Planetka Cloud or a local texture file",
-        items=_GLOBAL_CLOUD_TEXTURE_SOURCE_ITEMS,
-        default="CLOUD",
-        update=update_enable_global_clouds,
-    )
-
-    global_cloud_folder: StringProperty(
-        name="Legacy Global Clouds Folder",
-        subtype='DIR_PATH',
-        description="Legacy Global Clouds folder setting",
-        default="",
-        update=update_enable_global_clouds,
-    )
-
-    global_cloud_local_file: StringProperty(
-        name="Texture-Based Clouds Texture",
-        subtype='FILE_PATH',
-        description="Local texture file to use for Global Clouds",
-        default="",
-        update=update_enable_global_clouds,
-    )
-
     enable_local_clouds: BoolProperty(
         name="Enable Texture-Based Clouds",
         default=False,
@@ -663,34 +624,10 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_enable_local_clouds,
     )
 
-    local_cloud_texture_source: EnumProperty(
-        name="Texture-Based Clouds Source",
-        description="Choose whether Texture-Based Clouds use Planetka Cloud masks or a local EXR file",
-        items=_LOCAL_CLOUD_TEXTURE_SOURCE_ITEMS,
-        default="CLOUD",
-        update=update_enable_local_clouds,
-    )
-
-    local_cloud_local_file: StringProperty(
-        name="Texture-Based Cloud EXR",
-        subtype='FILE_PATH',
-        description="Local EXR cloud mask used when adding a texture-based cloud patch",
-        default="",
-        update=update_enable_local_clouds,
-    )
-
     enable_vdb_clouds: BoolProperty(
         name="Enable VDB Clouds (Cycles only)",
         default=False,
         description="Show or hide VDB cloud objects in the viewport and render",
-        update=update_enable_vdb_clouds,
-    )
-
-    vdb_cloud_source: EnumProperty(
-        name="VDB Clouds (Cycles only) Source",
-        description="Choose whether VDB Clouds (Cycles only) use Planetka Cloud presets or a local VDB file",
-        items=_VDB_CLOUD_SOURCE_ITEMS,
-        default="CLOUD",
         update=update_enable_vdb_clouds,
     )
 
@@ -704,13 +641,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Texture-Based Cloud Texture",
         description="Select a Planetka Cloud texture-based cloud mask",
         items=_local_cloud_texture_items,
-    )
-
-    vdb_cloud_file: StringProperty(
-        name="VDB Cloud File",
-        subtype='FILE_PATH',
-        description="Local VDB file used when adding a new VDB cloud",
-        default="",
     )
 
     auto_adjust_clipping_values: BoolProperty(

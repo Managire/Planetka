@@ -264,12 +264,7 @@ def _sync_atmosphere_mode_to_render_engine(scene, deps):
 
 
 def sync_atmosphere_mode_to_render_engine(scene=None, ctx=None):
-    """Explicitly sync Planetka atmosphere mode to the active render engine.
-
-    This is intentionally called from Planetka-controlled operations such as
-    Resolve/Create Earth instead of depsgraph updates. Renderer changes alone
-    should not mutate the scene until the user runs Resolve Planetka.
-    """
+    """Sync Planetka atmosphere mode to the active render engine."""
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
     target_scene = scene
@@ -291,6 +286,7 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
         return
 
     _enforce_planetka_earth_surface_displacement_mode(scene, deps)
+    _sync_atmosphere_mode_to_render_engine(scene, deps)
 
     if deps.is_navigation_user_edit_active(scene):
         return

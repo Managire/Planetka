@@ -52,10 +52,7 @@ def _safe_existing_file(path):
 
 
 def _resolve_global_cloud_texture_path(scene=None):
-    props = getattr(scene, "planetka", None) if scene else None
-    source = str(getattr(props, "global_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
-    if source == "LOCAL":
-        return _safe_existing_file(getattr(props, "global_cloud_local_file", ""))
+    del scene
 
     bundled_path = _safe_existing_file(BUNDLED_GLOBAL_CLOUD_TEXTURE_PATH)
     if bundled_path:
@@ -282,9 +279,6 @@ def update_enable_global_clouds(self, context):
         scene,
         (
             "enable_global_clouds",
-            "global_cloud_texture_source",
-            "global_cloud_folder",
-            "global_cloud_local_file",
         ),
     )
     _local._sync_cloud_collection_visibility(scene, self)

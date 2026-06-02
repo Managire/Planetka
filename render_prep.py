@@ -425,7 +425,7 @@ def _set_resolve_failure_notice(scene, message):
         return
     safe_message = (
         str(message or "").strip()
-        or "Resolve failed. Please click Rebuild Earth"
+        or "Resolve failed. Please click Resolve Planetka"
     )
     try:
         scene[RESOLVE_FAILURE_FLAG_KEY] = True
@@ -1840,7 +1840,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "failed storing integrity resolve error on scene",
             )
             _set_resolve_failure_notice(scene, integrity_message)
-            user_message = "Resolve failed. Please click Rebuild Earth"
+            user_message = "Resolve failed. Please click Resolve Planetka"
             self._flush_ui_reports(ui_reports)
             return fail(
                 self,

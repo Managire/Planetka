@@ -410,9 +410,9 @@ def navigation_preset_execute(operator, context, deps):
         if preset == "ISS_ORBIT":
             _clear_full_globe_tilt_lock(scene)
             props.nav_altitude_km = 400.0
-        elif preset == "SENTINEL2":
+        elif preset == "ATMOSPHERE_EDGE":
             _clear_full_globe_tilt_lock(scene)
-            props.nav_altitude_km = 786.0
+            props.nav_altitude_km = 100.0
         elif preset == "HIGH_ORBIT":
             _set_full_globe_tilt_lock(
                 scene,
@@ -499,8 +499,8 @@ def navigation_preset_execute(operator, context, deps):
 
     if preset == "HIGH_ORBIT":
         preset_label = "Full Globe"
-    elif preset == "SENTINEL2":
-        preset_label = "ESA Sentinel-2"
+    elif preset == "ATMOSPHERE_EDGE":
+        preset_label = "100km"
     elif preset == "ISS_ORBIT":
         preset_label = "ISS Orbit"
     elif preset == "MAX_PROXIMITY":
@@ -613,8 +613,8 @@ class PLANETKA_OT_NavigationPreset(bpy.types.Operator):
         name="Preset",
         items=(
             ("MAX_PROXIMITY", "Max Proximity", "Closest altitude near texture quality limit (Caution target)"),
+            ("ATMOSPHERE_EDGE", "100km", "Set altitude to 100 km"),
             ("ISS_ORBIT", "ISS Orbit", "Set altitude to 400 km"),
-            ("SENTINEL2", "ESA Sentinel-2", "Set altitude to 786 km (Sentinel-2 nominal orbit)"),
             ("HIGH_ORBIT", "Full Globe", "Fit full Earth with room around edges"),
         ),
         default="ISS_ORBIT",

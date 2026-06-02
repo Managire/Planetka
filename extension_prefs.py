@@ -1,8 +1,8 @@
-import bpy
 import json
 import logging
+import bpy
 from bpy.types import AddonPreferences
-from bpy.props import BoolProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
@@ -17,9 +17,28 @@ FALLBACK_CLOUD_SESSION_REFRESH_TOKEN_KEY = "planetka_cloud_session_refresh_token
 FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY = "planetka_cloud_session_status_message"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
 FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_preflight_seen_version"
+FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY = "planetka_optimize_remove_default_scene"
+FALLBACK_OPTIMIZE_BACKGROUND_BLACK_KEY = "planetka_optimize_background_black"
+FALLBACK_OPTIMIZE_EEVEE_VOLUME_RESOLUTION_KEY = "planetka_optimize_eevee_volume_resolution"
+FALLBACK_OPTIMIZE_CYCLES_VOLUME_BOUNCES_KEY = "planetka_optimize_cycles_volume_bounces"
+FALLBACK_OPTIMIZE_CYCLES_VOLUME_BIASED_KEY = "planetka_optimize_cycles_volume_biased"
+FALLBACK_OPTIMIZE_CYCLES_VOLUME_MAX_STEPS_KEY = "planetka_optimize_cycles_volume_max_steps"
+FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_RENDER_KEY = "planetka_optimize_cycles_dicing_rate_render"
+FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_VIEWPORT_KEY = "planetka_optimize_cycles_dicing_rate_viewport"
+FALLBACK_OPTIMIZE_CYCLES_OFFSCREEN_SCALE_KEY = "planetka_optimize_cycles_offscreen_scale"
+FALLBACK_OPTIMIZE_CYCLES_MAX_SUBDIVISIONS_KEY = "planetka_optimize_cycles_max_subdivisions"
+FALLBACK_OPTIMIZE_PERSISTENT_DATA_KEY = "planetka_optimize_persistent_data"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
 logger = logging.getLogger(__name__)
+
+_EEVEE_VOLUME_RESOLUTION_ITEMS = (
+    ("1", "1:1", "Full resolution"),
+    ("2", "1:2", "Render volumes at 50% render resolution"),
+    ("4", "1:4", "Render volumes at 25% render resolution"),
+    ("8", "1:8", "Render volumes at 12.5% render resolution"),
+    ("16", "1:16", "Render volumes at 6.25% render resolution"),
+)
 
 class PlanetkaExtensionPreferences(AddonPreferences):
     __slots__ = ()
@@ -53,6 +72,71 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         name="Create Earth Preflight Seen Version",
         default="",
         options={'HIDDEN'},
+    )
+    optimize_remove_default_scene: BoolProperty(
+        name="Remove Default Cube Scene",
+        description="Remove Blender's untouched default Cube/Camera/Light scene before Create Earth",
+        default=True,
+    )
+    optimize_background_black: BoolProperty(
+        name="Set Background to Black",
+        description="Set the World background color to black before Create Earth",
+        default=True,
+    )
+    optimize_eevee_volume_resolution: EnumProperty(
+        name="Resolution",
+        description="Set EEVEE volume render resolution",
+        items=_EEVEE_VOLUME_RESOLUTION_ITEMS,
+        default="2",
+    )
+    optimize_cycles_volume_bounces: IntProperty(
+        name="Volume",
+        description="Set Cycles volume max bounces",
+        default=16,
+        min=0,
+    )
+    optimize_cycles_volume_biased: BoolProperty(
+        name="Biased",
+        description="Enable Cycles biased volume rendering",
+        default=True,
+    )
+    optimize_cycles_volume_max_steps: IntProperty(
+        name="Max Steps",
+        description="Set Cycles biased volume max steps",
+        default=16,
+        min=1,
+    )
+    optimize_cycles_dicing_rate_render: FloatProperty(
+        name="Dicing Rate Render",
+        description="Set Cycles render dicing rate",
+        default=1.5,
+        min=0.001,
+        precision=3,
+    )
+    optimize_cycles_dicing_rate_viewport: FloatProperty(
+        name="Viewport",
+        description="Set Cycles viewport dicing rate",
+        default=2.0,
+        min=0.001,
+        precision=3,
+    )
+    optimize_cycles_offscreen_scale: FloatProperty(
+        name="Offscreen Scale",
+        description="Set Cycles offscreen dicing scale",
+        default=1.5,
+        min=0.001,
+        precision=3,
+    )
+    optimize_cycles_max_subdivisions: IntProperty(
+        name="Max Subdivisions",
+        description="Set Cycles maximum adaptive subdivisions",
+        default=16,
+        min=0,
+    )
+    optimize_persistent_data: BoolProperty(
+        name="Persistent Data",
+        description="Enable persistent data for final renders",
+        default=True,
     )
 
     # File format preference
@@ -151,6 +235,45 @@ def get_prefs():
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 
+        def _get_bool(self, key, default=False):
+            try:
+                value = self._owner.get(key, bool(default))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                return bool(default)
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
+
+        def _set_bool(self, key, value):
+            try:
+                self._owner[key] = bool(value)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+
+        def _get_int(self, key, default=0):
+            try:
+                return int(self._owner.get(key, int(default)))
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+                return int(default)
+
+        def _set_int(self, key, value):
+            try:
+                self._owner[key] = int(value)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+                pass
+
+        def _get_float(self, key, default=0.0):
+            try:
+                return float(self._owner.get(key, float(default)))
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+                return float(default)
+
+        def _set_float(self, key, value):
+            try:
+                self._owner[key] = float(value)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+                pass
+
         cloud_install_id = property(
             lambda self: self._get_value(FALLBACK_CLOUD_INSTALL_ID_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_CLOUD_INSTALL_ID_KEY, value),
@@ -174,6 +297,50 @@ def get_prefs():
         create_earth_preflight_seen_version = property(
             lambda self: self._get_value(FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY, value),
+        )
+        optimize_remove_default_scene = property(
+            lambda self: self._get_bool(FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY, True),
+            lambda self, value: self._set_bool(FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY, value),
+        )
+        optimize_background_black = property(
+            lambda self: self._get_bool(FALLBACK_OPTIMIZE_BACKGROUND_BLACK_KEY, True),
+            lambda self, value: self._set_bool(FALLBACK_OPTIMIZE_BACKGROUND_BLACK_KEY, value),
+        )
+        optimize_eevee_volume_resolution = property(
+            lambda self: self._get_value(FALLBACK_OPTIMIZE_EEVEE_VOLUME_RESOLUTION_KEY, "2"),
+            lambda self, value: self._set_value(FALLBACK_OPTIMIZE_EEVEE_VOLUME_RESOLUTION_KEY, value),
+        )
+        optimize_cycles_volume_bounces = property(
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BOUNCES_KEY, 16),
+            lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BOUNCES_KEY, value),
+        )
+        optimize_cycles_volume_biased = property(
+            lambda self: self._get_bool(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BIASED_KEY, True),
+            lambda self, value: self._set_bool(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BIASED_KEY, value),
+        )
+        optimize_cycles_volume_max_steps = property(
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_VOLUME_MAX_STEPS_KEY, 16),
+            lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_VOLUME_MAX_STEPS_KEY, value),
+        )
+        optimize_cycles_dicing_rate_render = property(
+            lambda self: self._get_float(FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_RENDER_KEY, 1.5),
+            lambda self, value: self._set_float(FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_RENDER_KEY, value),
+        )
+        optimize_cycles_dicing_rate_viewport = property(
+            lambda self: self._get_float(FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_VIEWPORT_KEY, 2.0),
+            lambda self, value: self._set_float(FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_VIEWPORT_KEY, value),
+        )
+        optimize_cycles_offscreen_scale = property(
+            lambda self: self._get_float(FALLBACK_OPTIMIZE_CYCLES_OFFSCREEN_SCALE_KEY, 1.5),
+            lambda self, value: self._set_float(FALLBACK_OPTIMIZE_CYCLES_OFFSCREEN_SCALE_KEY, value),
+        )
+        optimize_cycles_max_subdivisions = property(
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_MAX_SUBDIVISIONS_KEY, 16),
+            lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_MAX_SUBDIVISIONS_KEY, value),
+        )
+        optimize_persistent_data = property(
+            lambda self: self._get_bool(FALLBACK_OPTIMIZE_PERSISTENT_DATA_KEY, True),
+            lambda self, value: self._set_bool(FALLBACK_OPTIMIZE_PERSISTENT_DATA_KEY, value),
         )
 
     def _addon_pref_by_name(addons, key):

@@ -19,7 +19,6 @@ from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
 from .r2_source import get_download_progress, is_download_active, is_remote_source_configured
-from .planetka_ops.scene_setup_ops import is_scene_background_black
 from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
     ANIMATION_SEGMENT_TAG_KEY,
@@ -289,6 +288,23 @@ def _fmt_bytes(value):
     if size >= 1024.0 ** 3:
         return f"{size / (1024.0 ** 3):,.0f} GB"
     return f"{size / (1024.0 ** 2):,.0f} MB"
+
+
+def _fmt_download_status(label, downloaded_bytes, total_bytes):
+    label_text = str(label or "").strip()
+    try:
+        downloaded = max(0, int(downloaded_bytes or 0))
+    except (TypeError, ValueError):
+        downloaded = 0
+    try:
+        total = max(0, int(total_bytes or 0))
+    except (TypeError, ValueError):
+        total = 0
+    if total > 0:
+        return f"{label_text}: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}" if label_text else f"{_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
+    if downloaded > 0:
+        return f"{label_text}: {_fmt_bytes(downloaded)}" if label_text else _fmt_bytes(downloaded)
+    return f"{label_text}: 0 MB / 0 MB" if label_text else "0 MB / 0 MB"
 
 
 def _fmt_eur(value):
@@ -567,7 +583,7 @@ def _resolve_runtime_display(scene):
         runtime_code = "DOWNLOADING"
         runtime_text = "Animation Downloading" if animation_render_running else "Downloading"
     if runtime_code == "PREPARING":
-        runtime_text = "Preparing Download"
+        runtime_text = "Preparing"
     if runtime_code == "DOWNLOADING":
         runtime_text = "Animation Downloading" if animation_render_running else "Downloading"
     return runtime, runtime_code, runtime_text
@@ -644,13 +660,13 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     elif animation_waiting_for_download and "LICENC" in animation_status_upper:
         progress_text = "Confirming access"
     elif animation_waiting_for_download and "DOWNLOADING" in animation_status_upper:
-        progress_text = "Preparing download"
+        progress_text = "Preparing"
     elif animation_waiting_for_download:
         progress_text = "Data ready"
     elif status_token == "PREPARING":
-        progress_text = "Preparing download"
+        progress_text = "Preparing"
     elif status_token in {"FINALIZING", "APPLYING"}:
-        progress_text = "Download finished"
+        progress_text = "Finished"
     elif resolve_failure_message:
         progress_text = "Resolve failed"
     elif inside_earth_warning or low_altitude_warning:
@@ -694,14 +710,10 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     box = layout.box()
     box.alert = bool(state.get("alert", False))
     box.label(text=str(state.get("status_text", "") or "Idle"), icon=str(state.get("status_icon", "INFO") or "INFO"))
-    box.progress(
-        factor=float(state.get("factor", 0.0) or 0.0),
-        type='BAR',
-        text=str(state.get("progress_text", "") or "Waiting for data"),
-    )
+    box.label(text=str(state.get("progress_text", "") or "Waiting for data"), icon="BLANK1")
 
 
-def _cloud_progress_bar_state(cloud_runtime, label_tokens):
+def _cloud_progress_bar_state(cloud_runtime, label_tokens, display_label):
     progress = cloud_runtime.get_cloud_download_progress()
     progress_label = str(progress.get("label", "") or "")
     progress_label_upper = progress_label.upper()
@@ -721,13 +733,13 @@ def _cloud_progress_bar_state(cloud_runtime, label_tokens):
                 "active": True,
                 "error": "",
                 "factor": min(1.0, max(0.0, downloaded / float(total))),
-                "text": f"{_fmt_bytes(downloaded)} / {_fmt_bytes(total)}",
+                "text": _fmt_download_status(display_label, downloaded, total),
             }
         return {
             "active": True,
             "error": "",
             "factor": 0.0,
-            "text": f"Downloading: {_fmt_bytes(downloaded)}",
+            "text": _fmt_download_status(display_label, downloaded, total),
         }
     return {"active": False, "error": "", "factor": 0.0, "text": "Ready"}
 
@@ -737,11 +749,15 @@ def _combine_progress_status(status_text, progress_text, runtime_code=""):
     progress = str(progress_text or "").strip()
     token = str(runtime_code or "").strip().upper()
     if token == "PREPARING":
-        return "Preparing Download"
+        return "Preparing"
     if token == "DOWNLOADING":
-        return f"Downloading: {progress}" if progress else "Downloading"
+        if not progress:
+            return "Downloading"
+        if progress.lower().startswith("downloading"):
+            return progress
+        return f"Downloading {progress}"
     if token in {"FINALIZING", "APPLYING"}:
-        return "Download finished, applying"
+        return "Applying"
     if not status:
         return progress or "Ready"
     if not progress or progress == "Ready":
@@ -753,60 +769,48 @@ def _combine_progress_status(status_text, progress_text, runtime_code=""):
     return f"{status}: {progress}"
 
 
-def _draw_data_control_progress_section(layout, scene, runtime, runtime_code, runtime_text):
+def _draw_data_control_status_line(layout, scene, runtime, runtime_code, runtime_text):
     state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
-    box = layout.box()
-    box.alert = bool(state.get("alert", False))
-
-    bar_label = "Surface Textures"
-    bar_text = _combine_progress_status(
+    status_text = _combine_progress_status(
         state.get("status_text", ""),
         state.get("progress_text", ""),
         state.get("runtime_code", ""),
     )
-    bar_factor = float(state.get("factor", 0.0) or 0.0)
     bar_active = bool(state.get("active", False))
     bar_error = bool(state.get("alert", False))
     surface_download_active = bool(state.get("download_active", False))
 
     try:
         from . import clouds_local as cloud_runtime
-        texture_state = _cloud_progress_bar_state(cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"))
-        vdb_state = _cloud_progress_bar_state(cloud_runtime, ("VDB",))
+        texture_state = _cloud_progress_bar_state(cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"), "Clouds")
+        vdb_state = _cloud_progress_bar_state(cloud_runtime, ("VDB",), "VDBs")
     except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
         texture_state = {"active": False, "error": "", "factor": 0.0, "text": "Ready"}
         vdb_state = {"active": False, "error": "", "factor": 0.0, "text": "Ready"}
 
     texture_progress_visible = bool(texture_state.get("active", False)) or str(texture_state.get("error", "") or "").strip()
     vdb_progress_visible = bool(vdb_state.get("active", False)) or str(vdb_state.get("error", "") or "").strip()
-    if texture_progress_visible and not surface_download_active:
-        bar_label = "Texture-Based Clouds"
-        bar_text = str(texture_state.get("text", "") or "Ready")
-        bar_factor = float(texture_state.get("factor", 0.0) or 0.0)
+    if surface_download_active:
+        status_text = _fmt_download_status(
+            "Earth Textures",
+            state.get("downloaded_bytes", 0),
+            state.get("total_bytes", 0),
+        )
+    elif texture_progress_visible:
+        status_text = str(texture_state.get("text", "") or "Ready")
         bar_active = bool(texture_state.get("active", False))
         bar_error = bool(str(texture_state.get("error", "") or "").strip())
-    elif vdb_progress_visible and not surface_download_active:
-        bar_label = "VDB Clouds"
-        bar_text = str(vdb_state.get("text", "") or "Ready")
-        bar_factor = float(vdb_state.get("factor", 0.0) or 0.0)
+    elif vdb_progress_visible:
+        status_text = str(vdb_state.get("text", "") or "Ready")
         bar_active = bool(vdb_state.get("active", False))
         bar_error = bool(str(vdb_state.get("error", "") or "").strip())
     elif not bar_active and not bar_error:
-        bar_text = _combine_progress_status(state.get("status_text", ""), "Ready", state.get("runtime_code", ""))
+        status_text = _combine_progress_status(state.get("status_text", ""), "Ready", state.get("runtime_code", ""))
 
-    if bar_active and not str(bar_text).startswith("Downloading"):
-        bar_text = f"Downloading: {bar_text}"
-
-    progress_row = box.row(align=True)
-    progress_row.alert = bool(bar_error)
-    try:
-        progress_row.progress(
-            factor=max(0.0, min(1.0, float(bar_factor))),
-            type='BAR',
-            text=f"{bar_label}: {bar_text}",
-        )
-    except (AttributeError, TypeError, RuntimeError):
-        progress_row.label(text=f"{bar_label}: {bar_text}", icon="IMPORT" if bool(bar_active) else "CHECKMARK")
+    status_row = layout.row(align=True)
+    status_row.alert = bool(bar_error)
+    status_icon = "IMPORT" if bool(bar_active) else ("ERROR" if bool(bar_error) else "CHECKMARK")
+    status_row.label(text=str(status_text or "Ready"), icon=status_icon)
 
 
 def _earth_radius_bu_for_ui(scene):
@@ -982,7 +986,7 @@ def _resolve_failure_notice(scene=None):
         message = str(target_scene.get(RESOLVE_FAILURE_MESSAGE_KEY, "") or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         message = ""
-    return message or "Resolve failed. Please click Rebuild Earth"
+    return message or "Resolve failed. Please click Resolve Planetka"
 
 
 def _has_resolve_failure_notice(scene=None):
@@ -1243,19 +1247,16 @@ def _draw_new_earth(layout):
             except (TypeError, ValueError, AttributeError):
                 logger.debug("Planetka: failed storing Create Earth preflight seen version", exc_info=True)
 
-    row = layout.row()
-    row.scale_x = ADD_EARTH_BUTTON_SCALE_X
-    row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    row = layout.row(align=True)
     row.alert = False
     row.enabled = create_enabled
-    row.operator("planetka.remove_default_scene", text="Remove Default Scene", icon="TRASH")
-
-    row = layout.row()
-    row.scale_x = ADD_EARTH_BUTTON_SCALE_X
-    row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
-    row.alert = False
-    row.enabled = create_enabled and (not is_scene_background_black(scene))
-    row.operator("planetka.set_background_black", text="Set Background to Black", icon="SHADING_RENDERED")
+    split = row.split(factor=0.88, align=True)
+    main_col = split.column(align=True)
+    main_col.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    main_col.operator("planetka.optimize_settings", text="Optimize Settings", icon="PREFERENCES")
+    cog_col = split.column(align=True)
+    cog_col.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    cog_col.operator("planetka.optimize_settings_popup", text="", icon="PREFERENCES", emboss=True)
 
     row = layout.row()
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
@@ -1263,13 +1264,17 @@ def _draw_new_earth(layout):
     row.alert = False
     row.enabled = create_enabled
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
-    rebuild_row = layout.row()
-    rebuild_row.scale_x = ADD_EARTH_BUTTON_SCALE_X
-    rebuild_row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
-    rebuild_row.alert = False
-    rebuild_row.enabled = _planetka_controls_enabled(has_earth)
-    rebuild_row.operator("planetka.rebuild_earth", text="Rebuild Earth", icon="FILE_REFRESH")
-
+    try:
+        create_status = str(scene.get("planetka_create_earth_status", "") or "").strip() if scene is not None else ""
+        create_status_active = bool(scene.get("planetka_create_earth_status_active", False)) if scene is not None else False
+    except (TypeError, ValueError, AttributeError):
+        create_status = ""
+        create_status_active = False
+    if create_status:
+        status_row = layout.row()
+        status_row.alert = bool(not create_status_active and "failed" in create_status.casefold())
+        status_icon = "TIME" if create_status_active else ("CHECKMARK" if "success" in create_status.casefold() else "INFO")
+        status_row.label(text=create_status, icon=status_icon)
 def _draw_live_telemetry(layout, scene):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -1336,11 +1341,11 @@ def _draw_live_telemetry(layout, scene):
             error_row.alert = True
             error_row.label(text=resolve_failure_message, icon="ERROR")
 
+        _draw_data_control_status_line(quality_box, scene, runtime, runtime_code, runtime_text)
+
         resolve_row = quality_box.row(align=True)
         resolve_row.scale_y = 1.45
         resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")
-
-        _draw_data_control_progress_section(quality_box, scene, runtime, runtime_code, runtime_text)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -1464,15 +1469,15 @@ def _draw_navigation(layout, context, controls_enabled=True):
     ).preset = "MAX_PROXIMITY"
     preset_row_top.operator(
         "planetka.navigation_preset",
-        text="ISS Orbit",
+        text="100km",
         icon="ORIENTATION_GLOBAL",
-    ).preset = "ISS_ORBIT"
+    ).preset = "ATMOSPHERE_EDGE"
     preset_row_bottom = preset_box.row(align=True)
     preset_row_bottom.operator(
         "planetka.navigation_preset",
-        text="ESA Sentinel-2",
-        icon="IMAGE_DATA",
-    ).preset = "SENTINEL2"
+        text="ISS Orbit",
+        icon="ORIENTATION_GLOBAL",
+    ).preset = "ISS_ORBIT"
     preset_row_bottom.operator(
         "planetka.navigation_preset",
         text="Full Globe",
@@ -1879,17 +1884,6 @@ def _draw_global_clouds(layout, scene, props):
     if not bool(getattr(props, "enable_global_clouds", False)):
         return
 
-    box.label(text="Texture Source")
-    source_row = box.row(align=True)
-    source_row.prop_enum(props, "global_cloud_texture_source", "CLOUD", text="Planetka Cloud")
-    source_row.prop_enum(props, "global_cloud_texture_source", "LOCAL", text="Local File")
-
-    source = str(getattr(props, "global_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
-    if source == "LOCAL":
-        box.prop(props, "global_cloud_local_file", text="Cloud Texture")
-        if not str(getattr(props, "global_cloud_local_file", "") or "").strip():
-            box.label(text="Select a local Global Clouds texture file.", icon="INFO")
-
     obj = bpy.data.objects.get("Planetka Global Cloud Layer")
     if obj is None:
         box.label(text="Global Clouds will appear after Create Earth.", icon="INFO")
@@ -1906,7 +1900,7 @@ def _draw_global_clouds(layout, scene, props):
             _draw_global_cloud_material_settings(cloud_box)
 
 
-def _draw_cloud_download_progress(layout, cloud_runtime, label_tokens):
+def _draw_cloud_download_progress(layout, cloud_runtime, label_tokens, display_label):
     progress = cloud_runtime.get_cloud_download_progress()
     progress_label = str(progress.get("label", "") or "")
     progress_label_upper = progress_label.upper()
@@ -1918,16 +1912,7 @@ def _draw_cloud_download_progress(layout, cloud_runtime, label_tokens):
     if bool(progress.get("active", False)):
         downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
         total = max(0, int(progress.get("total_bytes", 0) or 0))
-        if total > 0:
-            text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
-            factor = min(1.0, max(0.0, downloaded / float(total)))
-        else:
-            text = f"Downloading: {_fmt_bytes(downloaded)}"
-            factor = 0.0
-        try:
-            layout.progress(factor=factor, type='BAR', text=text)
-        except (AttributeError, TypeError, RuntimeError):
-            layout.label(text=text, icon="IMPORT")
+        layout.label(text=_fmt_download_status(display_label, downloaded, total), icon="IMPORT")
     elif progress_error:
         err_box = layout.box()
         err_box.alert = True
@@ -1949,24 +1934,14 @@ def _draw_local_clouds(layout, context, props):
     if not bool(getattr(props, "enable_local_clouds", False)):
         return
 
-    source_row = box.row(align=True)
-    source_row.prop_enum(props, "local_cloud_texture_source", "CLOUD", text="Planetka Cloud")
-    source_row.prop_enum(props, "local_cloud_texture_source", "LOCAL", text="Local EXR File")
-
-    source = str(getattr(props, "local_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
     picker_box = box.box()
-    if source == "LOCAL":
-        picker_box.prop(props, "local_cloud_local_file", text="Cloud Mask")
-        if not str(getattr(props, "local_cloud_local_file", "") or "").strip():
-            picker_box.label(text="Select a local EXR cloud mask file.", icon="INFO")
-    else:
-        picker_box.label(text="Planetka Cloud Masks", icon="IMAGE_DATA")
-        picker_box.template_icon_view(props, "local_cloud_texture", show_labels=True, scale=5.0, scale_popup=6.0)
+    picker_box.label(text="Planetka Cloud Masks", icon="IMAGE_DATA")
+    picker_box.template_icon_view(props, "local_cloud_texture", show_labels=True, scale=5.0, scale_popup=6.0)
 
     add_row = picker_box.row(align=True)
     add_row.operator("planetka.add_local_cloud", text="Add Cloud", icon="ADD")
 
-    _draw_cloud_download_progress(picker_box, cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"))
+    _draw_cloud_download_progress(picker_box, cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"), "Clouds")
 
     clouds = cloud_runtime._sort_cloud_objects_by_suffix(list(cloud_runtime._iter_local_cloud_objects()))
     if not clouds:
@@ -2037,24 +2012,14 @@ def _draw_vdb_clouds(layout, context, props):
     if not bool(getattr(props, "enable_vdb_clouds", False)):
         return
 
-    source_row = box.row(align=True)
-    source_row.prop_enum(props, "vdb_cloud_source", "CLOUD", text="Planetka Cloud")
-    source_row.prop_enum(props, "vdb_cloud_source", "LOCAL", text="Local VDB File")
-
-    source = str(getattr(props, "vdb_cloud_source", "CLOUD") or "CLOUD").strip().upper()
     picker_box = box.box()
-    if source == "LOCAL":
-        picker_box.prop(props, "vdb_cloud_file", text="VDB File")
-        if not str(getattr(props, "vdb_cloud_file", "") or "").strip():
-            picker_box.label(text="Select a local VDB file.", icon="INFO")
-    else:
-        picker_box.label(text="Planetka Cloud VDB Presets", icon="VOLUME_DATA")
-        picker_box.template_icon_view(props, "vdb_cloud_preset", show_labels=True, scale=5.0, scale_popup=6.0)
+    picker_box.label(text="Planetka Cloud VDB Presets", icon="VOLUME_DATA")
+    picker_box.template_icon_view(props, "vdb_cloud_preset", show_labels=True, scale=5.0, scale_popup=6.0)
 
     add_row = picker_box.row(align=True)
     add_row.operator("planetka.add_vdb_cloud", text="Add Cloud", icon="ADD")
 
-    _draw_cloud_download_progress(picker_box, cloud_runtime, ("VDB",))
+    _draw_cloud_download_progress(picker_box, cloud_runtime, ("VDB",), "VDBs")
 
     clouds = cloud_runtime._sort_cloud_objects_by_suffix(list(cloud_runtime._iter_vdb_cloud_objects()))
     if not clouds:

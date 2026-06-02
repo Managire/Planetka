@@ -211,11 +211,9 @@ def _tick():
                 raise E2EError("scene.planetka is unavailable.")
 
             purge_planetka_data()
-            if hasattr(bpy.ops.planetka, "remove_default_scene") and bpy.ops.planetka.remove_default_scene.poll():
-                bpy.ops.planetka.remove_default_scene()
+            bpy.ops.planetka.optimize_settings()
             ensure_camera(scene, name="Planetka Final Animation Camera")
             ensure_standard_world(scene)
-            bpy.ops.planetka.set_background_black()
             prefs.texture_base_path = "planetka-remote"
             create_earth_and_wait(state_module, scene)
 

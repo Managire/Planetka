@@ -677,159 +677,6 @@ class OvernightRunner:
         self.report["notes"].append(f"Startup profile restored values: {restored}")
         self._call_operator("reset_startup_setup_factory")
 
-    def _run_object_rename_rebuild_case(self):
-        root = bpy.data.objects.get("Planetka Root")
-        surface = bpy.data.objects.get("Planetka Earth Surface")
-        if root is None or surface is None:
-            self.report["rogue_phase"]["object_rename_rebuild"] = {
-                "status": "skipped",
-                "reason": "Planetka Root or Earth Surface missing before tamper.",
-            }
-            return
-        original_root_name = str(root.name)
-        original_surface_name = str(surface.name)
-        health_before = self._scene_health_summary()
-        root.name = "Rogue Renamed Root"
-        surface.name = "Rogue Renamed Surface"
-        health_after_rename = self._scene_health_summary()
-        rebuild_result = self._call_operator("rebuild_earth")
-        if "FINISHED" not in rebuild_result:
-            raise E2EError(f"Rebuild Earth failed after object rename tamper: {rebuild_result}")
-        drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
-        repaired_health = self._scene_health_summary()
-        out_path = self.session_dir / "rogue_object_rename_rebuild.png"
-        configure_eevee(self.scene)
-        configure_png_output(self.scene, output_prefix=out_path, resolution_x=960, resolution_y=540, resolution_percentage=100)
-        render_still(self.scene, out_path)
-        image_analysis = analyze_render_image(out_path)
-        analysis = {
-            "samples": [image_analysis],
-            "has_mostly_black": bool(image_analysis.get("mostly_black")),
-            "has_pink_corrupt": bool(image_analysis.get("pink_corrupt")),
-        }
-        self.report["rogue_phase"]["object_rename_rebuild"] = {
-            "status": "ok",
-            "renamed_from": {
-                "root": original_root_name,
-                "surface": original_surface_name,
-            },
-            "health_before": health_before,
-            "health_after_rename": health_after_rename,
-            "health_after_rebuild": repaired_health,
-            "render": analysis,
-        }
-
-    def _run_surface_delete_rebuild_case(self):
-        surface = bpy.data.objects.get("Planetka Earth Surface")
-        if surface is None:
-            self.report["rogue_phase"]["surface_delete_rebuild"] = {
-                "status": "skipped",
-                "reason": "Planetka Earth Surface missing before tamper.",
-            }
-            return
-        health_before = self._scene_health_summary()
-        bpy.data.objects.remove(surface, do_unlink=True)
-        health_after_delete = self._scene_health_summary()
-        rebuild_result = self._call_operator("rebuild_earth")
-        if "FINISHED" not in rebuild_result:
-            raise E2EError(f"Rebuild Earth failed after surface delete tamper: {rebuild_result}")
-        drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
-        repaired_health = self._scene_health_summary()
-        out_path = self.session_dir / "rogue_surface_delete_rebuild.png"
-        configure_eevee(self.scene)
-        configure_png_output(self.scene, output_prefix=out_path, resolution_x=960, resolution_y=540, resolution_percentage=100)
-        render_still(self.scene, out_path)
-        image_analysis = analyze_render_image(out_path)
-        analysis = {
-            "samples": [image_analysis],
-            "has_mostly_black": bool(image_analysis.get("mostly_black")),
-            "has_pink_corrupt": bool(image_analysis.get("pink_corrupt")),
-        }
-        self.report["rogue_phase"]["surface_delete_rebuild"] = {
-            "status": "ok",
-            "health_before": health_before,
-            "health_after_delete": health_after_delete,
-            "health_after_rebuild": repaired_health,
-            "render": analysis,
-        }
-
-    def _run_material_delete_rebuild_case(self):
-        material = bpy.data.materials.get("Planetka Earth Material")
-        if material is None:
-            self.report["rogue_phase"]["material_delete_rebuild"] = {
-                "status": "skipped",
-                "reason": "Planetka Earth Material missing before tamper.",
-            }
-            return
-        health_before = self._scene_health_summary()
-        bpy.data.materials.remove(material, do_unlink=True)
-        health_after_delete = self._scene_health_summary()
-        rebuild_result = self._call_operator("rebuild_earth")
-        if "FINISHED" not in rebuild_result:
-            raise E2EError(f"Rebuild Earth failed after material delete tamper: {rebuild_result}")
-        drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
-        repaired_health = self._scene_health_summary()
-        out_path = self.session_dir / "rogue_material_delete_rebuild.png"
-        configure_eevee(self.scene)
-        configure_png_output(self.scene, output_prefix=out_path, resolution_x=960, resolution_y=540, resolution_percentage=100)
-        render_still(self.scene, out_path)
-        image_analysis = analyze_render_image(out_path)
-        analysis = {
-            "samples": [image_analysis],
-            "has_mostly_black": bool(image_analysis.get("mostly_black")),
-            "has_pink_corrupt": bool(image_analysis.get("pink_corrupt")),
-        }
-        self.report["rogue_phase"]["material_delete_rebuild"] = {
-            "status": "ok",
-            "health_before": health_before,
-            "health_after_delete": health_after_delete,
-            "health_after_rebuild": repaired_health,
-            "render": analysis,
-        }
-
-    def _run_shader_tamper_rebuild_case(self):
-        material = bpy.data.materials.get("Planetka Earth Material")
-        health_before = self._scene_health_summary()
-        tampered = False
-        if material is not None and getattr(material, "node_tree", None) is not None:
-            for node in list(material.node_tree.nodes):
-                node_tree = getattr(node, "node_tree", None)
-                node_tree_name = str(getattr(node_tree, "name", "") or "")
-                if "Textures Loading" in node_tree_name:
-                    material.node_tree.nodes.remove(node)
-                    tampered = True
-                    break
-        if not tampered:
-            self.report["rogue_phase"]["shader_tamper_rebuild"] = {"status": "skipped", "reason": "Loading node not found."}
-            return
-        health_after_tamper = self._scene_health_summary()
-        rebuild_result = self._call_operator("rebuild_earth")
-        if "FINISHED" not in rebuild_result:
-            raise E2EError(f"Rebuild Earth failed after shader tamper: {rebuild_result}")
-        drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
-        repaired_health = self._scene_health_summary()
-        out_path = self.session_dir / "rogue_shader_rebuild.png"
-        configure_eevee(self.scene)
-        configure_png_output(self.scene, output_prefix=out_path, resolution_x=960, resolution_y=540, resolution_percentage=100)
-        render_still(self.scene, out_path)
-        image_analysis = analyze_render_image(out_path)
-        analysis = {
-            "samples": [image_analysis],
-            "has_mostly_black": bool(image_analysis.get("mostly_black")),
-            "has_pink_corrupt": bool(image_analysis.get("pink_corrupt")),
-        }
-        self.report["rogue_phase"]["shader_tamper_rebuild"] = {
-            "status": "ok",
-            "health_before": health_before,
-            "health_after_tamper": health_after_tamper,
-            "health_after_rebuild": repaired_health,
-            "render": analysis,
-        }
-
     def _run_inside_earth_warning_case(self):
         earth = self.extension_prefs.get_earth_object()
         camera = getattr(self.scene, "camera", None)
@@ -1231,13 +1078,9 @@ class OvernightRunner:
 
     def _run_preflight(self):
         purge_planetka_data()
-        if hasattr(bpy.ops.planetka, "remove_default_scene") and bpy.ops.planetka.remove_default_scene.poll():
-            self._call_operator("remove_default_scene")
-        else:
-            self.report["notes"].append("remove_default_scene skipped; scene was not pristine factory startup.")
+        self._call_operator("optimize_settings")
         ensure_camera(self.scene, name="Planetka Overnight Camera")
         ensure_standard_world(self.scene)
-        self._call_operator("set_background_black")
         self.prefs.texture_base_path = "planetka-remote"
         create_earth_and_wait(self.state, self.scene)
         if scene_health_operator_available():
@@ -1358,15 +1201,13 @@ class OvernightRunner:
         self._call_operator("create_standalone_file", filepath=str(standalone_path))
         self.report["notes"].append(f"Standalone export exists={standalone_path.exists()} path={standalone_path}")
 
-        self._call_operator("rebuild_earth")
-        drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
         stop_pipeline = getattr(self.state, "stop_resolve", None)
         if callable(stop_pipeline):
             stop_pipeline()
         purge_planetka_data()
+        self._call_operator("optimize_settings")
         ensure_camera(self.scene, name="Planetka Overnight Camera")
         ensure_standard_world(self.scene)
-        self._call_operator("set_background_black")
         self.prefs.texture_base_path = "planetka-remote"
         self._restore_visual_phase_defaults()
         create_earth_and_wait(self.state, self.scene)
@@ -1387,10 +1228,6 @@ class OvernightRunner:
         return SHORT_WAIT_SEC
 
     def _run_rogue_phase(self):
-        self._run_object_rename_rebuild_case()
-        self._run_surface_delete_rebuild_case()
-        self._run_material_delete_rebuild_case()
-        self._run_shader_tamper_rebuild_case()
         self._run_inside_earth_warning_case()
         return SHORT_WAIT_SEC
 

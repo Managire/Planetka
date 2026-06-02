@@ -62,22 +62,22 @@ def _enable_addon() -> str:
 
 
 def _test_texture_quality_uses_single_status_line() -> dict:
-    """Texture quality buttons stay static; status/progress belongs under Resolve."""
+    """Texture quality buttons stay static; status belongs above Resolve."""
 
     text = _source_text("ui.py")
     live_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
-        "_draw_data_control_progress_section(quality_box, scene, runtime, runtime_code, runtime_text)" in live_text,
-        "Data Control must draw the fixed status/progress section below Resolve Planetka.",
+        "_draw_data_control_status_line(quality_box, scene, runtime, runtime_code, runtime_text)" in live_text,
+        "Data Control must draw the fixed status line.",
     )
     _assert(
         'resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")' in live_text,
         "Data Control must expose the Resolve Planetka button.",
     )
     _assert(
-        live_text.find('resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")')
-        < live_text.find("_draw_data_control_progress_section(quality_box, scene, runtime, runtime_code, runtime_text)"),
-        "Status/progress section must be placed directly below Resolve Planetka.",
+        live_text.find("_draw_data_control_status_line(quality_box, scene, runtime, runtime_code, runtime_text)")
+        < live_text.find('resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")'),
+        "Status line must be placed above Resolve Planetka.",
     )
     _assert(
         "_quality_progress_factor" not in text,
@@ -128,6 +128,10 @@ def _test_quality_operator_is_streaming_only() -> dict:
         "Texture quality buttons must only set Quality Level; they must not resolve or download.",
     )
     _assert(
+        "_tag_view3d_redraw" not in quality_text,
+        "Texture quality buttons must not force viewport redraw or cloud re-application.",
+    )
+    _assert(
         "bpy.ops.planetka.load_textures" in resolve_text
         and 'scope_mode="CAMERA"' in resolve_text
         and "defer_download=True" in resolve_text,
@@ -139,6 +143,16 @@ def _test_quality_operator_is_streaming_only() -> dict:
         "Changing it must not start any resolve or download" in update_text
         and "return None" in update_text,
         "Texture quality property update must be a pure switch with no resolve side effects.",
+    )
+    clouds_text = _source_text("clouds_local.py")
+    preview_start = clouds_text.find("def _apply_universal_cloud_preview_state")
+    preview_end = clouds_text.find("def ", preview_start + 1)
+    preview_text = clouds_text[preview_start:preview_end if preview_end > preview_start else len(clouds_text)]
+    _assert(
+        "texture_quality_mode" not in preview_text
+        and "_apply_prepared_local_cloud_texture" not in preview_text
+        and "_apply_prepared_vdb_cloud_file" not in preview_text,
+        "Cloud preview sync must not react to Quality Level toggles.",
     )
     return {"checked": True}
 

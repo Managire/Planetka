@@ -1,7 +1,7 @@
 import bpy
 
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from ..extension_prefs import get_earth_object
+from ..extension_prefs import get_earth_object, get_prefs
 from ..operator_utils import ErrorCode, fail, require_scene
 from ..state import logger
 
@@ -218,6 +218,165 @@ def _is_pristine_default_scene(scene):
     return True
 
 
+def _safe_set_attr(owner, attr_name, value, changes=None, label=None):
+    if owner is None or not hasattr(owner, attr_name):
+        return False
+    try:
+        current = getattr(owner, attr_name)
+        if current == value:
+            return False
+        setattr(owner, attr_name, value)
+        setting_label = str(label or f"{type(owner).__name__}.{attr_name}")
+        message = f"{setting_label}: {current!r} -> {value!r}"
+        logger.info(
+            "Planetka Optimize Settings: %s",
+            message,
+        )
+        if isinstance(changes, list):
+            changes.append(message)
+        return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed setting %s.%s", type(owner).__name__, attr_name, exc_info=True)
+        return False
+
+
+def _int_pref(prefs, attr_name, default):
+    try:
+        return int(getattr(prefs, attr_name, default))
+    except (TypeError, ValueError, AttributeError):
+        return int(default)
+
+
+def _float_pref(prefs, attr_name, default):
+    try:
+        return float(getattr(prefs, attr_name, default))
+    except (TypeError, ValueError, AttributeError):
+        return float(default)
+
+
+def _bool_pref(prefs, attr_name, default):
+    try:
+        return bool(getattr(prefs, attr_name, default))
+    except (TypeError, ValueError, AttributeError):
+        return bool(default)
+
+
+def _apply_optimize_render_settings(scene, prefs, changes=None):
+    if scene is None or prefs is None:
+        return 0
+
+    changed = 0
+    eevee = getattr(scene, "eevee", None)
+    cycles = getattr(scene, "cycles", None)
+    render = getattr(scene, "render", None)
+
+    try:
+        volume_resolution = str(getattr(prefs, "optimize_eevee_volume_resolution", "2") or "2")
+    except (TypeError, ValueError, AttributeError):
+        volume_resolution = "2"
+    if _safe_set_attr(eevee, "volumetric_tile_size", volume_resolution, changes, "EEVEE Volumes / Resolution"):
+        changed += 1
+
+    if _safe_set_attr(
+        cycles,
+        "volume_bounces",
+        max(0, _int_pref(prefs, "optimize_cycles_volume_bounces", 16)),
+        changes,
+        "Cycles Light Paths / Max Bounces / Volume",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "volume_biased",
+        _bool_pref(prefs, "optimize_cycles_volume_biased", True),
+        changes,
+        "Cycles Volumes / Biased",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "volume_max_steps",
+        max(1, _int_pref(prefs, "optimize_cycles_volume_max_steps", 16)),
+        changes,
+        "Cycles Volumes / Max Steps",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "dicing_rate",
+        max(0.001, _float_pref(prefs, "optimize_cycles_dicing_rate_render", 1.5)),
+        changes,
+        "Cycles Subdivision / Dicing Rate Render",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "preview_dicing_rate",
+        max(0.001, _float_pref(prefs, "optimize_cycles_dicing_rate_viewport", 2.0)),
+        changes,
+        "Cycles Subdivision / Viewport",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "offscreen_dicing_scale",
+        max(0.001, _float_pref(prefs, "optimize_cycles_offscreen_scale", 1.5)),
+        changes,
+        "Cycles Subdivision / Offscreen Scale",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "max_subdivisions",
+        max(0, _int_pref(prefs, "optimize_cycles_max_subdivisions", 16)),
+        changes,
+        "Cycles Subdivision / Max Subdivisions",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        render,
+        "use_persistent_data",
+        _bool_pref(prefs, "optimize_persistent_data", True),
+        changes,
+        "Performance / Final Render / Persistent Data",
+    ):
+        changed += 1
+
+    return changed
+
+
+def apply_optimize_settings(scene, prefs, changes=None):
+    if scene is None or prefs is None:
+        return 0
+
+    changed = 0
+    if _bool_pref(prefs, "optimize_remove_default_scene", True) and get_earth_object() is None:
+        try:
+            if _is_pristine_default_scene(scene) and _cleanup_pristine_default_scene(scene):
+                scene[_DEFAULT_SCENE_REMOVED_KEY] = True
+                message = "Preparation / Remove Default Cube Scene: applied"
+                logger.info("Planetka Optimize Settings: %s", message)
+                if isinstance(changes, list):
+                    changes.append(message)
+                changed += 1
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed applying default scene cleanup from Optimize Settings", exc_info=True)
+
+    if _bool_pref(prefs, "optimize_background_black", True):
+        try:
+            if not is_scene_background_black(scene) and set_scene_background_black(scene):
+                message = "Preparation / Set Background to Black: applied"
+                logger.info("Planetka Optimize Settings: %s", message)
+                if isinstance(changes, list):
+                    changes.append(message)
+                changed += 1
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed applying black background from Optimize Settings", exc_info=True)
+
+    changed += _apply_optimize_render_settings(scene, prefs, changes)
+    return changed
+
+
 def _cleanup_pristine_default_scene(scene):
     if not _is_pristine_default_scene(scene):
         return False
@@ -270,71 +429,98 @@ def _cleanup_pristine_default_scene(scene):
     return removed_any
 
 
-class PLANETKA_OT_SetBackgroundBlack(bpy.types.Operator):
-    bl_idname = "planetka.set_background_black"
-    bl_label = "Set Background to Black"
-    bl_description = "Set World background color to black"
-
-    @classmethod
-    def poll(cls, context):
-        scene = getattr(context, "scene", None)
-        return bool(scene is not None and not is_scene_background_black(scene))
-
-    def execute(self, context):
-        scene = require_scene(self, context, logger=logger)
-        if scene is None:
-            return {'CANCELLED'}
-
-        if not set_scene_background_black(scene):
-            self.report({'WARNING'}, "World background color could not be changed automatically.")
-            return {'CANCELLED'}
-
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_RemoveDefaultScene(bpy.types.Operator):
-    bl_idname = "planetka.remove_default_scene"
-    bl_label = "Remove Default Scene"
+class PLANETKA_OT_OptimizeSettings(bpy.types.Operator):
+    bl_idname = "planetka.optimize_settings"
+    bl_label = "Optimize Settings"
     bl_description = (
-        "Remove Blender's default Collection/Cube/Camera/Light and default World shader "
-        "when the scene is still pristine Blender startup state"
+        "Apply the saved Planetka preparation settings before Create Earth: optionally remove the default "
+        "Cube scene, set the background to black, set EEVEE volume resolution, and set Cycles volume, "
+        "adaptive subdivision, and persistent-data render settings"
     )
 
     @classmethod
     def poll(cls, context):
-        scene = getattr(context, "scene", None)
-        if scene is None:
-            return False
-        if get_earth_object() is not None:
-            return False
-        return _is_pristine_default_scene(scene)
+        return bool(getattr(context, "scene", None) is not None)
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
-
-        if not _is_pristine_default_scene(scene):
+        prefs = get_prefs()
+        if prefs is None:
             return fail(
                 self,
-                "Remove Default Scene is available only for untouched Blender default startup scene.",
+                "Planetka preferences are not available.",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
 
-        removed = bool(_cleanup_pristine_default_scene(scene))
-        if not removed:
-            return fail(
-                self,
-                "Unable to remove default scene items.",
-                code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                logger=logger,
-            )
+        changes = []
+        changed = apply_optimize_settings(scene, prefs, changes)
+        for message in changes:
+            self.report({'INFO'}, message)
+        self.report({'INFO'}, f"Optimized {int(changed)} setting(s).")
+        return {'FINISHED'}
 
+
+class PLANETKA_OT_OptimizeSettingsPopup(bpy.types.Operator):
+    bl_idname = "planetka.optimize_settings_popup"
+    bl_label = "Optimize Settings"
+    bl_description = "Edit the saved settings applied by the Optimize Settings button"
+
+    def invoke(self, context, _event):
         try:
-            scene[_DEFAULT_SCENE_REMOVED_KEY] = True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed tagging scene as default-cleaned", exc_info=True)
+            return context.window_manager.invoke_props_dialog(self, width=460, confirm_text="Save Settings")
+        except TypeError:
+            return context.window_manager.invoke_props_dialog(self, width=460)
 
-        self.report({'INFO'}, "Default startup scene removed.")
+    def draw(self, _context):
+        layout = self.layout
+        prefs = get_prefs()
+        if prefs is None or not isinstance(prefs, bpy.types.AddonPreferences):
+            layout.label(text="Planetka preferences are not available.", icon="ERROR")
+            return
+
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        box = layout.box()
+        box.label(text="Preparation", icon="SCENE_DATA")
+        box.prop(prefs, "optimize_remove_default_scene")
+        box.prop(prefs, "optimize_background_black")
+
+        box = layout.box()
+        box.label(text="EEVEE Render Settings", icon="RENDER_STILL")
+        box.prop(prefs, "optimize_eevee_volume_resolution")
+
+        box = layout.box()
+        box.label(text="Cycles Render Settings", icon="RENDER_STILL")
+
+        section = box.box()
+        section.label(text="Light Paths")
+        section.prop(prefs, "optimize_cycles_volume_bounces")
+
+        section = box.box()
+        section.label(text="Volumes")
+        section.prop(prefs, "optimize_cycles_volume_biased")
+        section.prop(prefs, "optimize_cycles_volume_max_steps")
+
+        section = box.box()
+        section.label(text="Subdivision")
+        section.prop(prefs, "optimize_cycles_dicing_rate_render")
+        section.prop(prefs, "optimize_cycles_dicing_rate_viewport")
+        section.prop(prefs, "optimize_cycles_offscreen_scale")
+        section.prop(prefs, "optimize_cycles_max_subdivisions")
+
+        section = box.box()
+        section.label(text="Performance")
+        section.prop(prefs, "optimize_persistent_data")
+
+    def execute(self, _context):
+        try:
+            bpy.ops.wm.save_userpref()
+            self.report({'INFO'}, "Optimize Settings saved.")
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed saving Optimize Settings preferences", exc_info=True)
+            self.report({'WARNING'}, "Optimize Settings were applied but could not be saved to Blender preferences.")
         return {'FINISHED'}

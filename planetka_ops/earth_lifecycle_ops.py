@@ -1,5 +1,8 @@
 import bpy
 
+CREATE_EARTH_STATUS_KEY = "planetka_create_earth_status"
+CREATE_EARTH_STATUS_ACTIVE_KEY = "planetka_create_earth_status_active"
+
 
 def _atmosphere_mode_for_create_earth(scene):
     try:
@@ -7,173 +10,6 @@ def _atmosphere_mode_for_create_earth(scene):
     except (RuntimeError, TypeError, ValueError, AttributeError):
         engine = ""
     return "VOLUMETRIC" if engine == "CYCLES" else "EEVEE"
-
-
-def _snapshot_camera_view_areas(context):
-    snapshots = []
-    seen_region_data = set()
-
-    def _capture_screen(screen):
-        if screen is None:
-            return
-        for area in tuple(getattr(screen, "areas", ()) or ()):
-            if str(getattr(area, "type", "") or "") != "VIEW_3D":
-                continue
-            space = getattr(getattr(area, "spaces", None), "active", None)
-            if space is None or str(getattr(space, "type", "") or "") != "VIEW_3D":
-                continue
-            rv3d = getattr(space, "region_3d", None)
-            if rv3d is None:
-                continue
-            rv3d_id = id(rv3d)
-            if rv3d_id in seen_region_data:
-                continue
-            seen_region_data.add(rv3d_id)
-            snapshots.append({
-                "area": area,
-                "rv3d": rv3d,
-                "was_camera": str(getattr(rv3d, "view_perspective", "") or "") == "CAMERA",
-            })
-
-    window_manager = getattr(context, "window_manager", None)
-    if window_manager is not None:
-        for window in tuple(getattr(window_manager, "windows", ()) or ()):
-            _capture_screen(getattr(window, "screen", None))
-
-    _capture_screen(getattr(context, "screen", None))
-    return tuple(snapshots)
-
-
-def _restore_camera_view_areas(context, scene, snapshots, logger, recoverable_exceptions):
-    del context
-    if scene is None or not snapshots:
-        return False
-    camera = getattr(scene, "camera", None)
-    if camera is None:
-        return False
-
-    restored = False
-    for snapshot in snapshots:
-        if not bool(snapshot.get("was_camera", False)):
-            continue
-        rv3d = snapshot.get("rv3d", None)
-        if rv3d is None:
-            continue
-        try:
-            if getattr(scene, "camera", None) is not camera:
-                scene.camera = camera
-            if str(getattr(rv3d, "view_perspective", "") or "") != "CAMERA":
-                rv3d.view_perspective = "CAMERA"
-                restored = True
-            area = snapshot.get("area", None)
-            if area is not None:
-                area.tag_redraw()
-        except recoverable_exceptions:
-            logger.debug("Planetka: failed restoring camera viewport state after rebuild", exc_info=True)
-    return restored
-
-
-def rebuild_earth_execute(operator, context, deps):
-    require_scene = deps["require_scene"]
-    require_planetka_props = deps["require_planetka_props"]
-    logger = deps["logger"]
-    fail = deps["fail"]
-    ErrorCode = deps["ErrorCode"]
-    _snapshot_view_selection = deps["_snapshot_view_selection"]
-    _restore_view_selection = deps["_restore_view_selection"]
-    _pick_scene_camera = deps["_pick_scene_camera"]
-    _snapshot_camera_state_for_rebuild = deps["_snapshot_camera_state_for_rebuild"]
-    _snapshot_earth_settings_for_rebuild = deps["_snapshot_earth_settings_for_rebuild"]
-    _earth_graph_cleanup_for_rebuild = deps["_earth_graph_cleanup_for_rebuild"]
-    _REBUILD_EXCEPTIONS = deps["_REBUILD_EXCEPTIONS"]
-    _SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY = deps["_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY"]
-    _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY = deps["_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY"]
-    _earth_graph_restore_after_rebuild = deps["_earth_graph_restore_after_rebuild"]
-
-    scene = require_scene(operator, context, logger=logger)
-    if scene is None:
-        return {'CANCELLED'}
-    props = require_planetka_props(operator, context, logger=logger)
-    if props is None:
-        return {'CANCELLED'}
-
-    selected_names_before, active_name_before = _snapshot_view_selection(context)
-    camera_view_snapshot = _snapshot_camera_view_areas(context)
-
-    def _return_with_selection(result):
-        _restore_view_selection(context, scene, selected_names_before, active_name_before)
-        _restore_camera_view_areas(context, scene, camera_view_snapshot, logger, _REBUILD_EXCEPTIONS)
-        return result
-
-    camera = _pick_scene_camera(scene, context=context)
-    camera_snapshot = _snapshot_camera_state_for_rebuild(scene, camera)
-    earth_settings_snapshot = _snapshot_earth_settings_for_rebuild(scene, props)
-
-    cleanup_stats = _earth_graph_cleanup_for_rebuild(scene)
-    detached_cameras = int(cleanup_stats.get("detached_cameras", 0))
-    removed_objects = int(cleanup_stats.get("removed_objects", 0))
-    removed_collections = int(cleanup_stats.get("removed_collections", 0))
-    removed_data = dict(cleanup_stats.get("removed_data", {}) or {})
-    scene_keys_cleared = int(cleanup_stats.get("scene_keys_cleared", 0))
-    cleanup_counts = dict(cleanup_stats.get("cleanup_counts", {}) or {})
-
-    if camera is not None and str(getattr(camera, "type", "")) == "CAMERA":
-        try:
-            scene.camera = camera
-        except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed preserving active camera before rebuild", exc_info=True)
-
-    try:
-        scene[_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY] = True
-        scene[_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY] = True
-    except _REBUILD_EXCEPTIONS:
-        logger.debug("Planetka: failed setting create-earth rebuild skip flags", exc_info=True)
-    try:
-        rebuild_result = bpy.ops.planetka.add_earth()
-    finally:
-        try:
-            if _SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY in scene:
-                del scene[_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY]
-            if _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY in scene:
-                del scene[_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY]
-        except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed clearing create-earth rebuild skip flags", exc_info=True)
-
-    _earth_graph_restore_after_rebuild(scene, props, earth_settings_snapshot, camera_snapshot)
-    _restore_camera_view_areas(context, scene, camera_view_snapshot, logger, _REBUILD_EXCEPTIONS)
-
-    if "FINISHED" not in rebuild_result:
-        return _return_with_selection(fail(
-            operator,
-            "Rebuild cleanup completed, but Create Earth failed. Resolve integrity may remain invalid.",
-            code=ErrorCode.ADD_EARTH_SHORTCUT_FAILED,
-            logger=logger,
-        ))
-
-    logger.info(
-        "Planetka rebuild completed (detached_cameras=%d, removed_objects=%d, "
-        "removed_collections=%d, removed_meshes=%d, removed_images=%d, "
-        "removed_materials=%d, removed_node_groups=%d, removed_lights=%d, "
-        "scene_keys_cleared=%d, cleanup_objects=%d, cleanup_meshes=%d, cleanup_images=%d, "
-        "cleanup_materials=%d, cleanup_node_groups=%d).",
-        int(detached_cameras),
-        int(removed_objects),
-        int(removed_collections),
-        int(removed_data.get("meshes", 0)),
-        int(removed_data.get("images", 0)),
-        int(removed_data.get("materials", 0)),
-        int(removed_data.get("node_groups", 0)),
-        int(removed_data.get("lights", 0)),
-        int(scene_keys_cleared),
-        int(cleanup_counts.get("objects", 0) or 0),
-        int(cleanup_counts.get("meshes", 0) or 0),
-        int(cleanup_counts.get("images", 0) or 0),
-        int(cleanup_counts.get("materials", 0) or 0),
-        int(cleanup_counts.get("node_groups", 0) or 0),
-    )
-    operator.report({'INFO'}, "Planetka Earth rebuilt successfully.")
-    return _return_with_selection({'FINISHED'})
-
 
 def add_earth_execute(operator, context, deps):
     require_scene = deps["require_scene"]
@@ -205,7 +41,6 @@ def add_earth_execute(operator, context, deps):
     ensure_planetka_root = deps["ensure_planetka_root"]
     warm_base_sphere_mesh_cache = deps["warm_base_sphere_mesh_cache"]
     _earth_graph_create_bootstrap_surface = deps["_earth_graph_create_bootstrap_surface"]
-    _SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY = deps["_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY"]
     remove_object_and_unused_mesh = deps["remove_object_and_unused_mesh"]
     _apply_startup_setup_for_create_earth = deps["_apply_startup_setup_for_create_earth"]
     _ensure_planetka_create_camera = deps["_ensure_planetka_create_camera"]
@@ -223,6 +58,30 @@ def add_earth_execute(operator, context, deps):
     props = require_planetka_props(operator, context, logger=logger)
     if props is None:
         return {'CANCELLED'}
+
+    def _set_create_status(message, active=True):
+        text = str(message or "").strip()
+        try:
+            scene[CREATE_EARTH_STATUS_KEY] = text
+            scene[CREATE_EARTH_STATUS_ACTIVE_KEY] = bool(active)
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+            pass
+        if text:
+            try:
+                logger.info("Planetka Create Earth: %s", text)
+            except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+                pass
+        try:
+            for area in tuple(getattr(getattr(context, "screen", None), "areas", ()) or ()):
+                area.tag_redraw()
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+            pass
+        try:
+            if not bool(getattr(bpy.app, "background", False)):
+                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+            pass
+
     selected_names_before, active_name_before = _snapshot_view_selection(context)
     preexisting_active_camera = getattr(scene, "camera", None)
     preexisting_cameras = [
@@ -241,6 +100,7 @@ def add_earth_execute(operator, context, deps):
 
     prefs = get_prefs()
     if not prefs:
+        _set_create_status("Planetka preferences unavailable.", active=False)
         return _return_with_selection(fail(
             operator,
             "Planetka preferences not available.",
@@ -248,11 +108,14 @@ def add_earth_execute(operator, context, deps):
             logger=logger,
         ))
     try:
+        _set_create_status("Checking Planetka Cloud connection...")
         kickoff_background_update_check(force=True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: updater check kickoff failed", exc_info=True)
+    _set_create_status("Validating Planetka data source...")
     normalized, path_issue = _validate_create_earth_texture_source(getattr(prefs, "texture_base_path", ""))
     if path_issue:
+        _set_create_status("Create Earth failed: data source invalid.", active=False)
         return _return_with_selection(
             fail(
                 operator,
@@ -262,18 +125,16 @@ def add_earth_execute(operator, context, deps):
             )
         )
     if is_remote_source_configured(normalized) and not _require_planetka_cloud_session(operator, prefs):
+        _set_create_status("Create Earth cancelled: Planetka Cloud connection unavailable.", active=False)
         return _return_with_selection({'CANCELLED'})
     prefs.texture_base_path = normalized
     invalidate_texture_source_health_cache(normalized)
-    skip_atmosphere_cloud_setup = False
-    try:
-        skip_atmosphere_cloud_setup = bool(scene.get(_SKIP_ATMOSPHERE_CLOUD_SETUP_ON_CREATE_EARTH_KEY, False))
-    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        skip_atmosphere_cloud_setup = False
 
     try:
+        _set_create_status("Creating Planetka assets...")
         ensure_planetka_assets(scene)
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+        _set_create_status("Create Earth failed while creating Planetka assets.", active=False)
         return _return_with_selection(fail(
             operator,
             f"Create Earth failed while creating Planetka assets: {exc}",
@@ -283,9 +144,11 @@ def add_earth_execute(operator, context, deps):
             log_message="Planetka add_earth asset build failed",
         ))
 
+    _set_create_status("Initializing Planetka settings...")
     _initialize_props_from_imported_planetka(scene)
     _sync_idprops_from_props(scene)
     try:
+        _set_create_status("Creating Planetka Root...")
         ensure_planetka_root(scene)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed ensuring Planetka Root before Create Earth", exc_info=True)
@@ -297,14 +160,17 @@ def add_earth_execute(operator, context, deps):
         _sync_idprops_from_props(scene, ("texture_quality_mode",))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed setting default texture quality", exc_info=True)
+    _set_create_status("Preparing Earth mesh cache...")
     warm_base_sphere_mesh_cache()
 
     new_obj = None
     try:
+        _set_create_status("Creating Earth surface mesh...")
         new_obj = _earth_graph_create_bootstrap_surface(scene)
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         if new_obj:
             remove_object_and_unused_mesh(new_obj)
+        _set_create_status("Create Earth failed while creating Earth surface mesh.", active=False)
         return _return_with_selection(fail(
             operator,
             f"Create Earth failed while creating bootstrap Earth surface: {exc}",
@@ -315,32 +181,34 @@ def add_earth_execute(operator, context, deps):
         ))
 
     try:
+        _set_create_status("Applying startup defaults...")
         _apply_startup_setup_for_create_earth(scene, props)
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed applying startup setup profile", exc_info=True)
 
-    if not skip_atmosphere_cloud_setup:
-        try:
-            atmosphere_mode = _atmosphere_mode_for_create_earth(scene)
-            props.atmosphere_mode = atmosphere_mode
-            props.atmosphere_enabled = True
-            _sync_idprops_from_props(scene, ("atmosphere_mode", "atmosphere_enabled"))
-            if callable(ensure_atmosphere_for_mode):
-                ensure_atmosphere_for_mode(scene=scene, earth_surface=new_obj, mode=atmosphere_mode)
-        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed creating default atmosphere on Create Earth", exc_info=True)
+    try:
+        _set_create_status("Creating atmosphere...")
+        atmosphere_mode = _atmosphere_mode_for_create_earth(scene)
+        props.atmosphere_mode = atmosphere_mode
+        props.atmosphere_enabled = True
+        _sync_idprops_from_props(scene, ("atmosphere_mode", "atmosphere_enabled"))
+        if callable(ensure_atmosphere_for_mode):
+            ensure_atmosphere_for_mode(scene=scene, earth_surface=new_obj, mode=atmosphere_mode)
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed creating default atmosphere on Create Earth", exc_info=True)
 
-    if not skip_atmosphere_cloud_setup:
-        try:
-            clouds_were_enabled = bool(getattr(props, "enable_global_clouds", False))
-            if not clouds_were_enabled:
-                props.enable_global_clouds = True
-                _sync_idprops_from_props(scene, ("enable_global_clouds",))
-            elif callable(ensure_global_cloud_layer):
-                ensure_global_cloud_layer(scene=scene)
-        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed creating global clouds on Create Earth", exc_info=True)
+    try:
+        _set_create_status("Creating global clouds...")
+        clouds_were_enabled = bool(getattr(props, "enable_global_clouds", False))
+        if not clouds_were_enabled:
+            props.enable_global_clouds = True
+            _sync_idprops_from_props(scene, ("enable_global_clouds",))
+        elif callable(ensure_global_cloud_layer):
+            ensure_global_cloud_layer(scene=scene)
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed creating global clouds on Create Earth", exc_info=True)
 
+    _set_create_status("Creating Planetka Camera...")
     planetka_camera = _ensure_planetka_create_camera(scene)
     if planetka_camera is None:
         logger.debug("Planetka: failed creating Planetka Camera", exc_info=True)
@@ -361,6 +229,7 @@ def add_earth_execute(operator, context, deps):
         logger.debug("Planetka: failed enforcing Create Earth default texture quality", exc_info=True)
     if bool(getattr(props, "auto_adjust_clipping_values", True)):
         try:
+            _set_create_status("Applying camera clipping...")
             camera_before_clip = getattr(scene, "camera", None)
             try:
                 if planetka_camera is not None and str(getattr(planetka_camera, "type", "")) == "CAMERA":
@@ -388,6 +257,7 @@ def add_earth_execute(operator, context, deps):
     final_surface = get_earth_object() or new_obj
     if final_surface and bool(getattr(props, "show_earth_preview", False)):
         try:
+            _set_create_status("Creating Earth preview object...")
             ensure_preview_object(final_surface)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed creating preview object", exc_info=True)
@@ -406,8 +276,10 @@ def add_earth_execute(operator, context, deps):
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed enforcing post-resolve Create Earth texture quality", exc_info=True)
 
+    _set_create_status("Binding Earth material graph...")
     _earth_graph_rebind(scene=scene, earth_surface=get_earth_object() or new_obj)
     try:
+        _set_create_status("Applying startup texture data...")
         bpy.ops.planetka.load_textures(
             scope_mode="CAMERA",
             skip_render_compatibility=True,
@@ -416,6 +288,7 @@ def add_earth_execute(operator, context, deps):
             texture_quality_mode_override="PREVIEW",
         )
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS as exc:
+        _set_create_status("Create Earth failed while applying startup texture data.", active=False)
         return _return_with_selection(fail(
             operator,
             f"Create Earth failed while starting Planetka Resolve: {exc}",
@@ -431,6 +304,7 @@ def add_earth_execute(operator, context, deps):
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed clearing default-scene removal marker", exc_info=True)
 
+    _set_create_status("Planetka Earth created successfully.", active=False)
     operator.report({'INFO'}, "Planetka Earth created successfully.")
     return _return_with_selection({'FINISHED'})
 
