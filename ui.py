@@ -14,11 +14,9 @@ from .auth import (
     allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
-    get_licence_code,
     get_status_message,
     ensure_authenticated_session,
     is_authenticated,
-    is_commercial_licence,
 )
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
@@ -188,6 +186,70 @@ def _schedule_updater_ui_redraw():
         _UPDATER_UI_REDRAW_TIMER_REGISTERED = True
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed scheduling updater UI redraw", exc_info=True)
+
+
+def _draw_addon_update_controls(layout):
+    try:
+        updater = get_updater_public_status()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        logger.debug("Planetka: failed reading updater status in settings panel", exc_info=True)
+        updater = {}
+    updater_ready = bool(updater.get("update_ready", False))
+    updater_busy = _updater_is_busy(updater)
+    latest_version = str(updater.get("latest_version") or "").strip()
+    current_version = str(updater.get("current_version") or "").strip()
+    phase = str(updater.get("phase") or "").strip().lower()
+    message = str(updater.get("message") or "").strip()
+    last_error = str(updater.get("last_error") or "").strip()
+    try:
+        downloaded_bytes = int(updater.get("downloaded_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        downloaded_bytes = 0
+    try:
+        total_bytes = int(updater.get("download_total_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        total_bytes = 0
+
+    if updater_busy:
+        _schedule_updater_ui_redraw()
+
+    version_row = layout.row()
+    version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
+    updates_row = layout.row()
+    updates_row.enabled = not updater_busy
+    updates_row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
+    if updater_busy:
+        status_box = layout.box()
+        status_box.label(
+            text=message or f"Updating Planetka{_status_activity_suffix(True)}",
+            icon="TIME",
+        )
+        if total_bytes > 0 and hasattr(status_box, "progress"):
+            factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
+            status_box.progress(
+                factor=factor,
+                type='BAR',
+                text=f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}",
+            )
+        elif phase in {"verifying", "installing"} and hasattr(status_box, "progress"):
+            status_box.progress(
+                factor=1.0,
+                type='BAR',
+                text=message or "Finishing update",
+            )
+        else:
+            status_box.label(text=f"Please wait{_status_activity_suffix(True)}", icon="INFO")
+    elif updater_ready and latest_version:
+        row = layout.row()
+        row.alert = True
+        row.label(text=f"Update available: {latest_version}", icon="ERROR")
+        row.operator("planetka.update_now", text="Update now", icon="IMPORT")
+    elif message:
+        message_box = layout.box()
+        message_box.alert = bool(phase == "error" or last_error)
+        message_box.label(text=message, icon="ERROR" if message_box.alert else "CHECKMARK")
+        if message.lower().startswith("updated to ") or "restart blender" in message.lower():
+            message_box.label(text="Restart Blender to finish the update.", icon="INFO")
 
 
 def _fmt_km(value):
@@ -1230,20 +1292,15 @@ def _draw_general_account_summary(layout):
     cloud_overloaded = bool(cloud_message == CLOUD_OVERLOADED_MESSAGE)
     status_icon = "CHECKMARK" if connected else ("INFO" if authenticated and not checked else "ERROR")
     if connected:
-        status_text = "Connected to Planetka Cloud"
+        status_text = "Connected"
     elif authenticated and not checked:
-        status_text = "Checking Planetka Cloud"
+        status_text = "Checking"
     elif authenticated and cloud_overloaded:
-        status_text = "Planetka Cloud overloaded"
+        status_text = "Cloud busy"
     elif authenticated:
-        status_text = "Not connected to Planetka Cloud"
+        status_text = "Not connected"
     else:
-        status_text = "Starting Planetka session"
-    try:
-        licence_code = str(get_licence_code(prefs) or "").strip().lower()
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        licence_code = ""
-    account_type_label = "Commercial" if licence_code == "commercial" else "Personal"
+        status_text = "Starting session"
     status_message = get_status_message(prefs)
 
     account_box = layout.box()
@@ -1251,9 +1308,6 @@ def _draw_general_account_summary(layout):
     row = account_box.row()
     row.label(text="Status")
     row.label(text=status_text, icon=status_icon)
-    row = account_box.row()
-    row.label(text="Licence")
-    row.label(text=account_type_label)
 
     if authenticated and checked and not connected:
         warning_box = layout.box()

@@ -412,44 +412,6 @@ class PLANETKA_OT_ValidateTextureSource(bpy.types.Operator):
         return {'FINISHED'}
 
 
-def _is_planetka_runtime_image(image):
-    if image is None:
-        return False
-    try:
-        name = str(getattr(image, "name", "") or "").strip().upper()
-    except (TypeError, ValueError, AttributeError):
-        name = ""
-    if name.startswith(("S2_", "EL_", "WT_", "PO_")):
-        return True
-    try:
-        raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
-    except (TypeError, ValueError, AttributeError):
-        raw_path = ""
-    if not raw_path:
-        return False
-    return "planetka_cache" in raw_path.replace("\\", "/").lower()
-
-
-def _is_missing_file_image(image):
-    if image is None:
-        return False
-    if getattr(image, "packed_file", None) is not None:
-        return False
-    try:
-        raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
-    except (TypeError, ValueError, AttributeError):
-        return False
-    if not raw_path:
-        return False
-    try:
-        absolute = os.path.abspath(bpy.path.abspath(raw_path))
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return False
-    if not absolute:
-        return False
-    return not os.path.isfile(absolute)
-
-
 def _camera_has_transform_keys(camera):
     if camera is None:
         return False
@@ -957,26 +919,25 @@ def _check_scene_health_data_source(ctx, payload):
     base_path = str(getattr(ctx.prefs, "texture_base_path", "") or "").strip() if ctx.prefs is not None else ""
     remote_ready = bool(is_remote_source_configured(base_path))
     if remote_ready:
-        payload["info"].append("Data source: Planetka Cloud.")
         _append_scene_health_check(
             payload,
-            "General",
-            "Data Source",
+            "Planetka Data",
+            "Planetka Data",
             "SOURCE_REMOTE",
             "INFO",
             True,
-            "Planetka Cloud source is configured.",
+            "Connected.",
         )
     else:
         if not base_path:
             _append_scene_health_check(
                 payload,
-                "General",
-                "Data Source",
+                "Planetka Data",
+                "Planetka Data",
                 "SOURCE_PATH_EMPTY",
                 "ERROR",
                 False,
-                "Texture source path is empty.",
+                "Planetka Data is not connected.",
             )
         else:
             try:
@@ -986,39 +947,17 @@ def _check_scene_health_data_source(ctx, payload):
             is_valid_path = bool(normalized_base_path and os.path.isdir(normalized_base_path))
             _append_scene_health_check(
                 payload,
-                "General",
-                "Data Source",
+                "Planetka Data",
+                "Planetka Data",
                 "SOURCE_PATH_VALID",
                 "ERROR",
                 is_valid_path,
                 (
-                    f"Texture source path is valid: {normalized_base_path}"
+                    "Planetka Data is connected."
                     if is_valid_path
-                    else "Texture source path is invalid or missing on disk."
+                    else "Planetka Data is not connected."
                 ),
             )
-            if is_valid_path:
-                payload["info"].append(f"Data source: {normalized_base_path}")
-
-    missing_runtime_images = 0
-    for image in tuple(getattr(bpy.data, "images", ())):
-        if not _is_planetka_runtime_image(image):
-            continue
-        if _is_missing_file_image(image):
-            missing_runtime_images += 1
-    _append_scene_health_check(
-        payload,
-        "General",
-        "Runtime Images",
-        "RUNTIME_IMAGE_PATHS",
-        "WARNING",
-        int(missing_runtime_images) == 0,
-        (
-            "All Planetka runtime image paths exist on disk."
-            if int(missing_runtime_images) == 0
-            else f"{int(missing_runtime_images)} Planetka runtime image file(s) are missing on disk."
-        ),
-    )
 
 
 def _check_scene_health_viewport_and_material(ctx, payload, state):
