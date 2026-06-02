@@ -1,20 +1,19 @@
-import json
-
 import bpy
 
 from ..asset_builder import EARTH_MATERIAL_NAME, PLANETKA_ROOT_OBJECT_NAME, SURFACE_GRADING_GROUP_NAME
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from ..extension_prefs import get_earth_object, get_prefs
+from ..extension_prefs import get_earth_object
 from ..state import (
     _apply_sunlight_from_props,
     _apply_sunlight_strength_from_props,
     _sync_idprops_from_props,
     logger,
     resume_navigation_shot_updates,
+    resume_property_update_side_effects,
     suspend_navigation_shot_updates,
+    suspend_property_update_side_effects,
 )
 
-_STARTUP_SETUP_PROFILE_VERSION = 1
 _STARTUP_PROFILE_PROP_NAMES = (
     "nav_longitude_deg",
     "nav_latitude_deg",
@@ -218,27 +217,6 @@ def _iter_surface_grading_input_sockets(node):
 
 
 
-def _serialize_surface_grading_values():
-    for node in _iter_surface_grading_nodes():
-        values = {}
-        for socket in _iter_surface_grading_input_sockets(node):
-            key = str(getattr(socket, "name", "")).strip()
-            if not key:
-                continue
-            try:
-                value = getattr(socket, "default_value")
-            except _STARTUP_PROFILE_EXCEPTIONS:
-                continue
-            encoded = _profile_value_to_json(value)
-            if encoded is None:
-                continue
-            values[key] = encoded
-        if values:
-            return values
-    return {}
-
-
-
 def _surface_grading_factory_values():
     defaults = {
         str(name): _profile_value_to_json(value)
@@ -283,7 +261,6 @@ def _build_factory_startup_setup_profile(scene, props):
         profile_props.get("texture_quality_mode", "PREVIEW")
     )
     return {
-        "version": int(_STARTUP_SETUP_PROFILE_VERSION),
         "props": profile_props,
         "root": {
             "location": [0.0, 0.0, 0.0],
@@ -294,85 +271,6 @@ def _build_factory_startup_setup_profile(scene, props):
 
 
 
-def _serialize_current_startup_setup_profile(scene, props):
-    profile_props = {}
-    for prop_name in _STARTUP_PROFILE_PROP_NAMES:
-        if not hasattr(props, prop_name):
-            continue
-        try:
-            raw_value = getattr(props, prop_name)
-        except _STARTUP_PROFILE_EXCEPTIONS:
-            continue
-        encoded = _profile_value_to_json(raw_value)
-        if encoded is None:
-            continue
-        profile_props[prop_name] = encoded
-    if hasattr(props, "texture_quality_mode"):
-        try:
-            profile_props["texture_quality_mode"] = _normalize_startup_texture_quality_mode(
-                getattr(props, "texture_quality_mode", "PREVIEW")
-            )
-        except _STARTUP_PROFILE_EXCEPTIONS:
-            profile_props["texture_quality_mode"] = "PREVIEW"
-
-    root_data = {
-        "location": [0.0, 0.0, 0.0],
-        "rotation_euler": [0.0, 0.0, 0.0],
-    }
-    root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
-    if root is not None:
-        try:
-            root_data["location"] = [float(root.location.x), float(root.location.y), float(root.location.z)]
-            root_data["rotation_euler"] = [
-                float(root.rotation_euler.x),
-                float(root.rotation_euler.y),
-                float(root.rotation_euler.z),
-            ]
-        except _STARTUP_PROFILE_EXCEPTIONS:
-            logger.debug("Planetka: failed serializing Planetka Root transform", exc_info=True)
-
-    return {
-        "version": int(_STARTUP_SETUP_PROFILE_VERSION),
-        "props": profile_props,
-        "root": root_data,
-        "surface_grading": _serialize_surface_grading_values(),
-    }
-
-
-
-def _load_saved_startup_setup_profile(prefs):
-    if prefs is None:
-        return None
-    raw = str(getattr(prefs, "startup_setup_profile_json", "") or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    return parsed
-
-
-
-def _store_startup_setup_profile(prefs, profile):
-    if prefs is None:
-        return False
-    if not profile:
-        try:
-            prefs.startup_setup_profile_json = ""
-            return True
-        except _STARTUP_PROFILE_EXCEPTIONS:
-            return False
-    try:
-        prefs.startup_setup_profile_json = json.dumps(profile, separators=(",", ":"))
-        return True
-    except _STARTUP_PROFILE_EXCEPTIONS:
-        return False
-
-
-
 def _apply_startup_setup_profile(scene, props, profile, apply_navigation_shot=True):
     if scene is None or props is None or not isinstance(profile, dict):
         return False
@@ -380,32 +278,45 @@ def _apply_startup_setup_profile(scene, props, profile, apply_navigation_shot=Tr
     prop_values = profile.get("props")
     if isinstance(prop_values, dict):
         nav_suspended = False
+        side_effects_suspended = False
         try:
             suspend_navigation_shot_updates()
             nav_suspended = True
         except _STARTUP_PROFILE_EXCEPTIONS:
             nav_suspended = False
+        try:
+            suspend_property_update_side_effects()
+            side_effects_suspended = True
+        except _STARTUP_PROFILE_EXCEPTIONS:
+            side_effects_suspended = False
 
-        for prop_name in _STARTUP_PROFILE_PROP_NAMES:
-            if prop_name not in prop_values or not hasattr(props, prop_name):
-                continue
-            raw_value = prop_values.get(prop_name)
-            try:
-                if isinstance(raw_value, list):
-                    setattr(props, prop_name, tuple(raw_value))
-                else:
-                    setattr(props, prop_name, raw_value)
-            except _STARTUP_PROFILE_EXCEPTIONS:
-                logger.debug("Planetka: failed applying startup setup prop '%s'", prop_name, exc_info=True)
+        try:
+            for prop_name in _STARTUP_PROFILE_PROP_NAMES:
+                if prop_name not in prop_values or not hasattr(props, prop_name):
+                    continue
+                raw_value = prop_values.get(prop_name)
+                try:
+                    if isinstance(raw_value, list):
+                        setattr(props, prop_name, tuple(raw_value))
+                    else:
+                        setattr(props, prop_name, raw_value)
+                except _STARTUP_PROFILE_EXCEPTIONS:
+                    logger.debug("Planetka: failed applying Create Earth default prop '%s'", prop_name, exc_info=True)
 
-        if hasattr(props, "texture_quality_mode"):
-            try:
-                desired_mode = _normalize_startup_texture_quality_mode(
-                    prop_values.get("texture_quality_mode", "PREVIEW")
-                )
-                props.texture_quality_mode = desired_mode
-            except _STARTUP_PROFILE_EXCEPTIONS:
-                logger.debug("Planetka: failed applying startup setup texture quality mode", exc_info=True)
+            if hasattr(props, "texture_quality_mode"):
+                try:
+                    desired_mode = _normalize_startup_texture_quality_mode(
+                        prop_values.get("texture_quality_mode", "PREVIEW")
+                    )
+                    props.texture_quality_mode = desired_mode
+                except _STARTUP_PROFILE_EXCEPTIONS:
+                    logger.debug("Planetka: failed applying Create Earth default texture quality mode", exc_info=True)
+        finally:
+            if side_effects_suspended:
+                try:
+                    resume_property_update_side_effects()
+                except _STARTUP_PROFILE_EXCEPTIONS:
+                    logger.debug("Planetka: failed resuming property update side effects", exc_info=True)
 
         if nav_suspended:
             try:
@@ -463,18 +374,15 @@ def _apply_startup_setup_profile(scene, props, profile, apply_navigation_shot=Tr
     try:
         _sync_idprops_from_props(scene)
     except _STARTUP_PROFILE_EXCEPTIONS:
-        logger.debug("Planetka: failed syncing startup setup idprops", exc_info=True)
+        logger.debug("Planetka: failed syncing Create Earth default idprops", exc_info=True)
 
     return True
 
 
 
 def _apply_startup_setup_for_create_earth(scene, props):
-    prefs = get_prefs()
-    profile = _load_saved_startup_setup_profile(prefs)
+    profile = _build_factory_startup_setup_profile(scene, props)
     apply_navigation_shot = False
-    if profile is None:
-        profile = _build_factory_startup_setup_profile(scene, props)
     try:
         if bool(scene.get(_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY, False)):
             apply_navigation_shot = False

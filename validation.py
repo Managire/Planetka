@@ -32,7 +32,6 @@ from .asset_builder import (
     SUNLIGHT_OBJECT_NAME,
     SURFACE_GRADING_GROUP_NAME,
 )
-from .r2_source import is_remote_source_configured
 
 logger = logging.getLogger(__name__)
 
@@ -42,20 +41,25 @@ _BUG_ATTACHMENT_ALLOWED_MIME = {
     "image/jpeg",
     "image/webp",
 }
-_ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
-_ANIMATION_PREPARED_COLLECTION_NAME = "Planetka Animation Preview"
 _HEALTH_CAMERA_DISTANCE_RATIO_WARN = 50000.0
 _HEALTH_CAMERA_DISTANCE_RATIO_ERROR = 120000.0
 _HEALTH_MIN_FACING_DOT_WARN = 0.15
-_HEALTH_DICING_WARN_THRESHOLD = 2.0
-_HEALTH_DICING_RECOMMENDED_MIN = 1.25
-_HEALTH_DICING_RECOMMENDED_MAX = 1.5
-_HEALTH_LAYER_FALLBACK_FILES = {
-    "S2": {"ocean_pixel_final_20.exr", "white_pixel_20.exr"},
-    "EL": {"black_pixel_20.exr", "el_south_cap_pixel_20.exr"},
-    "WT": {"blue_pixel_20.exr", "black_pixel_20.exr"},
-    "PO": {"black_pixel_20.exr"},
-}
+_CLOUD_ROLE_KEY = "planetka_cloud_role"
+_GLOBAL_CLOUD_ROLE = "global_cloud"
+_TEXTURE_CLOUD_ROLE = "local_cloud"
+_VDB_CLOUD_ROLE = "vdb_cloud"
+_TEXTURE_CLOUD_PATH_PROPS = (
+    "planetka_texture_based_cloud_loaded_texture",
+    "planetka_texture_based_cloud_final_texture",
+    "planetka_texture_based_cloud_balanced_texture",
+    "planetka_texture_based_cloud_preview_texture",
+)
+_VDB_CLOUD_PATH_PROPS = (
+    "planetka_vdb_cloud_loaded_file",
+    "planetka_vdb_cloud_final_file",
+    "planetka_vdb_cloud_balanced_file",
+    "planetka_vdb_cloud_preview_file",
+)
 
 
 def _default_bug_report_path():
@@ -348,98 +352,6 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         )
 
 
-def _camera_has_transform_keys(camera):
-    if camera is None:
-        return False
-    animation_data = getattr(camera, "animation_data", None)
-    if animation_data is None:
-        return False
-
-    transform_paths = {
-        "location",
-        "rotation_euler",
-        "rotation_quaternion",
-        "rotation_axis_angle",
-    }
-
-    def _fcurve_has_keys(fcurve):
-        data_path = str(getattr(fcurve, "data_path", "") or "")
-        if data_path not in transform_paths:
-            return False
-        points = getattr(fcurve, "keyframe_points", None)
-        return bool(points and len(points) > 0)
-
-    def _action_has_transform_keys(action):
-        if action is None:
-            return False
-        for fcurve in _iter_action_fcurves_health(action):
-            if _fcurve_has_keys(fcurve):
-                return True
-        return False
-
-    action = getattr(animation_data, "action", None)
-    if _action_has_transform_keys(action):
-        return True
-
-    for track in tuple(getattr(animation_data, "nla_tracks", ()) or ()):
-        for strip in tuple(getattr(track, "strips", ()) or ()):
-            if _action_has_transform_keys(getattr(strip, "action", None)):
-                return True
-    return False
-
-
-def _iter_action_fcurves_health(action):
-    if action is None:
-        return
-
-    seen = set()
-
-    def _token_for_fcurve(fcurve):
-        try:
-            return int(fcurve.as_pointer())
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return id(fcurve)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            return id(fcurve)
-
-    action_fcurves = getattr(action, "fcurves", None) or ()
-    for fcurve in action_fcurves:
-        token = _token_for_fcurve(fcurve)
-        if token in seen:
-            continue
-        seen.add(token)
-        yield fcurve
-
-    layers = getattr(action, "layers", None)
-    slots = getattr(action, "slots", None)
-    if not layers or not slots:
-        return
-
-    for layer in layers:
-        strips = getattr(layer, "strips", None)
-        if not strips:
-            continue
-        for strip in strips:
-            channelbag_fn = getattr(strip, "channelbag", None)
-            if not callable(channelbag_fn):
-                continue
-            for slot in slots:
-                try:
-                    channelbag = channelbag_fn(slot)
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    continue
-                except (RuntimeError, TypeError, ValueError):
-                    continue
-                if channelbag is None:
-                    continue
-                for fcurve in tuple(getattr(channelbag, "fcurves", ()) or ()):
-                    token = _token_for_fcurve(fcurve)
-                    if token in seen:
-                        continue
-                    seen.add(token)
-                    yield fcurve
-
-
 def _new_scene_health_payload():
     return {
         "errors": [],
@@ -558,19 +470,6 @@ def _find_surface_grading_node(material):
     return None
 
 
-def _socket_float_value(node, socket_name):
-    sock = _safe_socket(node, socket_name, is_output=False)
-    if sock is None:
-        return None
-    try:
-        value = getattr(sock, "default_value", None)
-        if isinstance(value, (list, tuple)):
-            return None
-        return float(value)
-    except (TypeError, ValueError, AttributeError, RuntimeError):
-        return None
-
-
 def _iter_view3d_shading_types(context):
     seen = []
     wm = getattr(context, "window_manager", None)
@@ -590,95 +489,113 @@ def _iter_view3d_shading_types(context):
     return tuple(seen)
 
 
-def _layer_from_image_node_name(node_name):
-    token = str(node_name or "").strip().upper()
-    if not token:
+def _normalize_scene_health_path(path_value):
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
         return ""
-    for layer in ("S2", "EL", "WT", "PO"):
-        if token == layer:
-            return layer
-        if f"_{layer}" in token:
-            return layer
-        if token.startswith(f"{layer}_"):
-            return layer
-        if token.endswith(f" {layer}"):
-            return layer
-    if "SE" in token:
-        return "PO"
-    return ""
+    try:
+        return os.path.abspath(bpy.path.abspath(raw_path))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return raw_path
+    except (RuntimeError, TypeError, ValueError):
+        return raw_path
 
 
-def _collect_layer_image_nodes(node_tree, out_map, visited):
+def _node_tree_token(node_tree):
+    try:
+        return int(node_tree.as_pointer())
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return id(node_tree)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return id(node_tree)
+
+
+def _collect_image_nodes(node_tree, out_nodes, visited):
     if node_tree is None:
         return
-    try:
-        ptr = int(node_tree.as_pointer())
-    except (TypeError, ValueError, AttributeError, RuntimeError):
-        ptr = None
-    if ptr is not None:
-        if ptr in visited:
-            return
-        visited.add(ptr)
+    token = _node_tree_token(node_tree)
+    if token in visited:
+        return
+    visited.add(token)
     nodes = getattr(node_tree, "nodes", None)
     if nodes is None:
         return
     for node in nodes:
-        node_type = str(getattr(node, "bl_idname", "") or "")
-        if node_type == "ShaderNodeTexImage":
-            layer = _layer_from_image_node_name(getattr(node, "name", ""))
-            if not layer:
-                layer = _layer_from_image_node_name(getattr(node, "label", ""))
-            if layer:
-                out_map.setdefault(layer, []).append(node)
+        if str(getattr(node, "bl_idname", "") or "") == "ShaderNodeTexImage":
+            out_nodes.append(node)
             continue
-        if str(getattr(node, "type", "")) == "GROUP":
-            child_tree = getattr(node, "node_tree", None)
-            if child_tree is not None:
-                _collect_layer_image_nodes(child_tree, out_map, visited)
+        if str(getattr(node, "type", "") or "") == "GROUP":
+            _collect_image_nodes(getattr(node, "node_tree", None), out_nodes, visited)
 
 
-def _tile_loading_layer_stats(loading_node):
+def _image_file_path(image):
+    if image is None:
+        return ""
+    return str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
+
+
+def _current_texture_path_stats(loading_node):
     stats = {
-        layer: {
-            "node_count": 0,
-            "image_count": 0,
-            "missing_path_count": 0,
-            "fallback_count": 0,
-            "non_fallback_count": 0,
-        }
-        for layer in ("S2", "EL", "WT", "PO")
+        "node_count": 0,
+        "assigned_count": 0,
+        "missing_count": 0,
+        "missing_samples": [],
     }
-    if loading_node is None:
-        return stats
-    loading_tree = getattr(loading_node, "node_tree", None)
+    loading_tree = getattr(loading_node, "node_tree", None) if loading_node is not None else None
     if loading_tree is None:
         return stats
-    collected = {}
-    _collect_layer_image_nodes(loading_tree, collected, visited=set())
-    for layer, nodes in collected.items():
-        if layer not in stats:
+    image_nodes = []
+    _collect_image_nodes(loading_tree, image_nodes, visited=set())
+    stats["node_count"] = int(len(image_nodes))
+    for node in image_nodes:
+        image = getattr(node, "image", None)
+        raw_path = _image_file_path(image)
+        if not raw_path:
             continue
-        layer_stats = stats[layer]
-        layer_stats["node_count"] = int(len(nodes))
-        for img_node in nodes:
-            image = getattr(img_node, "image", None)
-            if image is None:
-                continue
-            layer_stats["image_count"] += 1
-            raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
-            file_name = str(os.path.basename(raw_path)).strip().lower()
-            if file_name in _HEALTH_LAYER_FALLBACK_FILES.get(layer, set()):
-                layer_stats["fallback_count"] += 1
-            elif file_name:
-                layer_stats["non_fallback_count"] += 1
-            if raw_path:
-                try:
-                    abs_path = os.path.abspath(bpy.path.abspath(raw_path))
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    abs_path = ""
-                if abs_path and not os.path.isfile(abs_path):
-                    layer_stats["missing_path_count"] += 1
+        stats["assigned_count"] += 1
+        abs_path = _normalize_scene_health_path(raw_path)
+        if abs_path and not os.path.isfile(abs_path):
+            stats["missing_count"] += 1
+            if len(stats["missing_samples"]) < 8:
+                stats["missing_samples"].append(os.path.basename(abs_path) or abs_path)
     return stats
+
+
+def _iter_planetka_cloud_objects():
+    for obj in tuple(getattr(bpy.data, "objects", ()) or ()):
+        role = str(obj.get(_CLOUD_ROLE_KEY, "") or "").strip()
+        if role in {_GLOBAL_CLOUD_ROLE, _TEXTURE_CLOUD_ROLE, _VDB_CLOUD_ROLE}:
+            yield obj, role
+
+
+def _object_path_prop(obj, prop_names):
+    for prop_name in prop_names:
+        value = str(obj.get(prop_name, "") or "").strip()
+        if value:
+            return prop_name, value
+        value = str(getattr(obj, prop_name, "") or "").strip()
+        if value:
+            return prop_name, value
+    return "", ""
+
+
+def _check_path_exists(payload, section, layer, check_id, severity, path_value, ok_message, missing_message):
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        _append_scene_health_check(payload, section, layer, check_id, severity, True, ok_message, detail="not loaded yet")
+        return
+    abs_path = _normalize_scene_health_path(raw_path)
+    exists = bool(abs_path and os.path.isfile(abs_path))
+    _append_scene_health_check(
+        payload,
+        section,
+        layer,
+        check_id,
+        severity,
+        exists,
+        ok_message if exists else missing_message,
+        detail=os.path.basename(abs_path) if abs_path else raw_path,
+    )
 
 
 def _camera_earth_diagnostics(scene, earth, camera, props):
@@ -757,7 +674,6 @@ class _SceneHealthMaterialState:
     loading_node: object = None
     surface_grading_node: object = None
     output_node: object = None
-    layer_stats: dict = None
 
 
 def _build_scene_health_context(context):
@@ -851,69 +767,28 @@ def _check_scene_health_general(ctx, payload):
     return True
 
 
-def _check_scene_health_data_source(ctx, payload):
-    base_path = str(getattr(ctx.prefs, "texture_base_path", "") or "").strip() if ctx.prefs is not None else ""
-    remote_ready = bool(is_remote_source_configured(base_path))
-    if remote_ready:
-        _append_scene_health_check(
-            payload,
-            "Planetka Data",
-            "Planetka Data",
-            "SOURCE_REMOTE",
-            "INFO",
-            True,
-            "Connected.",
-        )
-    else:
-        if not base_path:
-            _append_scene_health_check(
-                payload,
-                "Planetka Data",
-                "Planetka Data",
-                "SOURCE_PATH_EMPTY",
-                "ERROR",
-                False,
-                "Planetka Data is not connected.",
-            )
-        else:
-            try:
-                normalized_base_path = os.path.abspath(bpy.path.abspath(base_path))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                normalized_base_path = ""
-            is_valid_path = bool(normalized_base_path and os.path.isdir(normalized_base_path))
-            _append_scene_health_check(
-                payload,
-                "Planetka Data",
-                "Planetka Data",
-                "SOURCE_PATH_VALID",
-                "ERROR",
-                is_valid_path,
-                (
-                    "Planetka Data is connected."
-                    if is_valid_path
-                    else "Planetka Data is not connected."
-                ),
-            )
-
-
-def _check_scene_health_viewport_and_material(ctx, payload, state):
+def _check_scene_health_viewport(ctx, payload):
     shading_types = _iter_view3d_shading_types(ctx.context)
-    preview_visible = any(mode in {"MATERIAL", "RENDERED"} for mode in shading_types)
+    if not shading_types:
+        return
+    texture_visible = any(mode in {"MATERIAL", "RENDERED"} for mode in shading_types)
     _append_scene_health_check(
         payload,
         "Viewport",
         "Display",
         "VIEW_MODE_TEXTURE_VISIBLE",
         "WARNING",
-        preview_visible,
+        texture_visible,
         (
-            "At least one 3D viewport is in Material Preview/Rendered mode."
-            if preview_visible
-            else "No 3D viewport is in Material Preview/Rendered mode; textures may appear hidden."
+            "At least one 3D viewport can show Planetka materials."
+            if texture_visible
+            else "3D viewport is in Solid/Wireframe mode; Planetka materials may not be visible."
         ),
-        detail=f"Detected modes: {', '.join(shading_types) if shading_types else 'none'}",
+        detail=f"Detected modes: {', '.join(shading_types)}",
     )
 
+
+def _check_scene_health_material(ctx, payload, state):
     if ctx.earth is not None:
         _append_scene_health_check(
             payload,
@@ -922,11 +797,7 @@ def _check_scene_health_viewport_and_material(ctx, payload, state):
             "EARTH_HIDE_VIEWPORT",
             "WARNING",
             not bool(getattr(ctx.earth, "hide_viewport", False)),
-            (
-                "Earth object is visible in viewport."
-                if not bool(getattr(ctx.earth, "hide_viewport", False))
-                else "Earth object is hidden in viewport."
-            ),
+            "Earth object is visible in viewport." if not bool(getattr(ctx.earth, "hide_viewport", False)) else "Earth object is hidden in viewport.",
         )
         _append_scene_health_check(
             payload,
@@ -935,11 +806,7 @@ def _check_scene_health_viewport_and_material(ctx, payload, state):
             "EARTH_HIDE_RENDER",
             "WARNING",
             not bool(getattr(ctx.earth, "hide_render", False)),
-            (
-                "Earth object is enabled for render."
-                if not bool(getattr(ctx.earth, "hide_render", False))
-                else "Earth object is hidden for render."
-            ),
+            "Earth object is enabled for render." if not bool(getattr(ctx.earth, "hide_render", False)) else "Earth object is hidden for render.",
         )
         earth_data = getattr(ctx.earth, "data", None)
         material_slots = getattr(earth_data, "materials", None) if earth_data is not None else None
@@ -947,353 +814,81 @@ def _check_scene_health_viewport_and_material(ctx, payload, state):
         _append_scene_health_check(
             payload,
             "Material",
-            "General",
+            "Earth Surface",
             "EARTH_MATERIAL_SLOT",
             "ERROR",
             has_material_slot,
-            "Earth mesh has an assigned material slot." if has_material_slot else "Earth mesh material slot is missing.",
+            "Earth mesh has an assigned material." if has_material_slot else "Earth mesh material slot is missing.",
         )
 
-    loading_node = _find_texture_loading_node(ctx.material)
-    surface_grading_node = _find_surface_grading_node(ctx.material)
     node_tree = getattr(ctx.material, "node_tree", None) if ctx.material is not None else None
     output_node = _find_material_output_node(node_tree)
+    loading_node = _find_texture_loading_node(ctx.material)
+    surface_grading_node = _find_surface_grading_node(ctx.material)
+    state.output_node = output_node
     state.loading_node = loading_node
     state.surface_grading_node = surface_grading_node
-    state.output_node = output_node
-    material_nodes_available = bool(ctx.material is not None and node_tree is not None)
 
     _append_scene_health_check(
         payload,
         "Material",
-        "General",
+        "Earth Surface",
         "MATERIAL_NODES",
         "ERROR",
-        material_nodes_available,
-        (
-            "Material node tree is available."
-            if material_nodes_available
-            else "Material node tree is unavailable."
-        ),
+        bool(ctx.material is not None and node_tree is not None),
+        "Earth material node tree is available." if node_tree is not None else "Earth material node tree is unavailable.",
     )
     _append_scene_health_check(
         payload,
         "Material",
-        "General",
+        "Earth Surface",
         "MATERIAL_OUTPUT_SURFACE",
         "ERROR",
         bool(output_node is not None and _socket_is_linked(output_node, "Surface", is_output=False)),
-        (
-            "Material Output Surface is connected."
-            if output_node is not None and _socket_is_linked(output_node, "Surface", is_output=False)
-            else "Material Output Surface is not connected."
-        ),
+        "Material Output Surface is connected." if output_node is not None and _socket_is_linked(output_node, "Surface", is_output=False) else "Material Output Surface is not connected.",
     )
     _append_scene_health_check(
         payload,
-        "Tile Loading",
-        "General",
-        "LOADING_GROUP_NODE",
+        "Material",
+        "Earth Surface",
+        "MATERIAL_OUTPUT_DISPLACEMENT",
+        "WARNING",
+        bool(output_node is not None and _socket_is_linked(output_node, "Displacement", is_output=False)),
+        "Material Output Displacement is connected." if output_node is not None and _socket_is_linked(output_node, "Displacement", is_output=False) else "Material Output Displacement is not connected.",
+    )
+    _append_scene_health_check(
+        payload,
+        "Material",
+        "Earth Surface",
+        "TEXTURE_LOADING_GROUP",
         "ERROR",
-        loading_node is not None and getattr(loading_node, "node_tree", None) is not None,
-        (
-            "Planetka Textures Loading group node is present."
-            if loading_node is not None and getattr(loading_node, "node_tree", None) is not None
-            else "Planetka Textures Loading group node is missing."
-        ),
+        bool(loading_node is not None and getattr(loading_node, "node_tree", None) is not None),
+        "Planetka Textures Loading Group is present." if loading_node is not None and getattr(loading_node, "node_tree", None) is not None else "Planetka Textures Loading Group is missing.",
     )
 
     if loading_node is not None and getattr(loading_node, "node_tree", None) is not None:
-        for output_name, layer_name in (("S2", "S2"), ("EL", "EL"), ("WT", "WT"), ("SE", "PO")):
+        for output_name in ("S2", "EL", "WT", "SE"):
+            socket_exists = _safe_socket(loading_node, output_name, is_output=True) is not None
             _append_scene_health_check(
                 payload,
-                "Tile Loading",
-                layer_name,
-                f"LOADING_OUTPUT_{output_name}",
+                "Material",
+                "Texture Loading",
+                f"TEXTURE_OUTPUT_{output_name}",
                 "ERROR",
-                _safe_socket(loading_node, output_name, is_output=True) is not None,
-                (
-                    f"Tile Loading output '{output_name}' exists."
-                    if _safe_socket(loading_node, output_name, is_output=True) is not None
-                    else f"Tile Loading output '{output_name}' is missing."
-                ),
+                socket_exists,
+                f"Texture Loading output '{output_name}' exists." if socket_exists else f"Texture Loading output '{output_name}' is missing.",
             )
 
-
-def _check_scene_health_tile_loading_layers(_ctx, payload, state):
-    state.layer_stats = _tile_loading_layer_stats(state.loading_node)
-    for layer in ("S2", "EL", "WT", "PO"):
-        stats = state.layer_stats.get(layer, {})
-        node_count = int(stats.get("node_count", 0))
-        image_count = int(stats.get("image_count", 0))
-        missing_paths = int(stats.get("missing_path_count", 0))
-        fallback_count = int(stats.get("fallback_count", 0))
-        non_fallback_count = int(stats.get("non_fallback_count", 0))
-
-        _append_scene_health_check(
-            payload,
-            "Tile Loading",
-            layer,
-            f"{layer}_IMAGE_NODES",
-            "WARNING",
-            node_count > 0,
-            (
-                f"{layer} image nodes detected: {node_count}."
-                if node_count > 0
-                else f"No {layer} image nodes detected in Tile Loading group."
-            ),
-        )
-        _append_scene_health_check(
-            payload,
-            "Tile Loading",
-            layer,
-            f"{layer}_MISSING_PATHS",
-            "WARNING",
-            missing_paths == 0,
-            (
-                f"{layer} assigned image paths are present."
-                if missing_paths == 0
-                else f"{layer} has {missing_paths} assigned image path(s) missing on disk."
-            ),
-        )
-        fallback_only = image_count > 0 and non_fallback_count == 0 and fallback_count > 0
-        _append_scene_health_check(
-            payload,
-            layer,
-            layer,
-            f"{layer}_FALLBACK_ONLY",
-            "WARNING",
-            not fallback_only,
-            (
-                f"{layer} has non-fallback texture assignments."
-                if not fallback_only
-                else f"{layer} is currently using fallback-only textures."
-            ),
-            detail=f"images={image_count}, fallback={fallback_count}, non_fallback={non_fallback_count}",
-        )
-
-
-def _check_scene_health_layers_and_render(ctx, payload, state):
-    s2_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "S2", is_output=True)
     _append_scene_health_check(
         payload,
-        "S2",
-        "Shader",
-        "S2_OUTPUT_LINKED",
-        "ERROR",
-        s2_linked,
-        "S2 output from Tile Loading is linked." if s2_linked else "S2 output from Tile Loading is not linked.",
-    )
-    surface_brightness = _socket_float_value(state.surface_grading_node, "Surface Brightness")
-    _append_scene_health_check(
-        payload,
-        "S2",
-        "Shader",
-        "SURFACE_BRIGHTNESS",
-        "WARNING",
-        surface_brightness is None or surface_brightness > 0.0,
-        (
-            "Surface Brightness is above zero."
-            if surface_brightness is None or surface_brightness > 0.0
-            else "Surface Brightness is zero; S2 layer can appear black."
-        ),
-        detail=(f"value={surface_brightness:.4f}" if isinstance(surface_brightness, float) else ""),
-    )
-
-    el_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "EL", is_output=True)
-    _append_scene_health_check(
-        payload,
-        "EL",
-        "Shader",
-        "EL_OUTPUT_LINKED",
-        "ERROR",
-        el_linked,
-        "EL output from Tile Loading is linked." if el_linked else "EL output from Tile Loading is not linked.",
-    )
-    displacement_linked = bool(state.output_node is not None and _socket_is_linked(state.output_node, "Displacement", is_output=False))
-    _append_scene_health_check(
-        payload,
-        "EL",
         "Material",
-        "DISPLACEMENT_OUTPUT_LINKED",
+        "Earth Surface",
+        "SURFACE_GRADING_GROUP",
         "WARNING",
-        displacement_linked,
-        "Material Output Displacement is connected." if displacement_linked else "Material Output Displacement is not connected.",
+        surface_grading_node is not None,
+        "Planetka Surface Grading Group is present." if surface_grading_node is not None else "Planetka Surface Grading Group is missing.",
     )
 
-    displacement_mode = ""
-    if ctx.material is not None:
-        cycles_settings = getattr(ctx.material, "cycles", None)
-        try:
-            displacement_mode = str(getattr(cycles_settings, "displacement_method", "") or "").upper().strip()
-        except (TypeError, ValueError, AttributeError, RuntimeError):
-            displacement_mode = ""
-        if not displacement_mode:
-            try:
-                displacement_mode = str(getattr(ctx.material, "displacement_method", "") or "").upper().strip()
-            except (TypeError, ValueError, AttributeError, RuntimeError):
-                displacement_mode = ""
-    _append_scene_health_check(
-        payload,
-        "EL",
-        "Material",
-        "DISPLACEMENT_MODE",
-        "WARNING",
-        displacement_mode in {"BOTH", "DISPLACEMENT", "DISPLACEMENT_ONLY", "DISPLACEMENT_AND_BUMP"},
-        (
-            "Material displacement mode supports displacement."
-            if displacement_mode in {"BOTH", "DISPLACEMENT", "DISPLACEMENT_ONLY", "DISPLACEMENT_AND_BUMP"}
-            else "Material displacement mode is not set to Displacement or Bump+Displacement."
-        ),
-        detail=(f"mode={displacement_mode or 'UNKNOWN'}"),
-    )
-
-    adaptive_modifier = None
-    if ctx.earth is not None:
-        modifiers = getattr(ctx.earth, "modifiers", None)
-        if modifiers is not None:
-            for modifier in modifiers:
-                if str(getattr(modifier, "type", "")) != "SUBSURF":
-                    continue
-                if bool(getattr(modifier, "use_adaptive_subdivision", False)) or ("Adaptive" in str(getattr(modifier, "name", ""))):
-                    adaptive_modifier = modifier
-                    break
-    adaptive_enabled = bool(adaptive_modifier is not None and bool(getattr(adaptive_modifier, "use_adaptive_subdivision", False)))
-    _append_scene_health_check(
-        payload,
-        "EL",
-        "Geometry",
-        "ADAPTIVE_SUBDIVISION",
-        "WARNING",
-        adaptive_enabled,
-        "Adaptive Subdivision is enabled." if adaptive_enabled else "Adaptive Subdivision is not enabled on Earth mesh.",
-    )
-
-    cycles_settings = getattr(ctx.scene, "cycles", None) if ctx.scene is not None else None
-    render_engine = str(getattr(getattr(ctx.scene, "render", None), "engine", "") or "").upper()
-    feature_set = str(getattr(cycles_settings, "feature_set", "") or "").upper() if cycles_settings is not None else ""
-    if render_engine == "CYCLES":
-        _append_scene_health_check(
-            payload,
-            "EL",
-            "Render Settings",
-            "CYCLES_FEATURE_SET",
-            "WARNING",
-            feature_set in {"EXPERIMENTAL", ""},
-            (
-                "Cycles feature set allows adaptive subdivision."
-                if feature_set in {"EXPERIMENTAL", ""}
-                else "Cycles feature set is not Experimental; adaptive subdivision may be disabled."
-            ),
-            detail=(f"feature_set={feature_set or 'UNKNOWN'}"),
-        )
-
-    dicing_rate = None
-    preview_dicing_rate = None
-    offscreen_dicing_scale = None
-    if cycles_settings is not None:
-        try:
-            dicing_rate = float(getattr(cycles_settings, "dicing_rate", 0.0))
-        except (TypeError, ValueError, AttributeError, RuntimeError):
-            dicing_rate = None
-        try:
-            preview_dicing_rate = float(getattr(cycles_settings, "preview_dicing_rate", 0.0))
-        except (TypeError, ValueError, AttributeError, RuntimeError):
-            preview_dicing_rate = None
-        try:
-            offscreen_dicing_scale = float(getattr(cycles_settings, "offscreen_dicing_scale", 0.0))
-        except (TypeError, ValueError, AttributeError, RuntimeError):
-            offscreen_dicing_scale = None
-
-    if dicing_rate is not None:
-        _append_scene_health_check(
-            payload,
-            "EL",
-            "Render Settings",
-            "DICING_RATE_RENDER",
-            "WARNING",
-            float(dicing_rate) < float(_HEALTH_DICING_WARN_THRESHOLD),
-            (
-                "Render dicing rate is in recommended range."
-                if float(dicing_rate) < float(_HEALTH_DICING_WARN_THRESHOLD)
-                else (
-                    f"Render dicing rate is {dicing_rate:.2f}; this can be too low detail. "
-                    f"Recommended {float(_HEALTH_DICING_RECOMMENDED_MIN):.2f}-{float(_HEALTH_DICING_RECOMMENDED_MAX):.2f}."
-                )
-            ),
-        )
-    if preview_dicing_rate is not None:
-        _append_scene_health_check(
-            payload,
-            "EL",
-            "Render Settings",
-            "DICING_RATE_VIEWPORT",
-            "INFO",
-            True,
-            f"Viewport dicing rate: {preview_dicing_rate:.2f}.",
-        )
-    if offscreen_dicing_scale is not None:
-        _append_scene_health_check(
-            payload,
-            "EL",
-            "Render Settings",
-            "DICING_OFFSCREEN_SCALE",
-            "INFO",
-            True,
-            f"Offscreen dicing scale: {offscreen_dicing_scale:.2f}.",
-        )
-
-    wt_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "WT", is_output=True)
-    _append_scene_health_check(
-        payload,
-        "WT",
-        "Shader",
-        "WT_OUTPUT_LINKED",
-        "ERROR",
-        wt_linked,
-        "WT output from Tile Loading is linked." if wt_linked else "WT output from Tile Loading is not linked.",
-    )
-    roughness_value = _socket_float_value(state.surface_grading_node, "Roughness")
-    _append_scene_health_check(
-        payload,
-        "WT",
-        "Shader",
-        "WATER_ROUGHNESS",
-        "WARNING",
-        roughness_value is None or roughness_value < 0.99,
-        (
-            "Roughness allows visible water specular response."
-            if roughness_value is None or roughness_value < 0.99
-            else "Roughness is near 1.0; water can look like land and appear invisible."
-        ),
-        detail=(f"value={roughness_value:.4f}" if isinstance(roughness_value, float) else ""),
-    )
-
-    po_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "SE", is_output=True)
-    _append_scene_health_check(
-        payload,
-        "PO",
-        "Shader",
-        "PO_OUTPUT_LINKED",
-        "ERROR",
-        po_linked,
-        "PO/SE output from Tile Loading is linked." if po_linked else "PO/SE output from Tile Loading is not linked.",
-    )
-    intensity_value = _socket_float_value(state.surface_grading_node, "Intensity")
-    _append_scene_health_check(
-        payload,
-        "PO",
-        "Shader",
-        "NIGHT_INTENSITY",
-        "WARNING",
-        intensity_value is None or intensity_value > 0.0,
-        (
-            "Night lights intensity is above zero."
-            if intensity_value is None or intensity_value > 0.0
-            else "Night lights intensity is zero; PO layer can appear invisible."
-        ),
-        detail=(f"value={intensity_value:.4f}" if isinstance(intensity_value, float) else ""),
-    )
     nightday_groups = []
     for group in getattr(bpy.data, "node_groups", ()):
         name = str(getattr(group, "name", "") or "")
@@ -1301,36 +896,150 @@ def _check_scene_health_layers_and_render(ctx, payload, state):
             nightday_groups.append(group)
     _append_scene_health_check(
         payload,
-        "PO",
-        "Shader",
+        "Material",
+        "Night Lights",
         "NIGHTDAY_GROUP_PRESENT",
         "WARNING",
         bool(nightday_groups),
-        "NightDay group is present." if nightday_groups else "NightDay group is missing.",
+        "Planetka NightDay Transition Group is present." if nightday_groups else "Planetka NightDay Transition Group is missing.",
     )
-    sunlight_hook_ok = False
-    if nightday_groups and ctx.sunlight is not None:
-        for group in nightday_groups:
-            nodes = getattr(group, "nodes", None)
-            if nodes is None:
-                continue
-            texcoord_nodes = [
-                node for node in nodes
-                if str(getattr(node, "bl_idname", "")) == "ShaderNodeTexCoord"
-            ]
-            if not texcoord_nodes:
-                continue
-            if any(getattr(node, "object", None) is ctx.sunlight for node in texcoord_nodes):
-                sunlight_hook_ok = True
-                break
+
+
+def _check_scene_health_texture_paths(_ctx, payload, state):
+    stats = _current_texture_path_stats(state.loading_node)
     _append_scene_health_check(
         payload,
-        "PO",
-        "Shader",
-        "SUNLIGHT_HOOK",
+        "Texture Paths",
+        "Earth Textures",
+        "TEXTURE_IMAGE_NODES",
         "WARNING",
-        sunlight_hook_ok,
-        "Sunlight object is hooked in NightDay group." if sunlight_hook_ok else "Sunlight object is not hooked in NightDay group.",
+        int(stats.get("node_count", 0)) > 0,
+        (
+            f"Current texture image nodes detected: {int(stats.get('node_count', 0))}."
+            if int(stats.get("node_count", 0)) > 0
+            else "No current texture image nodes detected in Planetka Textures Loading Group."
+        ),
+        detail=f"assigned_paths={int(stats.get('assigned_count', 0))}",
+    )
+    missing_count = int(stats.get("missing_count", 0))
+    samples = list(stats.get("missing_samples", ()) or ())
+    _append_scene_health_check(
+        payload,
+        "Texture Paths",
+        "Earth Textures",
+        "TEXTURE_PATHS_EXIST",
+        "ERROR",
+        missing_count == 0,
+        "Current Earth texture file paths exist on disk." if missing_count == 0 else f"{missing_count} current Earth texture file path(s) are missing on disk.",
+        detail=", ".join(samples),
+    )
+
+
+def _check_scene_health_clouds(ctx, payload):
+    cloud_entries = list(_iter_planetka_cloud_objects())
+    role_counts = {
+        _GLOBAL_CLOUD_ROLE: 0,
+        _TEXTURE_CLOUD_ROLE: 0,
+        _VDB_CLOUD_ROLE: 0,
+    }
+    for _obj, role in cloud_entries:
+        role_counts[role] = int(role_counts.get(role, 0)) + 1
+    _append_scene_health_check(
+        payload,
+        "Clouds",
+        "Objects",
+        "CLOUD_OBJECT_COUNTS",
+        "INFO",
+        True,
+        (
+            "Cloud objects found."
+            if cloud_entries
+            else "No Planetka cloud objects found."
+        ),
+        detail=(
+            f"global={role_counts[_GLOBAL_CLOUD_ROLE]}, "
+            f"texture_based={role_counts[_TEXTURE_CLOUD_ROLE]}, "
+            f"vdb={role_counts[_VDB_CLOUD_ROLE]}"
+        ),
+    )
+
+    render_engine = str(getattr(getattr(ctx.scene, "render", None), "engine", "") or "").upper()
+    for obj, role in cloud_entries:
+        name = str(getattr(obj, "name", "") or "Cloud")
+        layer = "Global Clouds" if role == _GLOBAL_CLOUD_ROLE else ("Texture-Based Clouds" if role == _TEXTURE_CLOUD_ROLE else "VDB Clouds")
+        _append_scene_health_check(
+            payload,
+            "Clouds",
+            layer,
+            f"{name}_VISIBLE",
+            "WARNING",
+            not bool(getattr(obj, "hide_viewport", False)) and not bool(getattr(obj, "hide_render", False)),
+            f"{name} is visible." if not bool(getattr(obj, "hide_viewport", False)) and not bool(getattr(obj, "hide_render", False)) else f"{name} is hidden in viewport or render.",
+        )
+
+        if role in {_GLOBAL_CLOUD_ROLE, _TEXTURE_CLOUD_ROLE}:
+            data = getattr(obj, "data", None)
+            materials = getattr(data, "materials", None) if data is not None else None
+            has_material = bool(materials and len(materials) > 0 and materials[0] is not None)
+            _append_scene_health_check(
+                payload,
+                "Clouds",
+                layer,
+                f"{name}_MATERIAL",
+                "WARNING",
+                has_material,
+                f"{name} has a material assigned." if has_material else f"{name} material is missing.",
+            )
+            if role == _TEXTURE_CLOUD_ROLE:
+                _prop_name, texture_path = _object_path_prop(obj, _TEXTURE_CLOUD_PATH_PROPS)
+                _check_path_exists(
+                    payload,
+                    "Clouds",
+                    layer,
+                    f"{name}_TEXTURE_PATH",
+                    "WARNING",
+                    texture_path,
+                    f"{name} texture path is available.",
+                    f"{name} texture path is missing on disk.",
+                )
+            continue
+
+        if role == _VDB_CLOUD_ROLE:
+            _prop_name, vdb_path = _object_path_prop(obj, _VDB_CLOUD_PATH_PROPS)
+            _check_path_exists(
+                payload,
+                "Clouds",
+                layer,
+                f"{name}_VDB_PATH",
+                "ERROR",
+                vdb_path,
+                f"{name} VDB file path is available.",
+                f"{name} VDB file path is missing on disk.",
+            )
+            _append_scene_health_check(
+                payload,
+                "Render",
+                "VDB Clouds",
+                f"{name}_RENDER_ENGINE",
+                "WARNING",
+                render_engine == "CYCLES",
+                f"{name} is compatible with the current render engine." if render_engine == "CYCLES" else f"{name} is a VDB cloud; switch to Cycles to render it.",
+                detail=f"render_engine={render_engine or 'UNKNOWN'}",
+            )
+
+
+def _check_scene_health_render_engine(ctx, payload):
+    render_engine = str(getattr(getattr(ctx.scene, "render", None), "engine", "") or "").upper()
+    supported = render_engine == "CYCLES" or render_engine.startswith("BLENDER_EEVEE") or render_engine == "BLENDER_EEVEE_NEXT"
+    _append_scene_health_check(
+        payload,
+        "Render",
+        "Engine",
+        "RENDER_ENGINE_SUPPORTED",
+        "WARNING",
+        supported,
+        "Render engine is supported by Planetka." if supported else "Current render engine is not a standard Planetka target.",
+        detail=f"render_engine={render_engine or 'UNKNOWN'}",
     )
 
 
@@ -1414,106 +1123,15 @@ def _check_scene_health_camera(ctx, payload):
         )
 
 
-def _check_scene_health_animation(ctx, payload):
-    if ctx.props is not None:
-        frame_start = int(getattr(ctx.props, "anim_frame_start", 1) or 1)
-        frame_end = int(getattr(ctx.props, "anim_frame_end", 1) or 1)
-        _append_scene_health_check(
-            payload,
-            "Animation",
-            "Timeline",
-            "ANIM_FRAME_RANGE",
-            "WARNING",
-            frame_end > frame_start,
-            (
-                "Animation frame range is valid."
-                if frame_end > frame_start
-                else "Animation frame range is invalid (End must be greater than Start)."
-            ),
-        )
-
-        preset = str(getattr(ctx.props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
-        if preset == "A_TO_B":
-            has_a = bool(getattr(ctx.props, "anim_ab_a_valid", False))
-            has_b = bool(getattr(ctx.props, "anim_ab_b_valid", False))
-            _append_scene_health_check(
-                payload,
-                "Animation",
-                "Preset",
-                "ANIM_A_TO_B_VIEWS",
-                "WARNING",
-                bool(has_a and has_b),
-                (
-                    "A-to-B preset has both View A and View B."
-                    if has_a and has_b
-                    else "A-to-B preset is selected but View A/B capture is incomplete."
-                ),
-            )
-
-        if preset not in {"", "NONE"}:
-            keyed = _camera_has_transform_keys(ctx.camera)
-            _append_scene_health_check(
-                payload,
-                "Animation",
-                "Preset",
-                "ANIM_CAMERA_KEYS",
-                "WARNING",
-                keyed,
-                (
-                    "Camera keyframes are present for selected animation preset."
-                    if keyed
-                    else "Animation preset is selected but camera keyframes are not present."
-                ),
-            )
-
-    prepared_segments = 0
-    if ctx.scene is not None:
-        try:
-            prepared_segments = int(ctx.scene.get(_ANIMATION_PREPARED_SEGMENTS_KEY, 0) or 0)
-        except (TypeError, ValueError, AttributeError):
-            prepared_segments = 0
-    prepared_collection = bpy.data.collections.get(_ANIMATION_PREPARED_COLLECTION_NAME)
-    prepared_object_count = len(getattr(prepared_collection, "objects", ())) if prepared_collection is not None else 0
-    if prepared_segments > 0 and prepared_collection is None:
-        _append_scene_health_check(
-            payload,
-            "Animation",
-            "Quick Preview",
-            "PREPARED_COLLECTION_MISSING",
-            "WARNING",
-            False,
-            "Prepared animation segment state exists, but prepared collection is missing.",
-        )
-    elif prepared_segments <= 0 and prepared_collection is not None and prepared_object_count > 0:
-        _append_scene_health_check(
-            payload,
-            "Animation",
-            "Quick Preview",
-            "PREPARED_STATE_STALE",
-            "WARNING",
-            False,
-            "Prepared animation collection has stale objects, but prepared state is not active.",
-        )
-    else:
-        _append_scene_health_check(
-            payload,
-            "Animation",
-            "Quick Preview",
-            "PREPARED_STATE_CONSISTENT",
-            "INFO",
-            True,
-            "Prepared animation state is internally consistent.",
-        )
-
-
 _SCENE_HEALTH_CHECK_REGISTRY = (
-    (_check_scene_health_data_source, False),
-    (_check_scene_health_viewport_and_material, True),
-    (_check_scene_health_tile_loading_layers, True),
-    (_check_scene_health_layers_and_render, True),
+    (_check_scene_health_viewport, False),
+    (_check_scene_health_material, True),
+    (_check_scene_health_texture_paths, True),
+    (_check_scene_health_clouds, False),
+    (_check_scene_health_render_engine, False),
     (_check_scene_health_camera, False),
-    (_check_scene_health_animation, False),
 )
+
 
 
 def collect_scene_health_data(context):
@@ -1558,10 +1176,13 @@ def _draw_scene_health_report_layout(layout, health, title_text="Scene Health Ch
             notes_box.label(text=note_text, icon="BLANK1")
 
     section_labels = {
-        "S2": "S2 - Earth surface data",
-        "EL": "EL - Elevation data",
-        "WT": "Water Mask data",
-        "PO": "Night Lights data",
+        "General": "Scene Objects",
+        "Viewport": "Viewport",
+        "Camera": "Camera",
+        "Material": "Materials",
+        "Texture Paths": "Loaded Texture Paths",
+        "Clouds": "Clouds",
+        "Render": "Render Compatibility",
     }
 
     grouped = {}
@@ -1574,12 +1195,9 @@ def _draw_scene_health_report_layout(layout, health, title_text="Scene Health Ch
         "Viewport",
         "Camera",
         "Material",
-        "Tile Loading",
-        "S2",
-        "EL",
-        "WT",
-        "PO",
-        "Animation",
+        "Texture Paths",
+        "Clouds",
+        "Render",
     )
     rendered_sections = set()
     for section_name in section_order:
@@ -1638,7 +1256,7 @@ def _draw_scene_health_report_layout(layout, health, title_text="Scene Health Ch
 class PLANETKA_OT_SceneHealthCheck(bpy.types.Operator):
     bl_idname = "planetka.scene_health_check"
     bl_label = "Scene Health Check"
-    bl_description = "Check for missing Planetka assets, invalid paths, and stale animation state"
+    bl_description = "Check current Planetka scene objects, materials, textures, clouds, camera, and render compatibility"
 
     _health = None
 

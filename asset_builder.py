@@ -1,16 +1,9 @@
 import logging
 import math
 import os
-import tempfile
 
 import bpy
 
-from .embedded_material_library import (
-    MATERIAL_LIBRARY_MATERIALS,
-    MATERIAL_LIBRARY_NODE_GROUPS,
-    MATERIAL_LIBRARY_SHA256,
-    get_material_library_bytes,
-)
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 
@@ -52,14 +45,26 @@ DEFAULT_ELEVATION_COEFFICIENT = 1.0
 ELEVATION_SCALE_MULTIPLIER = 0.024
 DEFAULT_SURFACE_SATURATION = 1.0
 DEFAULT_WATER_ROUGHNESS = 0.4
-_LIBRARY_SIGNATURE_KEY = "planetka_embedded_material_sha256"
+SURFACE_MATERIAL_LIBRARY_SHA256 = "3127281379fc569534a1f333036a07c62c06bd412e565d119ad1a71c0932cb02"
+SURFACE_MATERIAL_LIBRARY_MATERIALS = (
+    PREVIEW_MATERIAL_NAME,
+    EARTH_MATERIAL_NAME,
+)
+SURFACE_MATERIAL_LIBRARY_NODE_GROUPS = (
+    "Planetka Tile_01",
+    "Planetka Tile Placement",
+    TEXTURE_LOADING_GROUP_NAME,
+    SURFACE_GRADING_GROUP_NAME,
+    NIGHTDAY_GROUP_NAME,
+)
+_LIBRARY_SIGNATURE_KEY = "planetka_surface_material_library_sha256"
 _MATERIAL_DEFAULTS_VERSION_KEY = "planetka_surface_defaults_v"
 _MATERIAL_DEFAULTS_VERSION = 1
 _MATERIAL_DISPLACEMENT_MODE_VERSION_KEY = "planetka_material_displacement_mode_v"
 _MATERIAL_DISPLACEMENT_MODE_VERSION = 1
 _PREVIEW_TEXTURE_GROUP_VERSION_KEY = "planetka_preview_texture_group_v"
 _PREVIEW_TEXTURE_GROUP_VERSION = 1
-_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+_SURFACE_MATERIAL_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_surface_material_library.blend")
 _FAKE_ATMOSPHERE_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_fake_atmosphere.blend")
 _VOLUMETRIC_ATMOSPHERE_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_volumetric_atmosphere.blend")
 _SURFACE_DETAIL_VERSION_KEY = "planetka_surface_detail_v"
@@ -2131,12 +2136,8 @@ def _set_image_colorspace_safe(image, colorspace):
             continue
 
 
-def _get_embedded_material_library_payload():
-    payload = get_material_library_bytes()
-    if payload.startswith(b"BLENDER") or payload.startswith(_ZSTD_MAGIC):
-        return payload
-
-    raise RuntimeError("Planetka: embedded material library payload is invalid.")
+def _surface_material_library_path():
+    return os.path.join(os.path.dirname(__file__), *_SURFACE_MATERIAL_LIBRARY_RELATIVE_PATH)
 
 
 def _fake_atmosphere_library_path():
@@ -2160,8 +2161,8 @@ def _append_material_library_from_blend(blend_path):
     with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
         available_materials = set(data_from.materials)
         available_groups = set(data_from.node_groups)
-        data_to.materials = [name for name in MATERIAL_LIBRARY_MATERIALS if name in available_materials]
-        data_to.node_groups = [name for name in MATERIAL_LIBRARY_NODE_GROUPS if name in available_groups]
+        data_to.materials = [name for name in SURFACE_MATERIAL_LIBRARY_MATERIALS if name in available_materials]
+        data_to.node_groups = [name for name in SURFACE_MATERIAL_LIBRARY_NODE_GROUPS if name in available_groups]
     _remove_unintended_material_library_cloud_objects(existing_object_pointers)
 
 
@@ -2831,7 +2832,7 @@ def _replace_fake_atmosphere_texture_group_with_live_loader(scene=None):
     texture_group = bpy.data.node_groups.get(TEXTURE_LOADING_GROUP_NAME)
     if texture_group is None:
         try:
-            _ensure_embedded_material_library(scene)
+            _ensure_surface_material_library(scene)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -3450,7 +3451,7 @@ def _set_library_signature(id_block):
     if not id_block:
         return
     try:
-        id_block[_LIBRARY_SIGNATURE_KEY] = MATERIAL_LIBRARY_SHA256
+        id_block[_LIBRARY_SIGNATURE_KEY] = SURFACE_MATERIAL_LIBRARY_SHA256
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
@@ -3459,7 +3460,7 @@ def _has_library_signature(id_block):
     if not id_block:
         return False
     try:
-        return id_block.get(_LIBRARY_SIGNATURE_KEY) == MATERIAL_LIBRARY_SHA256
+        return id_block.get(_LIBRARY_SIGNATURE_KEY) == SURFACE_MATERIAL_LIBRARY_SHA256
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
 
@@ -3514,14 +3515,14 @@ def _clear_animation_data(id_block):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
-def _sanitize_embedded_assets():
+def _sanitize_surface_material_library_assets():
     def _material_library_group_matches(name, base):
         text = str(name or "")
         return text == base or text.startswith(f"{base}.")
 
     for node_group in tuple(getattr(bpy.data, "node_groups", ())):
         group_name = str(getattr(node_group, "name", "") or "")
-        if not any(_material_library_group_matches(group_name, base) for base in MATERIAL_LIBRARY_NODE_GROUPS):
+        if not any(_material_library_group_matches(group_name, base) for base in SURFACE_MATERIAL_LIBRARY_NODE_GROUPS):
             continue
         _clear_animation_data(node_group)
         for node in tuple(getattr(node_group, "nodes", ())):
@@ -3529,11 +3530,11 @@ def _sanitize_embedded_assets():
                 try:
                     node.image = None
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka asset builder: failed clearing embedded library image node", exc_info=True)
+                    logger.debug("Planetka asset builder: failed clearing surface material library image node", exc_info=True)
 
     for material in tuple(getattr(bpy.data, "materials", ())):
         material_name = str(getattr(material, "name", "") or "")
-        if not any(_material_library_group_matches(material_name, base) for base in MATERIAL_LIBRARY_MATERIALS):
+        if not any(_material_library_group_matches(material_name, base) for base in SURFACE_MATERIAL_LIBRARY_MATERIALS):
             continue
         if not material or not material.node_tree:
             continue
@@ -3544,7 +3545,7 @@ def _sanitize_embedded_assets():
                 try:
                     node.image = None
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka asset builder: failed clearing embedded material image node", exc_info=True)
+                    logger.debug("Planetka asset builder: failed clearing surface material image node", exc_info=True)
 
 
 def _load_static_image(image_name):
@@ -3718,12 +3719,12 @@ def _ensure_preview_material(earth_material):
     return preview_material
 
 
-def _is_embedded_material_library_ready():
-    for material_name in MATERIAL_LIBRARY_MATERIALS:
+def _is_surface_material_library_ready():
+    for material_name in SURFACE_MATERIAL_LIBRARY_MATERIALS:
         material = bpy.data.materials.get(material_name)
         if not material or not _has_library_signature(material):
             return False
-    for group_name in MATERIAL_LIBRARY_NODE_GROUPS:
+    for group_name in SURFACE_MATERIAL_LIBRARY_NODE_GROUPS:
         node_group = bpy.data.node_groups.get(group_name)
         if not node_group or not _has_library_signature(node_group):
             return False
@@ -3734,63 +3735,54 @@ def _is_embedded_material_library_ready():
     return True
 
 
-def _load_embedded_material_library():
-    for material_name in MATERIAL_LIBRARY_MATERIALS:
+def _load_surface_material_library():
+    for material_name in SURFACE_MATERIAL_LIBRARY_MATERIALS:
         _remove_material_if_exists(material_name)
-    for group_name in MATERIAL_LIBRARY_NODE_GROUPS:
+    for group_name in SURFACE_MATERIAL_LIBRARY_NODE_GROUPS:
         _remove_node_group_if_exists(group_name)
     for node_group in list(getattr(bpy.data, "node_groups", ())):
         group_name = str(getattr(node_group, "name", ""))
         if group_name.startswith(f"{NIGHTDAY_GROUP_NAME}."):
             _remove_node_group_if_exists(group_name)
 
-    temp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(prefix="planetka_material_lib_", suffix=".blend", delete=False) as handle:
-            handle.write(_get_embedded_material_library_payload())
-            temp_path = handle.name
+    blend_path = _surface_material_library_path()
+    if not os.path.isfile(blend_path):
+        raise RuntimeError(f"Planetka: surface material library is missing: {blend_path}")
+    _append_material_library_from_blend(blend_path)
 
-        _append_material_library_from_blend(temp_path)
-    finally:
-        if temp_path:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    missing_materials = [name for name in MATERIAL_LIBRARY_MATERIALS if bpy.data.materials.get(name) is None]
-    missing_groups = [name for name in MATERIAL_LIBRARY_NODE_GROUPS if bpy.data.node_groups.get(name) is None]
+    missing_materials = [name for name in SURFACE_MATERIAL_LIBRARY_MATERIALS if bpy.data.materials.get(name) is None]
+    missing_groups = [name for name in SURFACE_MATERIAL_LIBRARY_NODE_GROUPS if bpy.data.node_groups.get(name) is None]
     if missing_materials or missing_groups:
         raise RuntimeError(
-            "Planetka: embedded material library failed to load "
+            "Planetka: surface material library failed to load "
             f"(materials missing: {missing_materials}, node groups missing: {missing_groups})"
         )
 
-    for material_name in MATERIAL_LIBRARY_MATERIALS:
+    for material_name in SURFACE_MATERIAL_LIBRARY_MATERIALS:
         material = bpy.data.materials.get(material_name)
         if material:
             material.use_fake_user = True
             _set_library_signature(material)
 
-    for group_name in MATERIAL_LIBRARY_NODE_GROUPS:
+    for group_name in SURFACE_MATERIAL_LIBRARY_NODE_GROUPS:
         node_group = bpy.data.node_groups.get(group_name)
         if node_group:
             node_group.use_fake_user = True
             _set_library_signature(node_group)
 
 
-def _ensure_embedded_material_library(scene=None):
-    if not _is_embedded_material_library_ready():
-        _load_embedded_material_library()
+def _ensure_surface_material_library(scene=None):
+    if not _is_surface_material_library_ready():
+        _load_surface_material_library()
     # Hard reset image-node bindings on every Create Earth asset ensure so
     # stale/missing cached paths from prior sessions cannot trigger GPU texture
     # creation errors before resolve or preview rebinding completes.
-    _sanitize_embedded_assets()
+    _sanitize_surface_material_library_assets()
     _bind_static_images()
 
     earth_material = bpy.data.materials.get(EARTH_MATERIAL_NAME)
     if not earth_material:
-        raise RuntimeError("Planetka: embedded shader materials are missing after load.")
+        raise RuntimeError("Planetka: surface shader materials are missing after load.")
     _normalize_surface_elevation_defaults(earth_material)
     _set_material_displacement_and_bump(earth_material, force=True)
     preview_material = bpy.data.materials.get(PREVIEW_MATERIAL_NAME)
@@ -3816,7 +3808,7 @@ def ensure_planetka_assets(scene=None):
 
     surface_collection = _ensure_collection(root, SURFACE_COLLECTION_NAME)
 
-    preview_material, earth_material = _ensure_embedded_material_library(scene)
+    preview_material, earth_material = _ensure_surface_material_library(scene)
     sunlight_object = _ensure_planetka_sunlight(surface_collection)
 
     return {

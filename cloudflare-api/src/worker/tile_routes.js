@@ -43,7 +43,6 @@ function firstNonEmpty(...values) {
 function isPublicCloudAssetFolder(folder) {
   const normalized = String(folder || "").trim().toLowerCase();
   return normalized === "clouds_global"
-    || normalized === "clouds_local"
     || normalized === "clouds_local_adaptive"
     || normalized === "clouds_local_thumbnails"
     || normalized === "clouds_local_thumbnails_v2"

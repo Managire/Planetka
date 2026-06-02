@@ -2,7 +2,6 @@ import time
 
 
 _HANDLER_RUNTIME_CTX = None
-ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY = "planetka_anim_render_eevee_force_bump"
 ATMOSPHERE_AUTO_SWITCH_ENGINE_KEY = "planetka_atmosphere_auto_switch_engine"
 
 
@@ -144,53 +143,6 @@ def initialize_props_from_imported_planetka(scene, ctx=None):
     deps.sync_idprops_from_props(scene)
 
 
-def _enforce_planetka_earth_surface_displacement_mode(scene, deps):
-    if scene is None:
-        return
-    try:
-        force_eevee_bump = bool(scene.get(ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY, False))
-    except deps.recoverable_exceptions:
-        force_eevee_bump = False
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        force_eevee_bump = False
-    if bool(force_eevee_bump):
-        try:
-            module_name = f"{deps.package_name}.animation_tools" if deps.package_name else "animation_tools"
-            animation_tools = deps.import_module(module_name)
-            enforce_bump_fn = getattr(animation_tools, "_set_earth_surface_materials_bump_only", None)
-            if callable(enforce_bump_fn):
-                enforce_bump_fn()
-            return
-        except deps.recoverable_exceptions:
-            deps.logger.debug(
-                "Planetka: failed enforcing EEVEE bump-only displacement mode in depsgraph runtime",
-                exc_info=True,
-            )
-            return
-        except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
-            deps.logger.debug(
-                "Planetka: failed enforcing EEVEE bump-only displacement mode in depsgraph runtime",
-                exc_info=True,
-            )
-            return
-    try:
-        module_name = f"{deps.package_name}.asset_builder" if deps.package_name else "asset_builder"
-        asset_builder = deps.import_module(module_name)
-        enforce_fn = getattr(asset_builder, "enforce_earth_surface_displacement_and_bump", None)
-        if callable(enforce_fn):
-            enforce_fn(scene)
-    except deps.recoverable_exceptions:
-        deps.logger.debug(
-            "Planetka: failed enforcing Earth surface displacement mode in depsgraph runtime",
-            exc_info=True,
-        )
-    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
-        deps.logger.debug(
-            "Planetka: failed enforcing Earth surface displacement mode in depsgraph runtime",
-            exc_info=True,
-        )
-
-
 def _atmosphere_mode_for_render_engine(scene):
     try:
         engine = str(getattr(getattr(scene, "render", None), "engine", "") or "").strip().upper()
@@ -247,14 +199,6 @@ def _sync_atmosphere_mode_to_render_engine(scene, deps):
     if current_mode == desired_mode:
         return
     try:
-        if deps.get_earth_object() is None:
-            return
-    except deps.recoverable_exceptions:
-        return
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return
-
-    try:
         props.atmosphere_mode = desired_mode
         deps.sync_idprops_from_props(scene, ("atmosphere_mode", "auto_switch_atmosphere"))
     except deps.recoverable_exceptions:
@@ -273,23 +217,6 @@ def sync_atmosphere_mode_to_render_engine(scene=None, ctx=None):
     if target_scene is None:
         return
     _sync_atmosphere_mode_to_render_engine(target_scene, deps)
-
-
-def depsgraph_update_post(_scene, _depsgraph, ctx=None):
-    ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
-
-    scene = _scene
-    if scene is None:
-        scene = _safe_context_scene(deps)
-    if scene is None:
-        return
-
-    _enforce_planetka_earth_surface_displacement_mode(scene, deps)
-    _sync_atmosphere_mode_to_render_engine(scene, deps)
-
-    if deps.is_navigation_user_edit_active(scene):
-        return
 
 
 def load_post(_dummy, ctx=None):

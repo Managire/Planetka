@@ -6,8 +6,6 @@ from bpy.props import PointerProperty
 # Includes data from GeoNames (allCountries) licenced under CC BY 4.0.
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from . import updater as _planetka_updater
-
 from .animation_tools import (
     PLANETKA_OT_AnimationClearCameraKeyframes,
     PLANETKA_OT_AnimationClearPrepared,
@@ -25,8 +23,6 @@ from .animation_tools import (
 from .extension_prefs import PlanetkaExtensionPreferences
 from .operators import (
     PLANETKA_OT_AddEarth,
-    PLANETKA_OT_CheckUpdates,
-    PLANETKA_OT_UpdateNow,
     PLANETKA_OT_DeleteSavedLocation,
     PLANETKA_OT_LoadSavedLocation,
     PLANETKA_OT_NavigationApplyShot,
@@ -39,8 +35,6 @@ from .operators import (
     PLANETKA_OT_SetTextureQuality,
     PLANETKA_OT_ResolvePlanetka,
     PLANETKA_OT_NavigationPreset,
-    PLANETKA_OT_ResetStartupSetupFactory,
-    PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_SaveLocation,
     PLANETKA_OT_SunlightPreset,
     PLANETKA_OT_UseCurrentViewNavigation,
@@ -48,7 +42,6 @@ from .operators import (
 from .properties import PlanetkaAnimationWaypoint, PlanetkaProperties
 from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
-    _planetka_depsgraph_update_post,
     _planetka_load_post,
     _sync_logging_from_scenes,
     mark_render_job_progress,
@@ -121,8 +114,6 @@ classes = (
     PlanetkaExtensionPreferences,
     PlanetkaAnimationWaypoint,
     PlanetkaProperties,
-    PLANETKA_OT_CheckUpdates,
-    PLANETKA_OT_UpdateNow,
     PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_OptimizeSettings,
     PLANETKA_OT_OptimizeSettingsPopup,
@@ -155,8 +146,6 @@ classes = (
     PLANETKA_OT_LoadTextures,
     PLANETKA_OT_SceneHealthCheck,
     PLANETKA_OT_ReportBug,
-    PLANETKA_OT_SaveStartupSetup,
-    PLANETKA_OT_ResetStartupSetupFactory,
     PLANETKA_OT_ToggleUiSection,
     PLANETKA_PT_AnimationStopPanel,
     PLANETKA_PT_NewEarthPanel,
@@ -239,10 +228,7 @@ def _remove_load_post_handler():
 def _remove_depsgraph_post_handler():
     handlers = bpy.app.handlers.depsgraph_update_post
     for handler in list(handlers):
-        if (
-            handler is _planetka_depsgraph_update_post
-            or getattr(handler, "__name__", "") == "_planetka_depsgraph_update_post"
-        ):
+        if getattr(handler, "__name__", "") == "_planetka_depsgraph_update_post":
             handlers.remove(handler)
 
 
@@ -369,7 +355,6 @@ def register():
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()
     bpy.app.handlers.load_post.append(_planetka_load_post)
-    bpy.app.handlers.depsgraph_update_post.append(_planetka_depsgraph_update_post)
     _remove_render_handlers()
     bpy.app.handlers.render_pre.append(_planetka_render_pre)
     bpy.app.handlers.render_post.append(_planetka_render_post)
@@ -380,10 +365,6 @@ def register():
     bpy.app.handlers.render_cancel.append(_planetka_render_cancel)
     _unregister_keymaps()
     _register_keymaps()
-    try:
-        _planetka_updater.kickoff_background_update_check(force=False)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed starting background update check during register", exc_info=True)
     try:
         bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:

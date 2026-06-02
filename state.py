@@ -2,8 +2,6 @@
 
 Core responsibilities:
 - sync Scene <-> Planetka properties
-- react to camera/navigation/sunlight changes
-- schedule resolve triggers
 - coordinate background download jobs and resolve finalization
 """
 
@@ -87,13 +85,13 @@ _NAV_SYNC_ACTIVE_VIEW_ONCE_KEY = "planetka_nav_sync_active_view_once"
 _IDPROP_SYNCING = False
 _LOGGING_SYNCING = False
 _FINAL_ANIMATION_RENDER_ACTIVE = False
+_PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT = 0
 
 _SYNC_IDPROP_MAP = {
     "show_earth_preview": "planetka_show_earth_preview",
     "atmosphere_enabled": "planetka_atmosphere_enabled",
     "atmosphere_mode": "planetka_atmosphere_mode",
     "auto_switch_atmosphere": "planetka_auto_switch_atmosphere",
-    "cloud_view_mode": "planetka_cloud_view_mode",
     "enable_global_clouds": "planetka_enable_global_clouds",
     "enable_local_clouds": "planetka_enable_local_clouds",
     "enable_vdb_clouds": "planetka_enable_vdb_clouds",
@@ -453,6 +451,20 @@ def resume_navigation_camera_control_sync():
 
 def is_navigation_or_camera_sync_suspended():
     return _navigation_runtime.is_navigation_or_camera_sync_suspended(_NAVIGATION_RUNTIME_CTX)
+
+
+def suspend_property_update_side_effects():
+    global _PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT
+    _PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT = int(_PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT) + 1
+
+
+def resume_property_update_side_effects():
+    global _PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT
+    _PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT = max(0, int(_PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT) - 1)
+
+
+def is_property_update_side_effects_suspended():
+    return int(_PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT) > 0
 
 
 def mark_navigation_camera_control_signature(scene=None):
@@ -934,13 +946,6 @@ def _build_handler_runtime_context():
         iter_scenes=_iter_scenes,
         set_planetka_logging=set_planetka_logging,
         sync_idprops_from_props=_sync_idprops_from_props,
-        is_navigation_user_edit_active=_is_navigation_user_edit_active,
-        is_render_job_active=_is_render_job_active,
-        is_animation_playing=_is_animation_playing,
-        get_earth_object=get_earth_object,
-        import_module=importlib.import_module,
-        get_prefs=get_prefs,
-        package_name=__package__ or "",
     )
     state = HandlerRuntimeState(
         render_job_active=_RENDER_JOB_ACTIVE,
@@ -981,11 +986,6 @@ def _sync_logging_from_scenes():
 
 def _initialize_props_from_imported_planetka(scene):
     return _handler_runtime.initialize_props_from_imported_planetka(scene, _HANDLER_RUNTIME_CTX)
-
-
-@persistent
-def _planetka_depsgraph_update_post(_scene, _depsgraph):
-    return _handler_runtime.depsgraph_update_post(_scene, _depsgraph, _HANDLER_RUNTIME_CTX)
 
 
 def sync_atmosphere_mode_to_render_engine(scene=None):

@@ -18,8 +18,7 @@ from .auth import (
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
-from .r2_source import get_download_progress, is_download_active, is_remote_source_configured
-from .updater import get_public_status as get_updater_public_status
+from .r2_source import get_download_progress, is_download_active
 from .animation_tools import (
     ANIMATION_SEGMENT_TAG_KEY,
     ANIMATION_RENDER_STATUS_ICON_KEY,
@@ -51,8 +50,6 @@ EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
 CLOUD_REFRESH_INITIAL_DELAY_SEC = 0.35
 _CLOUD_REFRESH_TIMER_REGISTERED = False
-UPDATER_UI_REDRAW_INTERVAL_SEC = 0.25
-_UPDATER_UI_REDRAW_TIMER_REGISTERED = False
 
 
 def _float_close(value, target, tol=1e-4):
@@ -131,115 +128,6 @@ def _schedule_cloud_refresh(force=False):
         _CLOUD_REFRESH_TIMER_REGISTERED = True
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed scheduling deferred cloud refresh", exc_info=True)
-
-
-def _updater_is_busy(status):
-    phase = str((status or {}).get("phase", "") or "").strip().lower()
-    return bool((status or {}).get("checking", False)) or phase in {
-        "checking_manifest",
-        "downloading",
-        "verifying",
-        "installing",
-    }
-
-
-def _updater_redraw_timer():
-    global _UPDATER_UI_REDRAW_TIMER_REGISTERED
-    try:
-        status = get_updater_public_status()
-        busy = _updater_is_busy(status)
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        logger.debug("Planetka: updater redraw timer failed", exc_info=True)
-        busy = False
-    _tag_view3d_redraw()
-    if busy:
-        return float(UPDATER_UI_REDRAW_INTERVAL_SEC)
-    _UPDATER_UI_REDRAW_TIMER_REGISTERED = False
-    return None
-
-
-def _schedule_updater_ui_redraw():
-    global _UPDATER_UI_REDRAW_TIMER_REGISTERED
-    if _UPDATER_UI_REDRAW_TIMER_REGISTERED:
-        return
-    try:
-        if not _updater_is_busy(get_updater_public_status()):
-            return
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        logger.debug("Planetka: failed reading updater status before scheduling redraw", exc_info=True)
-        return
-    try:
-        bpy.app.timers.register(
-            _updater_redraw_timer,
-            first_interval=float(UPDATER_UI_REDRAW_INTERVAL_SEC),
-        )
-        _UPDATER_UI_REDRAW_TIMER_REGISTERED = True
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed scheduling updater UI redraw", exc_info=True)
-
-
-def _draw_addon_update_controls(layout):
-    try:
-        updater = get_updater_public_status()
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        logger.debug("Planetka: failed reading updater status in settings panel", exc_info=True)
-        updater = {}
-    updater_ready = bool(updater.get("update_ready", False))
-    updater_busy = _updater_is_busy(updater)
-    latest_version = str(updater.get("latest_version") or "").strip()
-    current_version = str(updater.get("current_version") or "").strip()
-    phase = str(updater.get("phase") or "").strip().lower()
-    message = str(updater.get("message") or "").strip()
-    last_error = str(updater.get("last_error") or "").strip()
-    try:
-        downloaded_bytes = int(updater.get("downloaded_bytes", 0) or 0)
-    except (TypeError, ValueError):
-        downloaded_bytes = 0
-    try:
-        total_bytes = int(updater.get("download_total_bytes", 0) or 0)
-    except (TypeError, ValueError):
-        total_bytes = 0
-
-    if updater_busy:
-        _schedule_updater_ui_redraw()
-
-    version_row = layout.row()
-    version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
-    updates_row = layout.row()
-    updates_row.enabled = not updater_busy
-    updates_row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
-    if updater_busy:
-        status_box = layout.box()
-        status_box.label(
-            text=message or f"Updating Planetka{_status_activity_suffix(True)}",
-            icon="TIME",
-        )
-        if total_bytes > 0 and hasattr(status_box, "progress"):
-            factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
-            status_box.progress(
-                factor=factor,
-                type='BAR',
-                text=f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}",
-            )
-        elif phase in {"verifying", "installing"} and hasattr(status_box, "progress"):
-            status_box.progress(
-                factor=1.0,
-                type='BAR',
-                text=message or "Finishing update",
-            )
-        else:
-            status_box.label(text=f"Please wait{_status_activity_suffix(True)}", icon="INFO")
-    elif updater_ready and latest_version:
-        row = layout.row()
-        row.alert = True
-        row.label(text=f"Update available: {latest_version}", icon="ERROR")
-        row.operator("planetka.update_now", text="Update now", icon="IMPORT")
-    elif message:
-        message_box = layout.box()
-        message_box.alert = bool(phase == "error" or last_error)
-        message_box.label(text=message, icon="ERROR" if message_box.alert else "CHECKMARK")
-        if message.lower().startswith("updated to ") or "restart blender" in message.lower():
-            message_box.label(text="Restart Blender to finish the update.", icon="INFO")
 
 
 def _fmt_km(value):
@@ -596,7 +484,7 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     animation_render_running = _is_animation_render_running()
 
     status_token = str(runtime_code or "").upper()
-    suffix = "" if status_token == "DOWNLOADING" else _status_activity_suffix(runtime.get('running', False))
+    suffix = "" if status_token in {"DOWNLOADING", "FINALIZING", "APPLYING"} else _status_activity_suffix(runtime.get('running', False))
     status_label_text = f"{runtime_text}{suffix}"
     status_icon = _status_icon(runtime_code)
     alert = False
@@ -653,7 +541,11 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     elif status_token in {"FINALIZING", "APPLYING"}:
         factor = 1.0
 
-    if total_bytes > 0:
+    if status_token == "APPLYING":
+        progress_text = "Applying Earth Textures"
+    elif status_token == "FINALIZING":
+        progress_text = "Applying Earth Textures"
+    elif total_bytes > 0:
         progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
     elif downloaded_bytes > 0:
         progress_text = f"{_fmt_bytes(downloaded_bytes)} downloaded"
@@ -666,7 +558,7 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     elif status_token == "PREPARING":
         progress_text = "Preparing"
     elif status_token in {"FINALIZING", "APPLYING"}:
-        progress_text = "Finished"
+        progress_text = "Applying Earth Textures"
     elif resolve_failure_message:
         progress_text = "Resolve failed"
     elif inside_earth_warning or low_altitude_warning:
@@ -756,8 +648,10 @@ def _combine_progress_status(status_text, progress_text, runtime_code=""):
         if progress.lower().startswith("downloading"):
             return progress
         return f"Downloading {progress}"
-    if token in {"FINALIZING", "APPLYING"}:
-        return "Applying"
+    if token == "APPLYING":
+        return status or "Applying Earth Textures"
+    if token == "FINALIZING":
+        return status or "Applying Earth Textures"
     if not status:
         return progress or "Ready"
     if not progress or progress == "Ready":
@@ -790,7 +684,10 @@ def _draw_data_control_status_line(layout, scene, runtime, runtime_code, runtime
 
     texture_progress_visible = bool(texture_state.get("active", False)) or str(texture_state.get("error", "") or "").strip()
     vdb_progress_visible = bool(vdb_state.get("active", False)) or str(vdb_state.get("error", "") or "").strip()
-    if surface_download_active:
+    if surface_download_active or (
+        str(state.get("runtime_code", "") or "").upper() == "DOWNLOADING"
+        and int(state.get("total_bytes", 0) or 0) > 0
+    ):
         status_text = _fmt_download_status(
             "Earth Textures",
             state.get("downloaded_bytes", 0),
@@ -1204,49 +1101,6 @@ def _draw_new_earth(layout):
     has_earth = _has_earth()
     create_enabled = _planetka_controls_enabled(not has_earth)
 
-    if scene is not None and prefs is not None and not has_earth:
-        try:
-            status = get_updater_public_status()
-            current_version = str(status.get("current_version", "") or "").strip() or "unknown"
-        except (TypeError, ValueError, AttributeError):
-            current_version = "unknown"
-        try:
-            seen_version = str(getattr(prefs, "create_earth_preflight_seen_version", "") or "").strip()
-        except (TypeError, ValueError, AttributeError):
-            seen_version = ""
-        if seen_version != current_version:
-            source_path = str(getattr(prefs, "texture_base_path", "") or "").strip()
-            source_ready = bool(is_remote_source_configured(source_path))
-            scene_ready = bool(scene is not None and not has_earth)
-            preflight_box = layout.box()
-            preflight_box.label(text="Create Earth Preflight (info only)", icon="INFO")
-            preflight_box.label(
-                text=f"Auth: {'Connected' if connected else 'Not connected'}",
-                icon="CHECKMARK" if connected else "ERROR",
-            )
-            preflight_box.label(
-                text=f"Source: {'Cloud ready' if source_ready else 'Cloud not ready'}",
-                icon="CHECKMARK" if source_ready else "ERROR",
-            )
-            preflight_box.label(
-                text=f"Scene: {'Ready' if scene_ready else 'Not ready'}",
-                icon="CHECKMARK" if scene_ready else "ERROR",
-            )
-            preflight_box.label(
-                text=f"Shown once for addon version {current_version}.",
-                icon="INFO",
-            )
-            try:
-                status_message = str(get_status_message(prefs) or "").strip()
-            except (TypeError, ValueError, AttributeError):
-                status_message = ""
-            if status_message and not connected:
-                preflight_box.label(text=status_message, icon="INFO")
-            try:
-                prefs.create_earth_preflight_seen_version = current_version
-            except (TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed storing Create Earth preflight seen version", exc_info=True)
-
     row = layout.row(align=True)
     row.alert = False
     row.enabled = create_enabled
@@ -1278,6 +1132,7 @@ def _draw_new_earth(layout):
         status_row.label(text=create_status, icon=status_icon)
     elif not has_earth:
         start_row = layout.row()
+        start_row.alignment = 'CENTER'
         start_row.label(text="Start here", icon="TRIA_UP")
 
 
@@ -1482,7 +1337,7 @@ def _draw_navigation(layout, context, controls_enabled=True):
     preset_row_bottom.operator(
         "planetka.navigation_preset",
         text="ISS Orbit",
-        icon="ORIENTATION_GLOBAL",
+        icon="MESH_ICOSPHERE",
     ).preset = "ISS_ORBIT"
     preset_row_bottom.operator(
         "planetka.navigation_preset",
@@ -2076,13 +1931,6 @@ def _draw_clouds(layout, context):
         layout.label(text="Planetka settings unavailable.", icon="ERROR")
         return
 
-    mode_box = layout.box()
-    mode_box.label(text="Cloud Display", icon="FORCE_TURBULENCE")
-    mode_row = mode_box.row(align=True)
-    mode_row.use_property_split = False
-    mode_row.prop_enum(props, "cloud_view_mode", "PREVIEW", text="Preview")
-    mode_row.prop_enum(props, "cloud_view_mode", "FINAL", text="Final Look")
-
     _draw_global_clouds(layout, scene, props)
     _draw_local_clouds(layout, context, props)
     _draw_vdb_clouds(layout, context, props)
@@ -2199,25 +2047,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         if props:
             _draw_general_cloud_summary(layout)
-
-            addon_box = layout.box()
-            addon_box.label(text="Add-on", icon="PREFERENCES")
-            _draw_addon_update_controls(addon_box)
-
-            startup_box = layout.box()
-            startup_box.label(text="Startup Setup", icon="TOOL_SETTINGS")
-            save_row = startup_box.row()
-            save_row.enabled = workflow_enabled
-            save_row.operator(
-                "planetka.save_startup_setup",
-                text="Save Current Setup as Startup Default",
-                icon="FILE_TICK",
-            )
-            startup_box.operator(
-                "planetka.reset_startup_setup_factory",
-                text="Reset Startup Setup",
-                icon="LOOP_BACK",
-            )
 
             diagnostics_box = layout.box()
             diagnostics_box.label(text="Diagnostics", icon="CHECKMARK")
@@ -2518,7 +2347,7 @@ class PLANETKA_PT_CloudsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel
 class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Sunlight"
     bl_idname = "PLANETKA_PT_sunlight"
-    bl_order = 9007
+    bl_order = 9003
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod

@@ -292,7 +292,6 @@ def _cloud_lod_signature(scene):
                 source = str(
                     obj.get("planetka_local_cloud_texture", "")
                     or getattr(obj, "planetka_local_cloud_texture", "")
-                    or obj.get("planetka_local_cloud_texture_path", "")
                     or ""
                 )
             except (RuntimeError, TypeError, ValueError, AttributeError):

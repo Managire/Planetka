@@ -15,8 +15,6 @@ FALLBACK_CLOUD_INSTALL_ID_KEY = "planetka_cloud_install_id"
 FALLBACK_CLOUD_SESSION_ACCESS_TOKEN_KEY = "planetka_cloud_session_access_token"
 FALLBACK_CLOUD_SESSION_REFRESH_TOKEN_KEY = "planetka_cloud_session_refresh_token"
 FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY = "planetka_cloud_session_status_message"
-FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
-FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_preflight_seen_version"
 FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY = "planetka_optimize_remove_default_scene"
 FALLBACK_OPTIMIZE_BACKGROUND_BLACK_KEY = "planetka_optimize_background_black"
 FALLBACK_OPTIMIZE_EEVEE_VOLUME_RESOLUTION_KEY = "planetka_optimize_eevee_volume_resolution"
@@ -63,16 +61,6 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     cloud_session_access_token: StringProperty(name="Cloud Session Access Token", default="", options={'HIDDEN'})
     cloud_session_refresh_token: StringProperty(name="Cloud Session Refresh Token", default="", options={'HIDDEN'})
     cloud_session_status_message: StringProperty(name="Cloud Session Status Message", default="", options={'HIDDEN'})
-    startup_setup_profile_json: StringProperty(
-        name="Startup Setup Profile",
-        default="",
-        options={'HIDDEN'},
-    )
-    create_earth_preflight_seen_version: StringProperty(
-        name="Create Earth Preflight Seen Version",
-        default="",
-        options={'HIDDEN'},
-    )
     optimize_remove_default_scene: BoolProperty(
         name="Remove Default Cube Scene",
         description="Remove Blender's untouched default Cube/Camera/Light scene before Create Earth",
@@ -289,14 +277,6 @@ def get_prefs():
         cloud_session_status_message = property(
             lambda self: self._get_value(FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY, value),
-        )
-        startup_setup_profile_json = property(
-            lambda self: self._get_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, value),
-        )
-        create_earth_preflight_seen_version = property(
-            lambda self: self._get_value(FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY, value),
         )
         optimize_remove_default_scene = property(
             lambda self: self._get_bool(FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY, True),

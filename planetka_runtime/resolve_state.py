@@ -168,7 +168,7 @@ def get_resolve_runtime_status(scene=None, ctx=None):
     }
 
     if in_flight:
-        status.update({"code": "FINALIZING", "text": "Finalizing Resolve", "running": True})
+        status.update({"code": "APPLYING", "text": "Applying Earth Textures", "running": True})
         return status
 
     if thread_running and _is_resolve_download_job(active_job):
@@ -218,7 +218,10 @@ def get_resolve_runtime_status(scene=None, ctx=None):
                     completed_payload = None
 
     if isinstance(completed_payload, dict):
-        status.update({"code": "APPLYING", "text": "Applying Resolve", "running": True})
+        if bool(completed_payload.get("_apply_phase_started", False)):
+            status.update({"code": "APPLYING", "text": "Applying Earth Textures", "running": True})
+        else:
+            status.update({"code": "DOWNLOADING", "text": "Downloading Data", "running": True})
         return status
 
     return status

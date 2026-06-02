@@ -388,6 +388,28 @@ def is_download_active():
         return bool(_ACTIVE_DOWNLOADS > 0 or _CAPTURE_ENABLED)
 
 
+def mark_resolve_download_capture_complete(downloaded_bytes=0, total_bytes=0):
+    """Force public resolve progress to a completed transfer state before apply."""
+    global _CAPTURE_DOWNLOAD_BYTES
+    global _CAPTURE_TOTAL_BYTES
+    global _CAPTURE_PLANNED_TOTAL_BYTES
+    try:
+        downloaded = max(0, int(downloaded_bytes or 0))
+    except (TypeError, ValueError):
+        downloaded = 0
+    try:
+        total = max(0, int(total_bytes or 0))
+    except (TypeError, ValueError):
+        total = 0
+    complete_total = max(downloaded, total)
+    if complete_total <= 0:
+        return
+    with _METRICS_LOCK:
+        _CAPTURE_DOWNLOAD_BYTES = int(complete_total)
+        _CAPTURE_TOTAL_BYTES = max(int(_CAPTURE_TOTAL_BYTES), int(complete_total))
+        _CAPTURE_PLANNED_TOTAL_BYTES = max(int(_CAPTURE_PLANNED_TOTAL_BYTES), int(complete_total))
+
+
 def verify_remote_stream_health(force=False):
     global _STREAM_HEALTH_OK
     global _STREAM_HEALTH_CHECKED_AT

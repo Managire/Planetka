@@ -264,6 +264,17 @@ def update_show_earth_preview(self, context):
     state_module = _get_state_module()
     if bool(getattr(state_module, "_IDPROP_SYNCING", False)):
         return
+    if callable(getattr(state_module, "is_property_update_side_effects_suspended", None)):
+        try:
+            if bool(state_module.is_property_update_side_effects_suspended()):
+                scene = getattr(context, "scene", None) if context else None
+                if scene:
+                    state_module._sync_idprops_from_props(scene, ("show_earth_preview",))
+                return
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed checking property update suppression", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed checking property update suppression", exc_info=True)
     scene = getattr(context, "scene", None) if context else None
     if scene:
         state_module._sync_idprops_from_props(scene, ("show_earth_preview",))

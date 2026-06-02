@@ -145,7 +145,7 @@ def _test_quality_operator_is_streaming_only() -> dict:
         "Texture quality property update must be a pure switch with no resolve side effects.",
     )
     clouds_text = _source_text("clouds_local.py")
-    preview_start = clouds_text.find("def _apply_universal_cloud_preview_state")
+    preview_start = clouds_text.find("def _apply_cloud_final_look_state")
     preview_end = clouds_text.find("def ", preview_start + 1)
     preview_text = clouds_text[preview_start:preview_end if preview_end > preview_start else len(clouds_text)]
     _assert(

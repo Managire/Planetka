@@ -95,14 +95,6 @@ def _apply_global_cloud_texture(material, scene=None):
         logger.debug("Planetka clouds: failed assigning merged global cloud texture", exc_info=True)
 
 
-def _global_cloud_final_look_enabled(scene=None):
-    props = getattr(scene, "planetka", None) if scene else None
-    try:
-        return str(getattr(props, "cloud_view_mode", "PREVIEW") or "PREVIEW").strip().upper() == "FINAL"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return False
-
-
 def _ensure_global_cloud_subdivision_modifier(obj):
     if obj is None:
         return None
@@ -130,9 +122,7 @@ def _ensure_global_cloud_subdivision_modifier(obj):
 
 def apply_global_cloud_subdivision_viewport_state(scene=None, final_look=None):
     scene = scene or getattr(bpy.context, "scene", None)
-    if final_look is None:
-        final_look = _global_cloud_final_look_enabled(scene=scene)
-    final_look = bool(final_look)
+    final_look = True
     changed = 0
     for obj in tuple(bpy.data.objects):
         if not _is_global_cloud_object(obj):

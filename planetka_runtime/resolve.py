@@ -1022,6 +1022,15 @@ def _ctx_resolve_download_worker(ctx, job):
         capture = result.get("download_capture", {}) or {}
         downloaded_bytes = int(capture.get("downloaded_bytes", 0) or 0) if isinstance(capture, dict) else 0
         total_bytes = int(capture.get("total_bytes", 0) or 0) if isinstance(capture, dict) else 0
+        try:
+            r2_source = deps.get_r2_source()
+            mark_complete = getattr(r2_source, "mark_resolve_download_capture_complete", None)
+            if callable(mark_complete):
+                mark_complete(downloaded_bytes=downloaded_bytes, total_bytes=total_bytes)
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed marking resolve download progress complete", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: failed marking resolve download progress complete", exc_info=True)
         deps.resolve_trace(
             "Download finished "
             f"(request_id={deps.job_field(job, 'request_id')}, cancelled={cancelled}, downloaded={downloaded_bytes}, total={total_bytes})"
@@ -1120,6 +1129,18 @@ def _ctx_resolve_pump_timer(ctx):
                     deps.resolve_trace(
                         f"Pump received completed download (request_id={completed_request_id}, age={completed_age:.2f}s)"
                     )
+                    if not bool(completed.get("_download_complete_displayed", False)):
+                        completed["_download_complete_displayed"] = True
+                        completed["_download_complete_seen_at"] = float(now)
+                        deps.tag_view3d_redraw()
+                        state.download_timer_running = True
+                        return max(float(settings.download_pump_interval_sec), 0.2)
+                    if not bool(completed.get("_apply_phase_started", False)):
+                        completed["_apply_phase_started"] = True
+                        completed["_apply_phase_seen_at"] = float(now)
+                        deps.tag_view3d_redraw()
+                        state.download_timer_running = True
+                        return max(float(settings.download_pump_interval_sec), 0.05)
                     consume_completed = False
                     try:
                         consume_completed = bool(_ctx_handle_resolve_download_complete(ctx, completed))

@@ -21,13 +21,6 @@ class HandlerRuntimeDeps:
     iter_scenes: Any
     set_planetka_logging: Any
     sync_idprops_from_props: Any
-    is_navigation_user_edit_active: Any
-    is_render_job_active: Any
-    is_animation_playing: Any
-    get_earth_object: Any
-    import_module: Any
-    get_prefs: Any
-    package_name: str
 
 
 @dataclass(slots=True)

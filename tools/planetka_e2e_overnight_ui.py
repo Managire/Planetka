@@ -27,7 +27,6 @@ It covers:
 
 Intentionally skipped from automation because they have external side effects:
 - anonymous session bootstrap
-- update_now (mutates installed addon)
 - report_bug (sends support payload / opens mail)
 """
 
@@ -132,7 +131,6 @@ def _tile_block_nav(x0, y0, width, height, *, altitude_km, azimuth_deg=28.0, til
     }
 
 EXTERNAL_SKIPS = {
-    "planetka.update_now": "Mutates installed addon",
     "planetka.report_bug": "Sends support payload / mail draft",
 }
 
@@ -639,44 +637,6 @@ class OvernightRunner:
             self.report["notes"].append(f"Surface grading reset validated for {section}: {socket_name}")
             _ = original, current
 
-    def _run_startup_profile_flow(self):
-        expected = {
-            "nav_altitude_km": 234.0,
-            "nav_azimuth_deg": 57.0,
-            "nav_tilt_deg": 39.0,
-            "sunlight_longitude_deg": 77.0,
-            "sunlight_strength": 17.0,
-            "sunlight_seasonal_tilt_deg": 12.0,
-            "earth_radius_bu": 3.5,
-            "texture_quality_mode": "PREVIEW",
-            "show_earth_preview": False,
-            "anim_camera_preset": "ZOOM",
-        }
-        set_navigation(self.props, self.state, nav_altitude_km=expected["nav_altitude_km"], nav_azimuth_deg=expected["nav_azimuth_deg"], nav_tilt_deg=expected["nav_tilt_deg"], nav_roll_deg=0.0)
-        self.props.sunlight_longitude_deg = expected["sunlight_longitude_deg"]
-        self.props.sunlight_strength = expected["sunlight_strength"]
-        self.props.sunlight_seasonal_tilt_deg = expected["sunlight_seasonal_tilt_deg"]
-        self.props.earth_radius_bu = expected["earth_radius_bu"]
-        self.props.texture_quality_mode = expected["texture_quality_mode"]
-        self.props.show_earth_preview = expected["show_earth_preview"]
-        self.props.anim_camera_preset = expected["anim_camera_preset"]
-        self._call_operator("save_startup_setup")
-
-        purge_planetka_data()
-        ensure_camera(self.scene, name="Planetka Overnight Camera")
-        # Deliberately clobber props before Create Earth to confirm saved setup is restored.
-        self.props.nav_altitude_km = 50.0
-        self.props.texture_quality_mode = "PREVIEW"
-        self.props.anim_camera_preset = "NONE"
-        create_earth_and_wait(self.state, self.scene)
-        restored = {
-            key: getattr(self.props, key)
-            for key in expected.keys()
-            if hasattr(self.props, key)
-        }
-        self.report["notes"].append(f"Startup profile restored values: {restored}")
-        self._call_operator("reset_startup_setup_factory")
-
     def _run_inside_earth_warning_case(self):
         earth = self.extension_prefs.get_earth_object()
         camera = getattr(self.scene, "camera", None)
@@ -1085,8 +1045,6 @@ class OvernightRunner:
         create_earth_and_wait(self.state, self.scene)
         if scene_health_operator_available():
             self._call_operator("scene_health_check")
-        if hasattr(bpy.ops.planetka, "check_updates"):
-            self._call_operator("check_updates", force=False)
         if hasattr(bpy.ops.planetka, "animation_render_info"):
             self._call_operator("animation_render_info")
         self.report["notes"].append(f"Initial scene health: {self._scene_health_summary()}")
@@ -1188,7 +1146,6 @@ class OvernightRunner:
             root.rotation_euler = (0.0, 0.0, math.radians(15.0))
         self._call_operator("reset_earth_transform")
         self._run_surface_grading_reset_flow()
-        self._run_startup_profile_flow()
         self._restore_visual_phase_defaults()
         self._search_and_frame(
             "Bratislava",

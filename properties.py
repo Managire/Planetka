@@ -18,6 +18,7 @@ from .extension_prefs import get_earth_object, get_prefs, read_saved_locations
 from .geonames_db import get_cached_place_by_display, get_place_by_display, search_places
 from .state import (
     is_navigation_or_camera_sync_suspended,
+    is_property_update_side_effects_suspended,
     request_next_navigation_apply_behavior,
     resume_navigation_camera_control_sync,
     resume_navigation_shot_updates,
@@ -36,7 +37,6 @@ try:
     from .clouds_local import (
         _local_cloud_texture_items,
         _vdb_cloud_preset_items,
-        update_cloud_view_mode,
         update_enable_local_clouds,
     )
     from .clouds_global import update_enable_global_clouds
@@ -66,20 +66,10 @@ except (ImportError, ModuleNotFoundError):
         return None
 
 
-    def update_cloud_view_mode(_self=None, _context=None):
-        return None
-
-
 _ATMOSPHERE_MODE_ITEMS = (
     ("VOLUMETRIC", "Cycles Optimized", "Use the volumetric Planetka atmosphere object optimized for Cycles"),
     ("EEVEE", "EEVEE Optimized", "Use the lightweight EEVEE supplement atmosphere object"),
 )
-
-_CLOUD_VIEW_MODE_ITEMS = (
-    ("PREVIEW", "Preview", "Disable viewport subdivision for Global Clouds and Texture-Based Clouds"),
-    ("FINAL", "Final Look", "Enable viewport subdivision for Global Clouds and Texture-Based Clouds"),
-)
-
 
 NAV_DEFAULT_ALTITUDE_KM = 400.0
 NAV_DEFAULT_AZIMUTH_DEG = 0.0
@@ -158,6 +148,8 @@ def _set_earth_radius_bu(self, value):
         return
 
     self["earth_radius_bu"] = float(target)
+    if is_property_update_side_effects_suspended():
+        return
     module_name = f"{__package__}.operators" if __package__ else "operators"
     try:
         operators = importlib.import_module(module_name)
@@ -604,17 +596,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=False,
         description="Show or hide global cloud coverage in the viewport and render",
         update=update_enable_global_clouds,
-    )
-
-    cloud_view_mode: EnumProperty(
-        name="Clouds View",
-        description=(
-            "Choose viewport cloud display detail. Preview disables viewport subdivision for Global Clouds "
-            "and Texture-Based Clouds; Final Look enables it. VDB Clouds are unchanged."
-        ),
-        items=_CLOUD_VIEW_MODE_ITEMS,
-        default="PREVIEW",
-        update=update_cloud_view_mode,
     )
 
     enable_local_clouds: BoolProperty(

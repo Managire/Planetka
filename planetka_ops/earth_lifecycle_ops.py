@@ -1,4 +1,7 @@
 import bpy
+import time
+
+from ..extension_prefs import get_earth_object, get_prefs
 
 CREATE_EARTH_STATUS_KEY = "planetka_create_earth_status"
 CREATE_EARTH_STATUS_ACTIVE_KEY = "planetka_create_earth_status_active"
@@ -27,8 +30,6 @@ def add_earth_execute(operator, context, deps):
     _snapshot_view_selection = deps["_snapshot_view_selection"]
     _restore_view_selection = deps["_restore_view_selection"]
     _is_planetka_create_camera = deps["_is_planetka_create_camera"]
-    get_prefs = deps["get_prefs"]
-    kickoff_background_update_check = deps["kickoff_background_update_check"]
     _validate_create_earth_texture_source = deps["_validate_create_earth_texture_source"]
     is_remote_source_configured = deps["is_remote_source_configured"]
     _require_planetka_cloud_session = deps["_require_planetka_cloud_session"]
@@ -46,7 +47,6 @@ def add_earth_execute(operator, context, deps):
     _ensure_planetka_create_camera = deps["_ensure_planetka_create_camera"]
     _position_planetka_create_camera = deps["_position_planetka_create_camera"]
     _apply_create_earth_clipping_defaults = deps["_apply_create_earth_clipping_defaults"]
-    get_earth_object = deps["get_earth_object"]
     ensure_preview_object = deps["ensure_preview_object"]
     _earth_graph_rebind = deps["_earth_graph_rebind"]
     _hide_shot_anchor_in_viewport = deps["_hide_shot_anchor_in_viewport"]
@@ -82,6 +82,13 @@ def add_earth_execute(operator, context, deps):
         except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
             pass
 
+    def _log_phase_timing(label, started_at):
+        try:
+            elapsed_ms = (time.perf_counter() - float(started_at)) * 1000.0
+            logger.info("Planetka Create Earth timing: %s %.1f ms", str(label), elapsed_ms)
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+            pass
+
     selected_names_before, active_name_before = _snapshot_view_selection(context)
     preexisting_active_camera = getattr(scene, "camera", None)
     preexisting_cameras = [
@@ -107,11 +114,7 @@ def add_earth_execute(operator, context, deps):
             code=ErrorCode.RESOLVE_PREFS_MISSING,
             logger=logger,
         ))
-    try:
-        _set_create_status("Checking Planetka Cloud connection...")
-        kickoff_background_update_check(force=True)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: updater check kickoff failed", exc_info=True)
+    _set_create_status("Checking Planetka Cloud connection...")
     _set_create_status("Validating Planetka data source...")
     normalized, path_issue = _validate_create_earth_texture_source(getattr(prefs, "texture_base_path", ""))
     if path_issue:
@@ -181,10 +184,12 @@ def add_earth_execute(operator, context, deps):
         ))
 
     try:
+        phase_start = time.perf_counter()
         _set_create_status("Applying startup defaults...")
         _apply_startup_setup_for_create_earth(scene, props)
+        _log_phase_timing("startup defaults", phase_start)
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed applying startup setup profile", exc_info=True)
+        logger.debug("Planetka: failed applying Create Earth defaults", exc_info=True)
 
     try:
         _set_create_status("Creating atmosphere...")
@@ -257,8 +262,10 @@ def add_earth_execute(operator, context, deps):
     final_surface = get_earth_object() or new_obj
     if final_surface and bool(getattr(props, "show_earth_preview", False)):
         try:
+            phase_start = time.perf_counter()
             _set_create_status("Creating Earth preview object...")
             ensure_preview_object(final_surface)
+            _log_phase_timing("Earth preview object", phase_start)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed creating preview object", exc_info=True)
             operator.report({'WARNING'}, "Planetka preview object refresh failed.")
@@ -266,10 +273,6 @@ def add_earth_execute(operator, context, deps):
             logger.debug("Planetka: failed creating preview object", exc_info=True)
             operator.report({'WARNING'}, "Planetka preview object refresh failed.")
 
-    try:
-        _apply_startup_setup_for_create_earth(scene, props)
-    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: post-resolve startup setup re-apply failed", exc_info=True)
     try:
         props.texture_quality_mode = "PREVIEW"
         _sync_idprops_from_props(scene, ("texture_quality_mode",))

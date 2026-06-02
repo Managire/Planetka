@@ -1,14 +1,9 @@
-import json
 import textwrap
 import time
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty
 
-from .planetka_ops.update_ops import (
-    PLANETKA_OT_CheckUpdates,
-    PLANETKA_OT_UpdateNow,
-)
 from .planetka_ops.location_ops import (
     PLANETKA_OT_DeleteSavedLocation,
     PLANETKA_OT_LoadSavedLocation,
@@ -17,15 +12,10 @@ from .planetka_ops.location_ops import (
 from .planetka_ops.startup_profile_ops import (
     _SURFACE_GRADING_SECTION_SOCKET_NAMES,
     _apply_startup_setup_for_create_earth,
-    _apply_startup_setup_profile,
     _apply_surface_grading_values,
-    _build_factory_startup_setup_profile,
     _iter_surface_grading_input_sockets,
     _iter_surface_grading_nodes,
     _normalize_startup_texture_quality_mode,
-    _serialize_current_startup_setup_profile,
-    _serialize_surface_grading_values,
-    _store_startup_setup_profile,
     _surface_grading_factory_values,
 )
 from .planetka_ops.earth_lifecycle_helpers import (
@@ -67,7 +57,6 @@ from .asset_builder import (
 from .clouds_global import ensure_global_cloud_layer
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import (
-    get_earth_object,
     get_prefs,
     read_saved_locations,
     write_saved_locations,
@@ -142,8 +131,6 @@ from .state import (
     suspend_navigation_shot_updates,
     warm_base_sphere_mesh_cache,
 )
-from .updater import kickoff_background_update_check
-
 _RECOVERABLE_LOG_COUNTS = {}
 _LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 
@@ -155,13 +142,6 @@ def _log_recoverable_once(code, message):
     elif count == 3:
         logger.debug("[%s] %s (further occurrences suppressed)", code, message)
     _RECOVERABLE_LOG_COUNTS[code] = count + 1
-
-
-def _persist_user_preferences():
-    if bool(getattr(bpy.app, "background", False)):
-        return False
-    # Planetka must not write Blender's global user preferences automatically.
-    return False
 
 
 def _cancel_if_animation_render_active(operator, action_label="This action"):
@@ -355,82 +335,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         if _cancel_if_animation_render_active(self, "Create Earth"):
             return {'CANCELLED'}
         return _earth_lifecycle_ops.add_earth_execute(self, context, globals())
-
-
-class PLANETKA_OT_SaveStartupSetup(bpy.types.Operator):
-    bl_idname = "planetka.save_startup_setup"
-    bl_label = "Save Current Setup as Startup Default"
-    bl_description = (
-        "Save current Planetka setup (Location, Sunlight, Earth Transform, Earth Grading, "
-        "Animation, and Settings) and reuse it for Create Earth in new Blender files"
-    )
-
-    def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Save startup setup"):
-            return {'CANCELLED'}
-        scene = require_scene(self, context, logger=logger)
-        if scene is None:
-            return {'CANCELLED'}
-        props = require_planetka_props(self, context, logger=logger)
-        if props is None:
-            return {'CANCELLED'}
-        if get_earth_object() is None:
-            return fail(self, "Create Earth first, then save startup setup defaults.", logger=logger)
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-                logger=logger,
-            )
-
-        profile = _serialize_current_startup_setup_profile(scene, props)
-        if not _store_startup_setup_profile(prefs, profile):
-            return fail(self, "Failed to save startup setup defaults.", logger=logger)
-        if not _persist_user_preferences():
-            self.report({'WARNING'}, "Startup setup saved for this session only. Use Blender Save Preferences to persist it.")
-        else:
-            self.report({'INFO'}, "Startup setup saved. New Create Earth actions will reuse this setup.")
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_ResetStartupSetupFactory(bpy.types.Operator):
-    bl_idname = "planetka.reset_startup_setup_factory"
-    bl_label = "Reset Startup Setup"
-    bl_description = (
-        "Clear custom startup setup and restore Planetka factory startup values "
-        "(Location, Sunlight, Earth Transform, Earth Grading, Animation, and Settings)"
-    )
-
-    def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Reset startup setup"):
-            return {'CANCELLED'}
-        scene = require_scene(self, context, logger=logger)
-        if scene is None:
-            return {'CANCELLED'}
-        props = require_planetka_props(self, context, logger=logger)
-        if props is None:
-            return {'CANCELLED'}
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-                logger=logger,
-            )
-
-        if not _store_startup_setup_profile(prefs, None):
-            return fail(self, "Failed to clear custom startup setup.", logger=logger)
-        if not _persist_user_preferences():
-            self.report({'WARNING'}, "Startup setup reset for this session only. Use Blender Save Preferences to persist it.")
-
-        factory_profile = _build_factory_startup_setup_profile(scene, props)
-        _apply_startup_setup_profile(scene, props, factory_profile, apply_navigation_shot=False)
-        if _persist_user_preferences():
-            self.report({'INFO'}, "Startup setup reset to factory defaults.")
-        return {'FINISHED'}
 
 
 class PLANETKA_OT_NavigationApplyShot(bpy.types.Operator):

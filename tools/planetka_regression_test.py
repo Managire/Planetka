@@ -481,64 +481,31 @@ def main():
         _assert(skipped is False, "Silent navigation apply should return False when Earth is missing.")
         _assert(not operator_called["value"], "Silent navigation apply should not invoke the operator when Earth is missing.")
 
-        _log("Scenario 9: saved startup profile restores cleanly on Create Earth")
+        _log("Scenario 9: Create Earth uses factory startup defaults")
         # Scenario 7 intentionally switches to an S2-only source to validate fallback behavior.
-        # Restore full local source here so startup-profile regression is isolated from that setup.
+        # Restore full local source here so Create Earth defaults are isolated from that setup.
         prefs.texture_base_path = full_source
-        expected = {
-            "nav_altitude_km": 234.0,
-            "nav_azimuth_deg": 57.0,
-            "nav_tilt_deg": 39.0,
-            "sunlight_longitude_deg": 77.0,
-            "sunlight_strength": 17.0,
-            "sunlight_seasonal_tilt_deg": 12.0,
-            "earth_radius_bu": 3.5,
-            "texture_quality_mode": "FULL",
-            "show_earth_preview": False,
-            "anim_camera_preset": "ZOOM",
-        }
-        props.nav_altitude_km = expected["nav_altitude_km"]
-        props.nav_azimuth_deg = expected["nav_azimuth_deg"]
-        props.nav_tilt_deg = expected["nav_tilt_deg"]
-        props.nav_roll_deg = 0.0
-        props.sunlight_longitude_deg = expected["sunlight_longitude_deg"]
-        props.sunlight_strength = expected["sunlight_strength"]
-        props.sunlight_seasonal_tilt_deg = expected["sunlight_seasonal_tilt_deg"]
-        props.earth_radius_bu = expected["earth_radius_bu"]
-        props.texture_quality_mode = expected["texture_quality_mode"]
-        props.show_earth_preview = expected["show_earth_preview"]
-        props.anim_camera_preset = expected["anim_camera_preset"]
-        result = bpy.ops.planetka.save_startup_setup()
-        _assert("FINISHED" in result, f"Save Startup Setup failed with result: {result}")
-
         _purge_existing_planetka_data()
         _ensure_active_camera(scene)
         props = getattr(scene, "planetka", None)
         _assert(props is not None, "Planetka scene properties disappeared after purge.")
-        props.nav_altitude_km = 50.0
-        props.texture_quality_mode = "PREVIEW"
-        props.anim_camera_preset = "NONE"
-
         result = bpy.ops.planetka.add_earth()
         _assert(
             ("FINISHED" in result) or ("CANCELLED" in result),
-            f"Create Earth with saved startup setup returned unexpected result: {result}",
+            f"Create Earth with factory startup defaults returned unexpected result: {result}",
         )
         _drain_queued_resolve(state, scene)
         if "CANCELLED" in result:
-            # Keep this scenario scoped to startup-profile restoration. Resolve cancellation here is
+            # Keep this scenario scoped to startup defaults. Resolve cancellation here is
             # covered by dedicated resolve/runtime regression tests.
-            _log("Scenario 9: Create Earth resolve cancelled; continuing startup profile checks.")
-        _assert_close(float(getattr(props, "nav_altitude_km", 0.0)), expected["nav_altitude_km"], 1e-4, "Restored startup altitude")
-        _assert_close(float(getattr(props, "nav_azimuth_deg", 0.0)), expected["nav_azimuth_deg"], 1e-4, "Restored startup azimuth")
-        _assert_close(float(getattr(props, "nav_tilt_deg", 0.0)), expected["nav_tilt_deg"], 1e-4, "Restored startup tilt")
-        _assert_close(float(getattr(props, "sunlight_longitude_deg", 0.0)), expected["sunlight_longitude_deg"], 1e-4, "Restored startup sunlight longitude")
-        _assert_close(float(getattr(props, "sunlight_strength", 0.0)), expected["sunlight_strength"], 1e-4, "Restored startup sunlight strength")
-        _assert_close(float(getattr(props, "earth_radius_bu", 0.0)), expected["earth_radius_bu"], 1e-4, "Restored startup Earth radius")
-        _assert(str(getattr(props, "texture_quality_mode", "")) == "PREVIEW", "Create Earth should still force Preview texture quality after startup restore.")
+            _log("Scenario 9: Create Earth resolve cancelled; continuing startup default checks.")
+        _assert_close(float(getattr(props, "nav_altitude_km", 0.0)), 6000.0, 1e-4, "Factory startup altitude")
+        _assert_close(float(getattr(props, "nav_azimuth_deg", 0.0)), 0.0, 1e-4, "Factory startup azimuth")
+        _assert_close(float(getattr(props, "nav_tilt_deg", 0.0)), 25.0, 1e-4, "Factory startup tilt")
+        _assert_close(float(getattr(props, "sunlight_strength", 0.0)), 10.0, 1e-4, "Factory startup sunlight strength")
+        _assert_close(float(getattr(props, "earth_radius_bu", 0.0)), 2.0, 1e-4, "Factory startup Earth radius")
+        _assert(str(getattr(props, "texture_quality_mode", "")) == "PREVIEW", "Create Earth should use Preview texture quality.")
         _assert(str(getattr(props, "anim_camera_preset", "")) == "NONE", "Create Earth should still force animation preset back to NONE.")
-        result = bpy.ops.planetka.reset_startup_setup_factory()
-        _assert("FINISHED" in result, f"Reset Startup Setup failed with result: {result}")
 
         _log("PASS: regression checks passed.")
     except SystemExit:
