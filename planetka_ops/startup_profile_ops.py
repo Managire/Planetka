@@ -1,6 +1,11 @@
 import bpy
 
-from ..asset_builder import EARTH_MATERIAL_NAME, PLANETKA_ROOT_OBJECT_NAME, SURFACE_GRADING_GROUP_NAME
+from ..asset_builder import (
+    EARTH_MATERIAL_NAME,
+    PLANETKA_ROOT_OBJECT_NAME,
+    PREVIEW_MATERIAL_NAME,
+    SURFACE_GRADING_GROUP_NAME,
+)
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_earth_object
 from ..state import (
@@ -187,19 +192,24 @@ def _normalize_startup_texture_quality_mode(value):
 
 
 def _iter_surface_grading_nodes():
-    material = bpy.data.materials.get(str(EARTH_MATERIAL_NAME or "Planetka Earth Material"))
-    if material is None or getattr(material, "node_tree", None) is None:
-        return ()
-    nodes = getattr(material.node_tree, "nodes", None)
-    if nodes is None:
-        return ()
+    material_names = (
+        str(EARTH_MATERIAL_NAME or "Planetka Earth Material"),
+        str(PREVIEW_MATERIAL_NAME or "Planetka Preview Material"),
+    )
     out = []
-    for node in nodes:
-        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+    for material_name in material_names:
+        material = bpy.data.materials.get(material_name)
+        if material is None or getattr(material, "node_tree", None) is None:
             continue
-        node_group = getattr(node, "node_tree", None)
-        if str(getattr(node_group, "name", "")) == str(SURFACE_GRADING_GROUP_NAME or "Planetka Surface Grading Group"):
-            out.append(node)
+        nodes = getattr(material.node_tree, "nodes", None)
+        if nodes is None:
+            continue
+        for node in nodes:
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                continue
+            node_group = getattr(node, "node_tree", None)
+            if str(getattr(node_group, "name", "")) == str(SURFACE_GRADING_GROUP_NAME or "Planetka Surface Grading Group"):
+                out.append(node)
     return tuple(out)
 
 

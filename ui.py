@@ -1373,6 +1373,65 @@ def _iter_surface_grading_nodes():
     return nodes
 
 
+def _find_surface_grading_node_for_material(material_name, group_name):
+    material = bpy.data.materials.get(str(material_name or ""))
+    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    if node_tree is None:
+        return None
+    for node in getattr(node_tree, "nodes", ()):
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+            continue
+        node_group = getattr(node, "node_tree", None)
+        if str(getattr(node_group, "name", "")) == str(group_name or ""):
+            return node
+    return None
+
+
+def _socket_value_tuple(value):
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    try:
+        return tuple(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _sync_preview_surface_grading_from_earth():
+    try:
+        from .asset_builder import EARTH_MATERIAL_NAME, PREVIEW_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME
+    except (ImportError, ModuleNotFoundError):
+        logger.debug("Planetka: failed loading surface grading identifiers", exc_info=True)
+        return
+
+    earth_node = _find_surface_grading_node_for_material(EARTH_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME)
+    preview_node = _find_surface_grading_node_for_material(PREVIEW_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME)
+    if earth_node is None or preview_node is None:
+        return
+
+    preview_inputs = getattr(preview_node, "inputs", None)
+    if preview_inputs is None:
+        return
+
+    for earth_socket in _iter_surface_grading_input_sockets(earth_node):
+        socket_name = str(getattr(earth_socket, "name", "") or "").strip()
+        if not socket_name:
+            continue
+        try:
+            preview_socket = preview_inputs.get(socket_name)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            preview_socket = None
+        if preview_socket is None or bool(getattr(preview_socket, "is_linked", False)) or not hasattr(preview_socket, "default_value"):
+            continue
+        try:
+            earth_value = _socket_value_tuple(getattr(earth_socket, "default_value", None))
+            preview_value = _socket_value_tuple(getattr(preview_socket, "default_value", None))
+            if preview_value == earth_value:
+                continue
+            preview_socket.default_value = earth_value
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed syncing preview surface grading socket '%s'", socket_name, exc_info=True)
+
+
 def _iter_surface_grading_input_sockets(node):
     sockets = []
     for socket in getattr(node, "inputs", ()):
@@ -1468,6 +1527,7 @@ def _draw_surface_grading(layout):
     layout.use_property_split = True
     layout.use_property_decorate = False
 
+    _sync_preview_surface_grading_from_earth()
     nodes = _iter_surface_grading_nodes()
     if not nodes:
         layout.label(text="Earth Surface Grading node group not found.", icon="INFO")
