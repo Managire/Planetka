@@ -133,6 +133,21 @@ from .state import (
 )
 _RECOVERABLE_LOG_COUNTS = {}
 _LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
+_SURFACE_GRADING_SOCKET_TO_PROP = {
+    "surface brightness": "surface_brightness",
+    "surface saturation": "surface_saturation",
+    "surface contrast": "surface_contrast",
+    "roughness": "surface_roughness",
+    "ior": "surface_ior",
+    "hue": "surface_water_hue",
+    "saturation": "surface_water_saturation",
+    "brightness": "surface_water_brightness",
+    "coefficient": "surface_elevation_coefficient",
+    "water texture strength": "surface_water_texture_strength",
+    "intensity": "surface_night_intensity",
+    "color temperature": "surface_night_color_temperature",
+    "night terminator shift": "surface_night_terminator_shift",
+}
 
 
 def _log_recoverable_once(code, message):
@@ -415,7 +430,8 @@ class PLANETKA_OT_ResetSurfaceGradingSection(bpy.types.Operator):
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Surface grading reset"):
             return {'CANCELLED'}
-        _ = context
+        scene = getattr(context, "scene", None)
+        props = getattr(scene, "planetka", None) if scene is not None else None
         nodes = tuple(_iter_surface_grading_nodes())
         if not nodes:
             return fail(
@@ -458,6 +474,9 @@ class PLANETKA_OT_ResetSurfaceGradingSection(bpy.types.Operator):
                         socket.default_value = tuple(target_value)
                     else:
                         socket.default_value = target_value
+                    prop_name = _SURFACE_GRADING_SOCKET_TO_PROP.get(socket_name, "")
+                    if props is not None and prop_name and hasattr(props, prop_name):
+                        setattr(props, prop_name, target_value)
                     reset_count += 1
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug(

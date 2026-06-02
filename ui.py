@@ -1345,107 +1345,6 @@ def _draw_navigation(layout, context, controls_enabled=True):
         icon="WORLD_DATA",
     ).preset = "HIGH_ORBIT"
 
-def _iter_surface_grading_nodes():
-    material_name = "Planetka Earth Material"
-    group_name = "Planetka Surface Grading Group"
-    try:
-        from .asset_builder import EARTH_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME
-
-        material_name = str(EARTH_MATERIAL_NAME or material_name)
-        group_name = str(SURFACE_GRADING_GROUP_NAME or group_name)
-    except (ImportError, ModuleNotFoundError):
-        logger.debug("Planetka: failed loading surface grading identifiers", exc_info=True)
-
-    material = bpy.data.materials.get(material_name)
-    if material is None or getattr(material, "node_tree", None) is None:
-        return []
-    node_tree = getattr(material, "node_tree", None)
-    if node_tree is None:
-        return []
-
-    nodes = []
-    for node in getattr(node_tree, "nodes", ()):
-        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
-            continue
-        node_group = getattr(node, "node_tree", None)
-        if str(getattr(node_group, "name", "")) == group_name:
-            nodes.append(node)
-    return nodes
-
-
-def _find_surface_grading_node_for_material(material_name, group_name):
-    material = bpy.data.materials.get(str(material_name or ""))
-    node_tree = getattr(material, "node_tree", None) if material is not None else None
-    if node_tree is None:
-        return None
-    for node in getattr(node_tree, "nodes", ()):
-        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
-            continue
-        node_group = getattr(node, "node_tree", None)
-        if str(getattr(node_group, "name", "")) == str(group_name or ""):
-            return node
-    return None
-
-
-def _socket_value_tuple(value):
-    if isinstance(value, (list, tuple)):
-        return tuple(value)
-    try:
-        return tuple(value)
-    except (TypeError, ValueError):
-        return value
-
-
-def _sync_preview_surface_grading_from_earth():
-    try:
-        from .asset_builder import EARTH_MATERIAL_NAME, PREVIEW_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME
-    except (ImportError, ModuleNotFoundError):
-        logger.debug("Planetka: failed loading surface grading identifiers", exc_info=True)
-        return
-
-    earth_node = _find_surface_grading_node_for_material(EARTH_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME)
-    preview_node = _find_surface_grading_node_for_material(PREVIEW_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME)
-    if earth_node is None or preview_node is None:
-        return
-
-    preview_inputs = getattr(preview_node, "inputs", None)
-    if preview_inputs is None:
-        return
-
-    for earth_socket in _iter_surface_grading_input_sockets(earth_node):
-        socket_name = str(getattr(earth_socket, "name", "") or "").strip()
-        if not socket_name:
-            continue
-        try:
-            preview_socket = preview_inputs.get(socket_name)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            preview_socket = None
-        if preview_socket is None or bool(getattr(preview_socket, "is_linked", False)) or not hasattr(preview_socket, "default_value"):
-            continue
-        try:
-            earth_value = _socket_value_tuple(getattr(earth_socket, "default_value", None))
-            preview_value = _socket_value_tuple(getattr(preview_socket, "default_value", None))
-            if preview_value == earth_value:
-                continue
-            preview_socket.default_value = earth_value
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed syncing preview surface grading socket '%s'", socket_name, exc_info=True)
-
-
-def _iter_surface_grading_input_sockets(node):
-    sockets = []
-    for socket in getattr(node, "inputs", ()):
-        if bool(getattr(socket, "is_linked", False)):
-            continue
-        if not hasattr(socket, "default_value"):
-            continue
-        socket_type = str(getattr(socket, "bl_socket_idname", "")).strip()
-        if socket_type in {"NodeSocketShader", "NodeSocketVirtual"}:
-            continue
-        sockets.append(socket)
-    return sockets
-
-
 _SURFACE_GRADING_SECTION_ORDER = (
     "Global",
     "Water",
@@ -1453,27 +1352,28 @@ _SURFACE_GRADING_SECTION_ORDER = (
     "Night Lights",
 )
 
-_SURFACE_GRADING_SECTION_SOCKET_MAP = {
-    "Global": {
-        "surface brightness",
-        "surface saturation",
-        "surface contrast",
-    },
-    "Water": {
-        "roughness",
-        "ior",
-        "hue",
-        "saturation",
-        "brightness",
-    },
-    "Elevation": {
-        "coefficient",
-    },
-    "Night Lights": {
-        "intensity",
-        "color temperature",
-        "night terminator shift",
-    },
+_SURFACE_GRADING_SECTION_PROP_MAP = {
+    "Global": (
+        ("surface_brightness", "Brightness"),
+        ("surface_saturation", "Saturation"),
+        ("surface_contrast", "Contrast"),
+    ),
+    "Water": (
+        ("surface_roughness", "Roughness"),
+        ("surface_ior", "IOR"),
+        ("surface_water_hue", "Hue"),
+        ("surface_water_saturation", "Saturation"),
+        ("surface_water_brightness", "Brightness"),
+        ("surface_water_texture_strength", "Water Texture Strength"),
+    ),
+    "Elevation": (
+        ("surface_elevation_coefficient", "Coefficient"),
+    ),
+    "Night Lights": (
+        ("surface_night_intensity", "Intensity"),
+        ("surface_night_color_temperature", "Color Temperature"),
+        ("surface_night_terminator_shift", "Terminator Shift"),
+    ),
 }
 
 _SURFACE_GRADING_SECTION_RESET_KEY = {
@@ -1491,80 +1391,37 @@ _SURFACE_GRADING_SECTION_ICON = {
 }
 
 
-def _surface_grading_section_for_socket(socket_name):
-    normalized = str(socket_name or "").strip().lower()
-    for section in _SURFACE_GRADING_SECTION_ORDER:
-        names = _SURFACE_GRADING_SECTION_SOCKET_MAP.get(section, set())
-        if normalized in names:
-            return section
-    return None
-
-
-def _split_surface_grading_sockets(sockets):
-    grouped = {section: [] for section in _SURFACE_GRADING_SECTION_ORDER}
-    for socket in sockets or ():
-        section = _surface_grading_section_for_socket(getattr(socket, "name", ""))
-        if section is None:
-            continue
-        grouped.setdefault(section, []).append(socket)
-    return grouped
-
-
-def _surface_grading_socket_label(socket_name):
-    normalized = str(socket_name or "").strip().lower()
-    if normalized == "surface brightness":
-        return "Brightness"
-    if normalized == "surface saturation":
-        return "Saturation"
-    if normalized == "surface contrast":
-        return "Contrast"
-    if normalized == "night terminator shift":
-        return "Terminator Shift"
-    return str(socket_name or "Value")
-
-
 def _draw_surface_grading(layout):
     layout.use_property_split = True
     layout.use_property_decorate = False
 
-    _sync_preview_surface_grading_from_earth()
-    nodes = _iter_surface_grading_nodes()
-    if not nodes:
-        layout.label(text="Earth Surface Grading node group not found.", icon="INFO")
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    props = getattr(scene, "planetka", None) if scene is not None else None
+    if props is None:
+        layout.label(text="Planetka settings unavailable.", icon="INFO")
         return
 
-    many_nodes = len(nodes) > 1
-    for index, node in enumerate(nodes, start=1):
-        container = layout.box() if many_nodes else layout
-        if many_nodes:
-            container.label(text=f"Surface Grading Node {index}", icon="NODETREE")
-        sockets = _iter_surface_grading_input_sockets(node)
-        if not sockets:
-            container.label(text="No adjustable inputs found.", icon="INFO")
+    for section in _SURFACE_GRADING_SECTION_ORDER:
+        section_props = _SURFACE_GRADING_SECTION_PROP_MAP.get(section, ())
+        if not section_props:
             continue
-        grouped = _split_surface_grading_sockets(sockets)
-        for section in _SURFACE_GRADING_SECTION_ORDER:
-            section_sockets = grouped.get(section, [])
-            if not section_sockets:
+        section_box = layout.box()
+        section_header = section_box.row(align=True)
+        section_header.label(text=section, icon=_SURFACE_GRADING_SECTION_ICON.get(section, "NONE"))
+        reset_section = _SURFACE_GRADING_SECTION_RESET_KEY.get(section, "")
+        if reset_section:
+            reset_button = section_header.row(align=True)
+            reset_button.alignment = 'RIGHT'
+            reset_button.operator(
+                "planetka.reset_surface_grading_section",
+                text="Reset",
+                icon="LOOP_BACK",
+            ).section = reset_section
+        for prop_name, label in section_props:
+            if not hasattr(props, prop_name):
                 continue
-            section_box = container.box()
-            section_header = section_box.row(align=True)
-            section_header.label(text=section, icon=_SURFACE_GRADING_SECTION_ICON.get(section, "NONE"))
-            reset_section = _SURFACE_GRADING_SECTION_RESET_KEY.get(section, "")
-            if reset_section:
-                reset_button = section_header.row(align=True)
-                reset_button.alignment = 'RIGHT'
-                reset_button.operator(
-                    "planetka.reset_surface_grading_section",
-                    text="Reset",
-                    icon="LOOP_BACK",
-                ).section = reset_section
-            for socket in section_sockets:
-                row = section_box.row()
-                try:
-                    row.prop(socket, "default_value", text=_surface_grading_socket_label(getattr(socket, "name", "")))
-                except (AttributeError, RuntimeError, TypeError, ValueError):
-                    continue
+            row = section_box.row()
+            row.prop(props, prop_name, text=label)
 
 
 def _draw_earth_transform(layout, scene):

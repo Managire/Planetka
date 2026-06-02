@@ -21,6 +21,8 @@ class HandlerRuntimeDeps:
     iter_scenes: Any
     set_planetka_logging: Any
     sync_idprops_from_props: Any
+    get_earth_object: Any
+    ensure_atmosphere_for_mode: Any
 
 
 @dataclass(slots=True)

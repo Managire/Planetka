@@ -194,17 +194,27 @@ def _sync_atmosphere_mode_to_render_engine(scene, deps):
         current_mode = "VOLUMETRIC"
     except (RuntimeError, TypeError, ValueError, AttributeError):
         current_mode = "VOLUMETRIC"
-    if previous_engine == engine and current_mode == desired_mode:
-        return
-    if current_mode == desired_mode:
-        return
-    try:
-        props.atmosphere_mode = desired_mode
-        deps.sync_idprops_from_props(scene, ("atmosphere_mode", "auto_switch_atmosphere"))
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
+    mode_changed = not (previous_engine == engine and current_mode == desired_mode)
+    if current_mode != desired_mode:
+        try:
+            props.atmosphere_mode = desired_mode
+            deps.sync_idprops_from_props(scene, ("atmosphere_mode", "auto_switch_atmosphere"))
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
+
+    if mode_changed or current_mode == desired_mode:
+        try:
+            deps.ensure_atmosphere_for_mode(
+                scene=scene,
+                earth_surface=deps.get_earth_object(),
+                mode=desired_mode,
+            )
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed ensuring auto-switched atmosphere object", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: failed ensuring auto-switched atmosphere object", exc_info=True)
 
 
 def sync_atmosphere_mode_to_render_engine(scene=None, ctx=None):

@@ -20,6 +20,7 @@ from mathutils import Vector
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .auth import get_authorized_headers
+from .asset_builder import ensure_atmosphere_for_mode
 from .diagnostics import write_realtime_view_diagnostics
 from .planetka_runtime.mesh_lifecycle import (
     cleanup_planetka_unused_data,
@@ -946,6 +947,8 @@ def _build_handler_runtime_context():
         iter_scenes=_iter_scenes,
         set_planetka_logging=set_planetka_logging,
         sync_idprops_from_props=_sync_idprops_from_props,
+        get_earth_object=get_earth_object,
+        ensure_atmosphere_for_mode=ensure_atmosphere_for_mode,
     )
     state = HandlerRuntimeState(
         render_job_active=_RENDER_JOB_ACTIVE,

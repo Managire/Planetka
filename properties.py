@@ -80,6 +80,21 @@ PLACE_SEARCH_DEFAULT_TILT_DEG = 45.0
 SEASONAL_TILT_PRESET_LIMIT_DEG = 23.44
 logger = logging.getLogger(__name__)
 _ANIM_PREVIEW_UPDATE_GUARD = False
+_SURFACE_GRADING_PROP_TO_SOCKET = {
+    "surface_brightness": "Surface Brightness",
+    "surface_saturation": "Surface Saturation",
+    "surface_contrast": "Surface Contrast",
+    "surface_roughness": "Roughness",
+    "surface_ior": "IOR",
+    "surface_water_hue": "Hue",
+    "surface_water_saturation": "Saturation",
+    "surface_water_brightness": "Brightness",
+    "surface_elevation_coefficient": "Coefficient",
+    "surface_water_texture_strength": "Water Texture Strength",
+    "surface_night_intensity": "Intensity",
+    "surface_night_color_temperature": "Color Temperature",
+    "surface_night_terminator_shift": "Night Terminator Shift",
+}
 
 
 def _safe_bpy_context():
@@ -103,6 +118,53 @@ def update_texture_quality_mode(self, context):
     del self, context
     # Quality Level is now an input for the explicit Resolve Planetka button.
     # Changing it must not start any resolve or download.
+    return None
+
+
+def update_surface_grading_controls(self, context):
+    del context
+    try:
+        from .asset_builder import (
+            EARTH_MATERIAL_NAME,
+            PREVIEW_MATERIAL_NAME,
+            SURFACE_GRADING_GROUP_NAME,
+        )
+    except (ImportError, ModuleNotFoundError):
+        logger.debug("Planetka: failed loading surface grading identifiers", exc_info=True)
+        return None
+
+    material_names = (
+        str(EARTH_MATERIAL_NAME or "Planetka Earth Material"),
+        str(PREVIEW_MATERIAL_NAME or "Planetka Preview Material"),
+    )
+
+    for material_name in material_names:
+        material = bpy.data.materials.get(material_name)
+        node_tree = getattr(material, "node_tree", None) if material is not None else None
+        if node_tree is None:
+            continue
+        for node in getattr(node_tree, "nodes", ()):
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                continue
+            node_group = getattr(node, "node_tree", None)
+            if str(getattr(node_group, "name", "")) != str(SURFACE_GRADING_GROUP_NAME or "Planetka Surface Grading Group"):
+                continue
+            inputs = getattr(node, "inputs", None)
+            if inputs is None:
+                continue
+            for prop_name, socket_name in _SURFACE_GRADING_PROP_TO_SOCKET.items():
+                socket = inputs.get(socket_name) if hasattr(inputs, "get") else None
+                if socket is None or bool(getattr(socket, "is_linked", False)) or not hasattr(socket, "default_value"):
+                    continue
+                try:
+                    socket.default_value = float(getattr(self, prop_name))
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    logger.debug(
+                        "Planetka: failed applying surface grading control '%s' to %s",
+                        socket_name,
+                        material_name,
+                        exc_info=True,
+                    )
     return None
 
 
@@ -589,6 +651,97 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             "Cycles uses Cycles Optimized, EEVEE uses EEVEE Optimized"
         ),
         update=update_auto_switch_atmosphere,
+    )
+
+    surface_brightness: FloatProperty(
+        name="Brightness",
+        default=1.0,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_saturation: FloatProperty(
+        name="Saturation",
+        default=1.0,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_contrast: FloatProperty(
+        name="Contrast",
+        default=1.0,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_roughness: FloatProperty(
+        name="Roughness",
+        default=0.4,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_ior: FloatProperty(
+        name="IOR",
+        default=1.333,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_water_hue: FloatProperty(
+        name="Hue",
+        default=0.5,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_water_saturation: FloatProperty(
+        name="Saturation",
+        default=1.0,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_water_brightness: FloatProperty(
+        name="Brightness",
+        default=0.5,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_elevation_coefficient: FloatProperty(
+        name="Coefficient",
+        default=1.0,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_water_texture_strength: FloatProperty(
+        name="Water Texture Strength",
+        default=0.5,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_night_intensity: FloatProperty(
+        name="Intensity",
+        default=1.0,
+        precision=3,
+        update=update_surface_grading_controls,
+    )
+
+    surface_night_color_temperature: FloatProperty(
+        name="Color Temperature",
+        default=4500.0,
+        precision=1,
+        update=update_surface_grading_controls,
+    )
+
+    surface_night_terminator_shift: FloatProperty(
+        name="Terminator Shift",
+        default=0.0,
+        precision=3,
+        update=update_surface_grading_controls,
     )
 
     enable_global_clouds: BoolProperty(

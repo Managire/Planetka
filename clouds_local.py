@@ -918,6 +918,28 @@ def _apply_prepared_local_cloud_texture(obj, preview=False, scene=None, allow_pr
     return True
 
 
+def _assign_local_cloud_placeholder_texture(obj, file_name):
+    if not _is_local_cloud_object(obj):
+        return False
+    material = _resolve_object_material(obj)
+    image_node = _find_image_texture_node(material)
+    if image_node is None:
+        return False
+    thumb_path = _local_cloud_thumbnail_proxy(file_name)
+    if not thumb_path or not os.path.isfile(thumb_path):
+        return False
+    try:
+        image = bpy.data.images.load(thumb_path, check_existing=True)
+        _set_cloud_mask_image_colorspace(image)
+        image_node.image = image
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed assigning texture-based cloud placeholder thumbnail", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed assigning texture-based cloud placeholder thumbnail", exc_info=True)
+    return False
+
+
 def _update_local_cloud_adaptive_texture(obj, scene=None, preview=False, quality_mode=None):
     if not _is_local_cloud_object(obj):
         return False
@@ -3501,6 +3523,11 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
                 mesh.materials.append(new_mat)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka clouds: failed assigning local cloud material", exc_info=True)
+        if not _assign_local_cloud_placeholder_texture(new_obj, selected):
+            logger.warning(
+                "Planetka clouds: texture-based cloud placeholder thumbnail could not be assigned for %s.",
+                str(selected),
+            )
 
         _ensure_cloud_parented_to_root(new_obj, scene=scene)
 
@@ -3790,6 +3817,17 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             props.enable_vdb_clouds = True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _sync_cloud_collection_visibility(scene, props)
+
+        if not _apply_prepared_vdb_cloud_file(
+            new_obj,
+            scene=scene,
+            allow_prepare_missing=True,
+            quality_mode="PREVIEW",
+        ):
+            logger.warning(
+                "Planetka clouds: low-resolution VDB preview could not be loaded for %s.",
+                str(selected),
+            )
 
         try:
             context.view_layer.objects.active = new_obj
