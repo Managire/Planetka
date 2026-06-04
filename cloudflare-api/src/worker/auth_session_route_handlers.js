@@ -1,4 +1,11 @@
 export function createAuthSessionRouteHandlers(deps) {
+  const normalizeEdition = (value) => {
+    if (typeof deps.normalizeRequestedAccessTier === "function") {
+      return deps.normalizeRequestedAccessTier(value);
+    }
+    return String(value || "").trim().toLowerCase() === "pro" ? "pro" : "free";
+  };
+
   const strictStoredTier = (value) => {
     const normalized = typeof deps.normalizeAccessStatusStrict === "function"
       ? deps.normalizeAccessStatusStrict(value)
@@ -12,6 +19,9 @@ export function createAuthSessionRouteHandlers(deps) {
   async function handleAuthRefresh(request, env) {
     const db = deps.requireDb(env);
     await deps.ensureRateLimitsTable(db);
+    if (typeof deps.ensureRefreshSessionColumns === "function") {
+      await deps.ensureRefreshSessionColumns(db);
+    }
     const refreshEventBase = {
       client_ip: deps.requestClientIp(request),
       cf_country: deps.requestCountry(request),
@@ -73,6 +83,15 @@ export function createAuthSessionRouteHandlers(deps) {
     };
     const body = await deps.parseJson(request);
     const refreshToken = String(body.refresh_token || "").trim();
+    const hasRequestEdition = Boolean(String(body.install_edition || body.edition || body.access_tier || "").trim());
+    const requestInstallEdition = hasRequestEdition
+      ? (
+        typeof deps.resolveVerifiedInstallEdition === "function"
+          ? await deps.resolveVerifiedInstallEdition(body, env)
+          : normalizeEdition(body.install_edition || body.edition || body.access_tier || "")
+      )
+      : "";
+    const requestEditionSignature = String(body.edition_signature || body.package_signature || "").trim().slice(0, 256);
     const requestDeviceId = deps.normalizeDeviceId(
       body.device_id || request.headers.get("X-Planetka-Device-Id") || "",
     );
@@ -95,6 +114,8 @@ export function createAuthSessionRouteHandlers(deps) {
           rs.expires_at,
           rs.revoked_at,
           rs.auth_method,
+          rs.install_edition,
+          rs.edition_signature,
           rs.device_id,
           rs.client_ip_scope,
           u.email,
@@ -127,6 +148,8 @@ export function createAuthSessionRouteHandlers(deps) {
       return errorResponse("refresh_token_expired", 400, session);
     }
     const sessionAuthMethod = String(session.auth_method || "").trim().toLowerCase();
+    const installEdition = normalizeEdition(requestInstallEdition || session.install_edition || "free");
+    const editionSignature = requestEditionSignature || String(session.edition_signature || "").trim().slice(0, 256);
     const sessionDeviceId = deps.normalizeDeviceId(session.device_id || "");
     if (sessionAuthMethod === "anonymous" && sessionDeviceId && (!requestDeviceId || sessionDeviceId !== requestDeviceId)) {
       return errorResponse("device_id_mismatch", 401, session, {
@@ -158,6 +181,8 @@ export function createAuthSessionRouteHandlers(deps) {
       install,
       {
         auth_method: String(session.auth_method || "").trim(),
+        access_tier: installEdition,
+        install_edition: installEdition,
         device_id: String(session.device_id || "").trim(),
         client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
       },
@@ -168,6 +193,8 @@ export function createAuthSessionRouteHandlers(deps) {
       "",
       {
         auth_method: String(session.auth_method || "").trim(),
+        install_edition: installEdition,
+        edition_signature: editionSignature,
         device_id: String(session.device_id || "").trim(),
         client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
       },
@@ -197,6 +224,14 @@ export function createAuthSessionRouteHandlers(deps) {
         email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
           ? ""
           : install.email,
+        install_edition: installEdition,
+        install_edition_label: typeof deps.accessTierDisplayName === "function"
+          ? deps.accessTierDisplayName(installEdition)
+          : (installEdition === "pro" ? "Pro" : "Free"),
+        access_tier: installEdition,
+        access_tier_label: typeof deps.accessTierDisplayName === "function"
+          ? deps.accessTierDisplayName(installEdition)
+          : (installEdition === "pro" ? "Pro" : "Free"),
       },
       200,
       env,
@@ -287,6 +322,10 @@ export function createAuthSessionRouteHandlers(deps) {
       return auth.error;
     }
     const { install } = auth;
+    const installEdition = normalizeEdition(auth && auth.access && (auth.access.install_edition || auth.access.access_tier) || auth.installEdition || "free");
+    const installEditionLabel = typeof deps.accessTierDisplayName === "function"
+      ? deps.accessTierDisplayName(installEdition)
+      : (installEdition === "pro" ? "Pro" : "Free");
 
     return deps.json(
       {
@@ -296,6 +335,10 @@ export function createAuthSessionRouteHandlers(deps) {
         email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
           ? ""
           : install.email,
+        install_edition: installEdition,
+        install_edition_label: installEditionLabel,
+        access_tier: installEdition,
+        access_tier_label: installEditionLabel,
       },
       200,
       env,

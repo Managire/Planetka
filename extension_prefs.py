@@ -15,6 +15,7 @@ FALLBACK_CLOUD_INSTALL_ID_KEY = "planetka_cloud_install_id"
 FALLBACK_CLOUD_SESSION_ACCESS_TOKEN_KEY = "planetka_cloud_session_access_token"
 FALLBACK_CLOUD_SESSION_REFRESH_TOKEN_KEY = "planetka_cloud_session_refresh_token"
 FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY = "planetka_cloud_session_status_message"
+FALLBACK_CLOUD_SESSION_EDITION_KEY = "planetka_cloud_session_edition"
 FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY = "planetka_optimize_remove_default_scene"
 FALLBACK_OPTIMIZE_BACKGROUND_BLACK_KEY = "planetka_optimize_background_black"
 FALLBACK_OPTIMIZE_EEVEE_VOLUME_RESOLUTION_KEY = "planetka_optimize_eevee_volume_resolution"
@@ -61,6 +62,7 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     cloud_session_access_token: StringProperty(name="Cloud Session Access Token", default="", options={'HIDDEN'})
     cloud_session_refresh_token: StringProperty(name="Cloud Session Refresh Token", default="", options={'HIDDEN'})
     cloud_session_status_message: StringProperty(name="Cloud Session Status Message", default="", options={'HIDDEN'})
+    cloud_session_edition: StringProperty(name="Cloud Session Edition", default="free", options={'HIDDEN'})
     optimize_remove_default_scene: BoolProperty(
         name="Remove Default Cube Scene",
         description="Remove Blender's untouched default Cube/Camera/Light scene before Create Earth",
@@ -277,6 +279,10 @@ def get_prefs():
         cloud_session_status_message = property(
             lambda self: self._get_value(FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY, value),
+        )
+        cloud_session_edition = property(
+            lambda self: self._get_value(FALLBACK_CLOUD_SESSION_EDITION_KEY, "free"),
+            lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_EDITION_KEY, value),
         )
         optimize_remove_default_scene = property(
             lambda self: self._get_bool(FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY, True),

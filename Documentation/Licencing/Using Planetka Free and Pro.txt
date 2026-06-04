@@ -1,0 +1,13 @@
+Using Planetka Free and Pro
+
+Planetka has two product options: Free and Pro.
+
+Free provides access to the public Planetka add-on and Planetka Cloud on a fair-use, best-effort basis.
+
+Pro is the paid production option. Pro may include priority support, guaranteed-service arrangements, offline data packages, private deployments, studio/pipeline integration, or other paid services offered by Planetka.
+
+Free and Pro use the same add-on codebase. Planetka may make different hosted data, cloud presets, asset catalogues, support, or offline-data services available to each edition.
+
+Planetka Cloud streams required data into a working cache. Planetka is not a raw-data download product unless a separate Pro offline data package is explicitly arranged.
+
+You may not resell, redistribute, sublicense, host, publish, extract, or expose Planetka texture data as a standalone map product, dataset, tile server, API, texture library, training dataset, or competing service.

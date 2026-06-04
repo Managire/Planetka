@@ -72,7 +72,7 @@ Documentation/Licencing/PRIVACY_POLICY.pdf
 Documentation/Licencing/README.md
 Documentation/Licencing/TERMS_OF_SERVICE.md
 Documentation/Licencing/TERMS_OF_SERVICE.pdf
-Documentation/Licencing/Using Planetka Commercially.txt
+Documentation/Licencing/Using Planetka Free and Pro.txt
 Documentation/Release/FAIR_USAGE_POLICY.md
 Documentation/Release/SYSTEM_REQUIREMENTS.md
 
@@ -97,6 +97,7 @@ Resources/Startup Textures/S2/S2_x180_y000_z180_d720.exr
 Resources/Startup Textures/WT/WT_x000_y000_z180_d720.exr
 Resources/Startup Textures/WT/WT_x180_y000_z180_d720.exr
 Resources/Clouds Global/Clouds_16K.exr
+Resources/planetka_edition.json
 Resources/planetka_surface_material_library.blend
 Resources/planetka_base_sphere_mesh_cache.blend
 Resources/planetka_global_cloud_layer_min.blend

@@ -29,9 +29,9 @@ See:
 Required acknowledgement (must mention JAXA + AW3D30):
 - "AW3D30 (ALOS World 3D - 30m) provided by JAXA."
 
-Commercial-purpose use:
-JAXA’s terms include an advance-notification requirement for commercial-purpose
-use. Planetka sent a commercial-purpose use notification email to JAXA on:
+JAXA use notification:
+JAXA’s terms include an advance-notification requirement for paid-purpose
+use. Planetka sent a paid-purpose use notification email to JAXA on:
 - 2026-03-05 12:10:04 CET
 
 See:
@@ -39,7 +39,7 @@ See:
 
 3) PO (Built-up proxy): DLR World Settlement Footprint 2015 (WSF2015 v2)
 ------------------------------------------------------------------------
-WSF2015 v2 is licenced under CC BY 4.0 (commercial use allowed with attribution,
+WSF2015 v2 is licenced under CC BY 4.0 (paid use allowed with attribution,
 licence link, and change notice).
 
 Attribution Text (example):

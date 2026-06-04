@@ -1,24 +1,21 @@
 # Planetka Licensing Documents
 
-This folder contains the user-facing Planetka licence, privacy, attribution, and source-compliance documents included with the public add-on package.
+This folder contains the user-facing Planetka terms, privacy, attribution, and source-compliance documents included with the public add-on package.
 
-## Current Licence Model
+## Current Product Model
 
-Planetka has two single-seat licence options:
+Planetka has two product options: Free and Pro.
 
-- **Personal Licence**: Intended for personal, educational, evaluation, portfolio, and other non-commercial use.
-- **Commercial Licence**: Required for paid client work, studio work, advertising, broadcast, commercial products, commercial services, and any other commercial use.
+Free provides the public add-on with fair-use, best-effort Planetka Cloud access. Pro is the paid production option for support, guaranteed-service arrangements, offline data packages, private deployments, or studio/pipeline integration where offered by Planetka.
 
-Both licences provide the same Planetka add-on functionality and the same access to Planetka-hosted data, including Preview, Balanced, and Full quality modes, final animation rendering, panoramic camera support, standalone file export, atmosphere, and clouds.
+Free and Pro use the same add-on codebase. Planetka may make different hosted data, cloud presets, asset catalogues, support, or offline-data services available to each edition.
 
-The only difference is the legal usage right: Commercial use requires a Commercial Licence.
-
-Planetka does not sell individual tiles, scene-specific tile licences, animation tile licences, or data packs. The add-on streams required data into its working cache and does not provide a raw-data download library.
+Planetka does not sell individual streamed tiles through the add-on. The add-on streams required data into its working cache and does not provide a raw-data download library unless a separate Pro offline data package is explicitly arranged.
 
 ## Included Documents
 
 - `TERMS_OF_SERVICE.md`: main Planetka terms.
 - `PRIVACY_POLICY.md`: privacy and telemetry policy.
-- `Using Planetka Commercially.txt`: practical commercial-use summary.
+- `Using Planetka Free and Pro.txt`: practical user summary.
 - `Attribution for User Renders.txt`: source attribution text for user-facing output where needed.
 - `Compliance/`: source-data compliance records.

@@ -13,5 +13,5 @@ Contents
 
 Most users do not need these detailed records for normal rendering workflows.
 The short user-facing overview is available in:
-- `../Using Planetka Commercially.txt`
+- `../Using Planetka Free and Pro.txt`
 - `../Attribution for User Renders.txt`

@@ -1419,8 +1419,13 @@ def _set_camera_from_shot(
         look_target_override=look_target_override,
         up_hint_override=up_hint_override,
     )
-    rotation_euler = _quaternion_to_camera_euler(camera, pose["rotation"], compat_euler=rotation_compat_euler)
-    _write_camera_transform_keyframe(camera, int(frame), pose["location"], rotation_euler)
+    local_location, rotation_euler = _camera_local_transform_from_world_pose(
+        camera,
+        pose["location"],
+        pose["rotation"],
+        compat_euler=rotation_compat_euler,
+    )
+    _write_camera_transform_keyframe(camera, int(frame), local_location, rotation_euler)
     pose["rotation_euler"] = rotation_euler.copy()
     return pose
 
@@ -1559,6 +1564,42 @@ def _quaternion_to_camera_euler(camera, rotation_quaternion, compat_euler=None):
         return rotation_quaternion.to_euler(order)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return rotation_quaternion.to_euler("XYZ")
+
+
+def _camera_local_transform_from_world_pose(camera, world_location, world_rotation, compat_euler=None):
+    order = _rotation_order_for_camera(camera)
+    location = Vector(world_location)
+    rotation = world_rotation if isinstance(world_rotation, Quaternion) else Euler(world_rotation, order).to_quaternion()
+    try:
+        _loc, _rot, camera_scale = camera.matrix_basis.decompose()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        camera_scale = Vector((1.0, 1.0, 1.0))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        camera_scale = Vector((1.0, 1.0, 1.0))
+
+    world_matrix = Matrix.LocRotScale(location, rotation, camera_scale)
+    parent = getattr(camera, "parent", None)
+    if parent is not None:
+        try:
+            local_matrix = parent.matrix_world.inverted() @ world_matrix
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            local_matrix = world_matrix
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            local_matrix = world_matrix
+    else:
+        local_matrix = world_matrix
+
+    local_location, local_rotation, _local_scale = local_matrix.decompose()
+    try:
+        if compat_euler is not None:
+            local_euler = local_rotation.to_euler(order, compat_euler)
+        else:
+            local_euler = local_rotation.to_euler(order)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        local_euler = local_rotation.to_euler("XYZ")
+    except (RuntimeError, TypeError, ValueError):
+        local_euler = local_rotation.to_euler("XYZ")
+    return local_location, local_euler
 
 
 def _write_camera_transform_keyframe(camera, frame, location, rotation_euler):
@@ -1889,6 +1930,31 @@ def _camera_base_shot_from_transform(scene, props, location, rotation_euler):
                 logger.debug("Planetka animation: failed restoring camera after deriving saved shot", exc_info=True)
 
 
+def _shot_to_vector(shot):
+    return (
+        float(_normalize_longitude(float(shot.get("lon", 0.0)))),
+        float(_clamp_latitude(float(shot.get("lat", 0.0)))),
+        float(max(0.0, float(shot.get("alt_km", 0.0)))),
+        float(shot.get("heading_deg", 0.0)),
+        float(shot.get("tilt_deg", 25.0)),
+        float(shot.get("roll_deg", 0.0)),
+    )
+
+
+def _vector_to_shot(values):
+    vals = list(values or ())
+    while len(vals) < 6:
+        vals.append(0.0)
+    return {
+        "lon": _normalize_longitude(float(vals[0])),
+        "lat": _clamp_latitude(float(vals[1])),
+        "alt_km": max(0.0, float(vals[2])),
+        "heading_deg": float(vals[3]),
+        "tilt_deg": float(vals[4]),
+        "roll_deg": float(vals[5]),
+    }
+
+
 def _frame_one_navigation_base_shot(scene, props):
     fallback = _navigation_base_shot_from_props(props, fallback=_current_camera_base_shot(scene, props))
     if scene is None:
@@ -2149,18 +2215,8 @@ def apply_cinematic_preview(scene, props):
         if preset == "A_TO_B":
             if not bool(getattr(props, "anim_ab_a_valid", False)) or not bool(getattr(props, "anim_ab_b_valid", False)):
                 raise RuntimeError("Save both View A and View B first.")
-            start_shot = _camera_base_shot_from_transform(
-                scene,
-                props,
-                tuple(getattr(props, "anim_ab_a_location", (0.0, 0.0, 0.0))),
-                tuple(getattr(props, "anim_ab_a_rotation", (0.0, 0.0, 0.0))),
-            )
-            end_shot = _camera_base_shot_from_transform(
-                scene,
-                props,
-                tuple(getattr(props, "anim_ab_b_location", (0.0, 0.0, 0.0))),
-                tuple(getattr(props, "anim_ab_b_rotation", (0.0, 0.0, 0.0))),
-            )
+            start_shot = _vector_to_shot(getattr(props, "anim_ab_a_shot", (0.0, 0.0, 400.0, 0.0, 25.0, 0.0)))
+            end_shot = _vector_to_shot(getattr(props, "anim_ab_b_shot", (0.0, 0.0, 400.0, 0.0, 25.0, 0.0)))
             _apply_sampled_navigation_preview(
                 scene,
                 start_shot,
@@ -2792,17 +2848,21 @@ class PLANETKA_OT_AnimationSaveView(bpy.types.Operator):
         slot = str(getattr(self, "slot", "A")).upper()
         location = tuple(float(v) for v in camera.location)
         rotation = tuple(float(v) for v in camera.rotation_euler)
+        shot = _current_camera_base_shot(scene, props)
+        shot_vector = _shot_to_vector(shot)
         current_frame = int(getattr(scene, "frame_current", 0))
         current_timecode = _format_frame_timecode(scene, current_frame)
         if slot == "A":
             props.anim_ab_a_location = location
             props.anim_ab_a_rotation = rotation
+            props.anim_ab_a_shot = shot_vector
             props.anim_ab_a_valid = True
             props.anim_ab_a_capture_frame = current_frame
             props.anim_ab_a_capture_timecode = current_timecode
         else:
             props.anim_ab_b_location = location
             props.anim_ab_b_rotation = rotation
+            props.anim_ab_b_shot = shot_vector
             props.anim_ab_b_valid = True
             props.anim_ab_b_capture_frame = current_frame
             props.anim_ab_b_capture_timecode = current_timecode
@@ -3827,7 +3887,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             )
         seg_start = int(active_segment.get("start", 1))
         seg_end = int(active_segment.get("end", seg_start))
-        segment_label = f"{self._segment_index + 1}/{len(self._segments or ())}"
         if self._is_render_cancelled_since_segment_launch():
             self._report_user_stopped_render()
             self._cleanup(context, stop_render=False)
@@ -3836,14 +3895,14 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         if ok is None:
             self._state = "LAUNCH"
             self._set_ui_status(
-                f"Waiting to render segment {seg_start:04d}-{seg_end:04d} ({segment_label})",
+                f"Waiting to render segment {seg_start:04d}-{seg_end:04d}",
                 icon="SORTTIME",
             )
             return {'RUNNING_MODAL'}
         if not ok:
             return self._cancel_with_error(context, message)
         self._set_ui_status(
-            f"Rendering segment {seg_start:04d}-{seg_end:04d} ({segment_label})",
+            f"Rendering segment {seg_start:04d}-{seg_end:04d}",
             icon="RENDER_ANIMATION",
         )
         self._state = "RENDER"
@@ -4169,8 +4228,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._active_segment = segment
             seg_start = int(segment.get("start", 1))
             seg_end = int(segment.get("end", seg_start))
-            segment_label = f"{self._segment_index + 1}/{len(self._segments)}"
-            self._set_ui_status(f"Resolving segment {seg_start:04d}-{seg_end:04d} ({segment_label})", icon="TEXTURE")
+            self._set_ui_status(f"Resolving segment {seg_start:04d}-{seg_end:04d}", icon="TEXTURE")
             print(f"[Planetka] Segment {self._segment_index + 1}/{len(self._segments)}: resolve {seg_start:04d}-{seg_end:04d}")
             ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:

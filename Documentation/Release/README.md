@@ -2,9 +2,11 @@
 
 ## Active Product Model
 
-Planetka is distributed as a Blender add-on with automatic Planetka Cloud connection. The add-on does not ask users for an email address, access key, API key, or cloud activation inside Blender.
+Planetka uses Free and Pro product wording.
 
-All runtime features use the same access path. Preview, Balanced, and Full quality levels are quality choices inside the add-on, not separate backend feature gates.
+The public add-on connects to Planetka Cloud automatically. It does not ask users for an email address, access key, API key, or cloud activation inside Blender.
+
+Free and Pro are installation editions built from the same codebase. Backend sessions carry the package edition so Planetka can expose different hosted asset catalogues or data services per edition.
 
 ## Release Checklist Summary
 

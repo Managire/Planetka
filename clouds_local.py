@@ -563,6 +563,41 @@ def _set_cloud_mask_image_colorspace(image):
             continue
 
 
+def _reload_cloud_mask_image_if_needed(image):
+    if image is None:
+        return False
+    try:
+        if bool(getattr(image, "has_data", False)):
+            return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    try:
+        image.reload()
+        return bool(getattr(image, "has_data", True))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed reloading texture-based cloud image", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed reloading texture-based cloud image", exc_info=True)
+    return False
+
+
+def _load_cloud_mask_image_from_disk(texture_path):
+    path = bpy.path.abspath(str(texture_path or ""))
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        image = bpy.data.images.load(path, check_existing=False)
+        _set_cloud_mask_image_colorspace(image)
+        return image
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed loading texture-based cloud image from disk", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed loading texture-based cloud image from disk", exc_info=True)
+    return None
+
+
 def _local_cloud_prepared_texture_needs_refresh(texture_path):
     path = os.path.normcase(os.path.normpath(str(texture_path or "")))
     if not path:
@@ -901,15 +936,19 @@ def _apply_prepared_local_cloud_texture(obj, preview=False, scene=None, allow_pr
     current_image = getattr(image_node, "image", None)
     current_path = bpy.path.abspath(str(getattr(current_image, "filepath", "") or "")) if current_image else ""
     if os.path.abspath(current_path) != os.path.abspath(texture_path):
-        try:
-            image = bpy.data.images.load(texture_path, check_existing=True)
-            _set_cloud_mask_image_colorspace(image)
+        image = _load_cloud_mask_image_from_disk(texture_path)
+        if image is not None:
             image_node.image = image
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed loading prepared texture-based cloud texture", exc_info=True)
+        else:
             return False
     else:
         _set_cloud_mask_image_colorspace(current_image)
+        if not _reload_cloud_mask_image_if_needed(current_image):
+            image = _load_cloud_mask_image_from_disk(texture_path)
+            if image is not None:
+                image_node.image = image
+            else:
+                return False
     try:
         obj[LOCAL_CLOUD_LOADED_TEXTURE_PROP] = os.path.abspath(texture_path)
         obj[LOCAL_CLOUD_D_LEVEL_PROP] = int(obj.get(d_prop, 1) or 1)

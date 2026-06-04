@@ -7,11 +7,11 @@ This product includes and uses elevation-related textures derived from:
 
 Primary Terms (JAXA)
 --------------------
-AW3D30 is usable for commercial and non-commercial purposes free of charge under
+AW3D30 is usable for paid and unpaid purposes free of charge under
 JAXA's terms for use / data usage policy:
 - AW3D30 dataset page (points to terms for use):
   https://www.eorc.jaxa.jp/ALOS/en/dataset/aw3d30/aw3d30_e.htm
-- Terms of Use of Research Data (includes commercial-purpose notification):
+- Terms of Use of Research Data (includes paid-purpose notification):
   https://earth.jaxa.jp/en/data/policy/
 
 Required Credit (what it must contain)
@@ -25,15 +25,15 @@ Contact (as published by JAXA)
 ------------------------------
 - Email: earth@ml.jaxa.jp
 
-Commercial-purpose use notification (record)
+JAXA use notification (record)
 --------------------------------------------
 To: earth@ml.jaxa.jp
-Subject: Commercial-purpose use notification: AW3D30 (ALOS World 3D - 30m) in Planetka (Blender extension)
+Subject: JAXA use notification: AW3D30 (ALOS World 3D - 30m) in Planetka (Blender extension)
 Sent: 2026-03-05 12:10:04 CET
 
 Hello JAXA Earth Observation Center team,
 
-I am writing to inform JAXA in advance about our intended commercial-purpose use of the
+I am writing to inform JAXA in advance about our intended paid-purpose use of the
 AW3D30 (ALOS World 3D - 30m) dataset, in accordance with JAXA’s Terms of Use of Research Data.
 
 Product name:
@@ -52,9 +52,8 @@ How it is used:
 - End users install the Planetka extension for Blender and use the included derived textures
   to render still images and animations of the Earth surface.
 
-Distribution / commercial context:
-- The Planetka extension (including the derived AW3D30-based textures) is sold commercially
-  as a digital product (Blender add-on).
+Distribution / paid-use context:
+- The Planetka extension (including the derived AW3D30-based textures) is distributed as a digital product (Blender add-on).
 
 Modifications:
 - The AW3D30-derived textures are retouched/processed for visual clarity and performance
@@ -79,10 +78,10 @@ Received: 2026-03-06 07:24 CET (Bratislava time)
 Dear Tomas Griger,
 
 This is ALOS Science Project, JAXA.
-Thank you for your email to earth@ml.jaxa.jp and the commercial-purpose use
+Thank you for your email to earth@ml.jaxa.jp and the paid-purpose use
 notification of AW3D30 in Planetka.
 We would like to let you know that there is no problem to use the data for
-commercial use as long as complying with the terms of use of research data:
+paid use as long as complying with the terms of use of research data:
 https://earth.jaxa.jp/en/data/policy/
 
 If you have any questions, please do not hesitate to ask us.

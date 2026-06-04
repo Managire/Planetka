@@ -9,8 +9,10 @@ from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
 from .auth import (
     AuthApiError,
     CLOUD_OVERLOADED_MESSAGE,
+    addon_edition_label,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
+    get_session_edition,
     get_status_message,
     ensure_authenticated_session,
     is_authenticated,
@@ -554,7 +556,7 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     elif animation_waiting_for_download and "DOWNLOADING" in animation_status_upper:
         progress_text = "Preparing"
     elif animation_waiting_for_download:
-        progress_text = "Data ready"
+        progress_text = ""
     elif status_token == "PREPARING":
         progress_text = "Preparing"
     elif status_token in {"FINALIZING", "APPLYING"}:
@@ -602,7 +604,9 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     box = layout.box()
     box.alert = bool(state.get("alert", False))
     box.label(text=str(state.get("status_text", "") or "Idle"), icon=str(state.get("status_icon", "INFO") or "INFO"))
-    box.label(text=str(state.get("progress_text", "") or "Waiting for data"), icon="BLANK1")
+    progress_text = str(state.get("progress_text", "") or "").strip()
+    if progress_text:
+        box.label(text=progress_text, icon="BLANK1")
 
 
 def _cloud_progress_bar_state(cloud_runtime, label_tokens, display_label):
@@ -1063,7 +1067,7 @@ def _draw_general_cloud_summary(layout):
     cloud_overloaded = bool(cloud_message == CLOUD_OVERLOADED_MESSAGE)
     status_icon = "CHECKMARK" if connected else ("INFO" if authenticated and not checked else "ERROR")
     if connected:
-        status_text = "Connected"
+        status_text = f"Connected ({addon_edition_label(get_session_edition(prefs))})"
     elif authenticated and not checked:
         status_text = "Checking"
     elif authenticated and cloud_overloaded:
@@ -2364,32 +2368,18 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             cinematic_box.prop(props, "anim_zoom_rotate_degrees", text="Rotate (°)")
         if preset == "A_TO_B":
             view_row = cinematic_box.row(align=True)
-            view_row.operator("planetka.animation_save_view", text="Save View A", icon="BOOKMARKS").slot = "A"
-            view_row.operator("planetka.animation_save_view", text="Save View B", icon="BOOKMARKS").slot = "B"
-            status_a = "Ready" if bool(getattr(props, "anim_ab_a_valid", False)) else "Not Set"
-            status_b = "Ready" if bool(getattr(props, "anim_ab_b_valid", False)) else "Not Set"
-            cinematic_box.label(text=f"View A: {status_a}")
-            cinematic_box.label(text=f"View B: {status_b}")
-            if bool(getattr(props, "anim_ab_a_valid", False)):
-                frame_a = int(getattr(props, "anim_ab_a_capture_frame", 0) or 0)
-                timecode_a = str(getattr(props, "anim_ab_a_capture_timecode", "") or "").strip()
-                if frame_a > 0 or timecode_a:
-                    meta_a = f"Frame {frame_a}" if frame_a > 0 else "Frame n/a"
-                    if timecode_a:
-                        meta_a = f"{meta_a} ({timecode_a})"
-                    meta_row_a = cinematic_box.row()
-                    meta_row_a.scale_y = 0.82
-                    meta_row_a.label(text=f"View A last captured: {meta_a}", icon="TIME")
-            if bool(getattr(props, "anim_ab_b_valid", False)):
-                frame_b = int(getattr(props, "anim_ab_b_capture_frame", 0) or 0)
-                timecode_b = str(getattr(props, "anim_ab_b_capture_timecode", "") or "").strip()
-                if frame_b > 0 or timecode_b:
-                    meta_b = f"Frame {frame_b}" if frame_b > 0 else "Frame n/a"
-                    if timecode_b:
-                        meta_b = f"{meta_b} ({timecode_b})"
-                    meta_row_b = cinematic_box.row()
-                    meta_row_b.scale_y = 0.82
-                    meta_row_b.label(text=f"View B last captured: {meta_b}", icon="TIME")
+            view_row.operator("planetka.animation_save_view", text="Set Start View", icon="BOOKMARKS").slot = "A"
+            view_row.operator("planetka.animation_save_view", text="Set End View", icon="BOOKMARKS").slot = "B"
+            has_start = bool(getattr(props, "anim_ab_a_valid", False))
+            has_end = bool(getattr(props, "anim_ab_b_valid", False))
+            cinematic_box.label(text=f"Start View: {'Saved' if has_start else 'Not set'}", icon="CHECKMARK" if has_start else "RADIOBUT_OFF")
+            cinematic_box.label(text=f"End View: {'Saved' if has_end else 'Not set'}", icon="CHECKMARK" if has_end else "RADIOBUT_OFF")
+            hint_row = cinematic_box.row()
+            hint_row.scale_y = 0.85
+            if has_start and has_end:
+                hint_row.label(text="Click Generate Camera Keyframes to create the move.", icon="KEY_HLT")
+            else:
+                hint_row.label(text="Move the camera, then save Start and End views.", icon="INFO")
 
         if preset != "NONE":
             frame_row = cinematic_box.row(align=True)

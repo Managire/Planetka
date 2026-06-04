@@ -25,6 +25,7 @@ CLOUD_OVERLOADED_ERROR_CODE = "planetka_cloud_overloaded"
 CLOUD_OVERLOADED_MESSAGE = "Planetka servers are temporarily overloaded. Please wait a few moments and try again."
 SESSION_EXPIRED_MESSAGE = "Planetka Cloud session expired. Restart Blender and try again."
 _ADDON_VERSION_CACHE = None
+_ADDON_EDITION_CACHE = None
 _CLOUD_CONNECTION_CACHE = {
     "checked": False,
     "timestamp": 0.0,
@@ -403,6 +404,7 @@ def clear_cloud_session(prefs=None, state="logged_out", status_message=""):
 
     prefs.cloud_session_access_token = ""
     prefs.cloud_session_refresh_token = ""
+    prefs.cloud_session_edition = _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
     prefs.cloud_session_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
@@ -545,10 +547,83 @@ def _read_local_addon_version():
     return version_text
 
 
+def _normalize_addon_edition(value):
+    return "pro" if str(value or "").strip().lower() == "pro" else "free"
+
+
+def addon_edition_label(value=None):
+    edition = _normalize_addon_edition(value if value is not None else read_local_addon_edition().get("edition", "free"))
+    return "Pro" if edition == "pro" else "Free"
+
+
+def read_local_addon_edition():
+    global _ADDON_EDITION_CACHE
+    cached = _ADDON_EDITION_CACHE
+    if isinstance(cached, dict):
+        return dict(cached)
+    payload = {
+        "edition": "free",
+        "label": "Free",
+        "signature": "",
+        "signature_version": 1,
+    }
+    try:
+        marker_path = os.path.join(os.path.dirname(__file__), "Resources", "planetka_edition.json")
+        with open(marker_path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle) or {}
+        payload["edition"] = _normalize_addon_edition(raw.get("edition", "free"))
+        payload["label"] = addon_edition_label(payload["edition"])
+        payload["signature"] = str(raw.get("signature", "") or "").strip()
+        try:
+            payload["signature_version"] = int(raw.get("signature_version", 1) or 1)
+        except (TypeError, ValueError):
+            payload["signature_version"] = 1
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        payload["edition"] = "free"
+        payload["label"] = "Free"
+    _ADDON_EDITION_CACHE = dict(payload)
+    return dict(payload)
+
+
+def _store_session_edition(prefs, payload):
+    edition = _normalize_addon_edition(
+        payload.get("install_edition")
+        or payload.get("edition")
+        or payload.get("access_tier")
+        or read_local_addon_edition().get("edition", "free")
+    )
+    try:
+        prefs.cloud_session_edition = edition
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    return edition
+
+
+def get_session_edition(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is not None:
+        stored_raw = str(getattr(prefs, "cloud_session_edition", "") or "").strip()
+        if stored_raw:
+            return _normalize_addon_edition(stored_raw)
+    return _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
+
+
+def local_addon_edition_code():
+    return _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
+
+
+def session_edition_matches_package(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return True
+    return get_session_edition(prefs) == local_addon_edition_code()
+
+
 
 def _apply_auth_payload(prefs, payload, status_message=""):
     prefs.cloud_session_access_token = str(payload.get("access_token", "") or "").strip()
     prefs.cloud_session_refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    _store_session_edition(prefs, payload if isinstance(payload, dict) else {})
     prefs.cloud_session_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
@@ -563,6 +638,7 @@ def connect_anonymous(prefs=None):
     headers = {}
     if device_id:
         headers["X-Planetka-Device-Id"] = device_id
+    edition = read_local_addon_edition()
     _status, payload = _json_request(
         "POST",
         "/auth/anonymous",
@@ -570,6 +646,9 @@ def connect_anonymous(prefs=None):
             "device_id": device_id,
             "device_name": _build_device_name(),
             "addon_version": _read_local_addon_version(),
+            "install_edition": edition.get("edition", "free"),
+            "edition_signature": edition.get("signature", ""),
+            "edition_signature_version": edition.get("signature_version", 1),
         },
         headers=headers,
         timeout=15,
@@ -583,6 +662,8 @@ def ensure_authenticated_session(prefs=None):
     if prefs is None:
         raise AuthApiError(0, "prefs_unavailable")
     if is_authenticated(prefs):
+        if not session_edition_matches_package(prefs):
+            refresh_cloud_session(prefs)
         return True
     connect_anonymous(prefs)
     return True
@@ -605,12 +686,16 @@ def refresh_cloud_session(prefs=None):
         headers = {}
         if device_id:
             headers["X-Planetka-Device-Id"] = device_id
+        edition = read_local_addon_edition()
         _status, payload = _json_request(
             "POST",
             "/auth/refresh",
             {
                 "refresh_token": refresh_token,
                 "device_id": device_id,
+                "install_edition": edition.get("edition", "free"),
+                "edition_signature": edition.get("signature", ""),
+                "edition_signature_version": edition.get("signature_version", 1),
             },
             headers=headers,
         )

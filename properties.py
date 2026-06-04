@@ -1095,6 +1095,13 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         options={'HIDDEN'},
     )
 
+    anim_ab_a_shot: FloatVectorProperty(
+        name="View A Shot",
+        size=6,
+        default=(0.0, 0.0, 400.0, 0.0, 25.0, 0.0),
+        options={'HIDDEN'},
+    )
+
     anim_ab_a_valid: BoolProperty(
         name="View A Valid",
         default=False,
@@ -1125,6 +1132,13 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="View B Rotation",
         size=3,
         default=(0.0, 0.0, 0.0),
+        options={'HIDDEN'},
+    )
+
+    anim_ab_b_shot: FloatVectorProperty(
+        name="View B Shot",
+        size=6,
+        default=(0.0, 0.0, 400.0, 0.0, 25.0, 0.0),
         options={'HIDDEN'},
     )
 

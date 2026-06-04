@@ -1,5 +1,7 @@
 export const ACCESS_STATUS_ACTIVE = "active";
 export const ACCESS_STATUS_BLOCKED = "blocked";
+export const ACCESS_TIER_FREE = "free";
+export const ACCESS_TIER_PRO = "pro";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
 
@@ -40,6 +42,31 @@ export function normalizeRequestedAccessStatus(value) {
 export function defaultSignupAccessStatus(env = {}) {
   void env;
   return ACCESS_STATUS_ACTIVE;
+}
+
+export function normalizeAccessTier(value) {
+  return String(value || "").trim().toLowerCase() === ACCESS_TIER_PRO ? ACCESS_TIER_PRO : ACCESS_TIER_FREE;
+}
+
+export function normalizeRequestedAccessTier(value) {
+  return normalizeAccessTier(value);
+}
+
+export function defaultSignupAccessTier(env = {}) {
+  void env;
+  return ACCESS_TIER_FREE;
+}
+
+export function accessTierDisplayName(accessTier) {
+  return normalizeAccessTier(accessTier) === ACCESS_TIER_PRO ? "Pro" : "Free";
+}
+
+export function normalizeInstallEdition(value) {
+  return normalizeAccessTier(value);
+}
+
+export function installEditionDisplayName(edition) {
+  return accessTierDisplayName(edition);
 }
 
 export function resolvePolicyAccessStatus(user, env = {}) {

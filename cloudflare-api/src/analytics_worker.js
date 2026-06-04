@@ -9,11 +9,14 @@ import {
 } from "./worker/env.js";
 import {
   ACCESS_STATUS_ACTIVE,
+  accessTierDisplayName,
+  defaultSignupAccessTier,
   defaultSignupAccessStatus,
   isBlockedStatus,
   isQualityModeAllowedForAccess,
   normalizeAccessStatus,
   normalizeQualityMode,
+  normalizeRequestedAccessTier,
   normalizeRequestedAccessStatus,
   parseCsvEmailSet,
   qualityModeNotAllowedMessage,
@@ -400,6 +403,46 @@ function normalizeAccessStatusStrict(value) {
   return "";
 }
 
+async function hmacSha256Hex(secret, message) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(String(secret || "")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(String(message || "")));
+  return Array.from(new Uint8Array(signature)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function timingSafeHexEquals(left, right) {
+  const a = String(left || "").trim().toLowerCase();
+  const b = String(right || "").trim().toLowerCase();
+  if (!/^[a-f0-9]+$/.test(a) || !/^[a-f0-9]+$/.test(b) || a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return diff === 0;
+}
+
+async function resolveVerifiedInstallEdition(body = {}, env = {}) {
+  const requested = normalizeRequestedAccessTier(body.install_edition || body.edition || body.access_tier || defaultSignupAccessTier(env));
+  if (requested !== "pro") {
+    return "free";
+  }
+  const secret = String(env.PLANETKA_EDITION_SIGNING_SECRET || "").trim();
+  if (!secret) {
+    return "pro";
+  }
+  const signature = String(body.edition_signature || body.package_signature || "").trim().toLowerCase();
+  const version = String(body.edition_signature_version || body.signature_version || "1").trim() || "1";
+  const expected = await hmacSha256Hex(secret, `planetka-edition:v${version}:pro`);
+  return timingSafeHexEquals(signature, expected) ? "pro" : "free";
+}
+
 async function maybePruneRateLimits(db, nowSeconds) {
   if ((nowSeconds - rateLimitsLastPruneAt) < RATE_LIMIT_PRUNE_INTERVAL_SECONDS) {
     return;
@@ -725,6 +768,8 @@ async function ensureRefreshSessionColumns(db) {
         revoked_at TEXT,
         created_at TEXT NOT NULL,
         auth_method TEXT,
+        install_edition TEXT NOT NULL DEFAULT 'free',
+        edition_signature TEXT,
         device_id TEXT
       )
     `,
@@ -734,7 +779,10 @@ async function ensureRefreshSessionColumns(db) {
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
   for (const statement of [
     !names.has("auth_method") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN auth_method TEXT` : "",
+    !names.has("install_edition") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN install_edition TEXT NOT NULL DEFAULT 'free'` : "",
+    !names.has("edition_signature") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN edition_signature TEXT` : "",
     !names.has("device_id") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN device_id TEXT` : "",
+    !names.has("client_ip_scope") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN client_ip_scope TEXT` : "",
   ].filter(Boolean)) {
     try {
       await dbRun(db, statement);
@@ -1158,12 +1206,16 @@ const authSessionRouteDeps = {
   dbMetaChanges,
   isBlockedStatus,
   blockedCloudSessionResponse,
+  normalizeRequestedAccessTier,
   normalizeAccessStatusStrict,
   enforceCloudInstallAccessStatusPolicy,
   nowIso,
   buildCloudSessionState,
   createAccessToken: authCore.createAccessToken,
   createRefreshSession: authCore.createRefreshSession,
+  accessTierDisplayName,
+  defaultSignupAccessTier,
+  resolveVerifiedInstallEdition,
   normalizeEmail,
   json,
   serializeCloudSessionState,
