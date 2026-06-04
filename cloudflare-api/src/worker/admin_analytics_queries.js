@@ -51,6 +51,58 @@ const AUTH_REFRESH_CRITICAL_ERROR_CODES = new Set([
   "cloud_session_not_connected",
 ]);
 
+function normalizeAnalyticsEdition(value) {
+  return String(value || "").trim().toLowerCase() === "pro" ? "pro" : "free";
+}
+
+function latestInstallEditionCte() {
+  return `
+      latest_install_editions AS (
+        SELECT
+          user_id,
+          CASE
+            WHEN LOWER(COALESCE(install_edition, '')) = 'pro' THEN 'pro'
+            ELSE 'free'
+          END AS install_edition
+        FROM (
+          SELECT
+            user_id,
+            install_edition,
+            ROW_NUMBER() OVER (
+              PARTITION BY user_id
+              ORDER BY datetime(COALESCE(NULLIF(TRIM(created_at), ''), '1970-01-01T00:00:00Z')) DESC
+            ) AS rn
+          FROM cloud_session_refresh_tokens
+          WHERE user_id IS NOT NULL AND user_id != ''
+        )
+        WHERE rn = 1
+      )`;
+}
+
+function splitMetricFromRows(rows, valueKey) {
+  const split = { free: 0, pro: 0, total: 0 };
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    const edition = normalizeAnalyticsEdition(row && row.install_edition);
+    const value = Number(row && row[valueKey] || 0);
+    const safeValue = Number.isFinite(value) && value > 0 ? value : 0;
+    split[edition] += safeValue;
+    split.total += safeValue;
+  }
+  return split;
+}
+
+function splitActiveCounts() {
+  return { free: 0, pro: 0, total: 0 };
+}
+
+function addSplitCount(target, edition, amount = 1) {
+  if (!target) return;
+  const safeEdition = normalizeAnalyticsEdition(edition);
+  const safeAmount = Number.isFinite(Number(amount)) && Number(amount) > 0 ? Number(amount) : 0;
+  target[safeEdition] += safeAmount;
+  target.total += safeAmount;
+}
+
 
 function authRefreshCriticalFailureSql(tableAlias = "") {
   const alias = String(tableAlias || "").trim();
@@ -590,6 +642,7 @@ export async function collectAnalyticsSnapshot(
   await deps.ensureTileRequestEventsTable(db);
   await deps.ensureTileRequestRollupTables(db);
   await deps.ensureAuthRefreshEventsTable(db);
+  await deps.ensureRefreshSessionColumns(db);
   const nowUnix = Math.floor(Date.now() / 1000);
   const windowMinutes = sanitizeAnalyticsMinutes(minutes, deps.DEFAULT_ANALYTICS_WINDOW_MINUTES, deps);
   const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
@@ -626,49 +679,62 @@ export async function collectAnalyticsSnapshot(
     [windowStartUnix, ...eventEmailFilter.bindings],
   );
 
-  const topLineInstalls = await deps.dbGet(
+  const topLineInstallsByEdition = await deps.dbAll(
     db,
     `
+      WITH ${latestInstallEditionCte()}
       SELECT
+        COALESCE(lie.install_edition, 'free') AS install_edition,
         COUNT(*) AS total_installs
-      FROM cloud_installs
+      FROM cloud_installs u
+      LEFT JOIN latest_install_editions lie ON lie.user_id = u.id
       WHERE 1 = 1
       ${userEmailFilter.condition ? `AND ${userEmailFilter.condition}` : ""}
+      GROUP BY COALESCE(lie.install_edition, 'free')
     `,
     [...userEmailFilter.bindings],
   );
 
-  const topLineTraffic = await deps.dbGet(
+  const topLineTrafficByEdition = await deps.dbAll(
     db,
     `
+      WITH ${latestInstallEditionCte()}
       SELECT
+        COALESCE(lie.install_edition, 'free') AS install_edition,
         COALESCE(SUM(r.request_count), 0) AS total_requests,
         COALESCE(SUM(r.bytes_served), 0) AS total_bytes
       FROM tile_request_rollup_daily_install r
       LEFT JOIN cloud_installs u ON u.id = r.user_id
+      LEFT JOIN latest_install_editions lie ON lie.user_id = r.user_id
       WHERE 1 = 1
       ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
+      GROUP BY COALESCE(lie.install_edition, 'free')
     `,
     [...rollupEmailFilterAliasR.bindings],
   );
 
-  const topLineResolves = await deps.dbGet(
+  const topLineResolvesByEdition = await deps.dbAll(
     db,
     `
-      WITH tagged_resolves AS (
+      WITH ${latestInstallEditionCte()},
+      tagged_resolves AS (
         SELECT DISTINCT
           e.user_id,
-          e.resolve_id
+          e.resolve_id,
+          COALESCE(lie.install_edition, 'free') AS install_edition
         FROM tile_request_events e
         LEFT JOIN cloud_installs u ON u.id = e.user_id
+        LEFT JOIN latest_install_editions lie ON lie.user_id = e.user_id
         WHERE
           e.resolve_id IS NOT NULL
           AND e.resolve_id != ''
           ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       )
       SELECT
+        install_edition,
         COUNT(*) AS total_resolves
       FROM tagged_resolves
+      GROUP BY install_edition
     `,
     [...eventEmailFilterAliasE.bindings],
   );
@@ -686,12 +752,15 @@ export async function collectAnalyticsSnapshot(
   const activeInstallRows = await deps.dbAll(
     db,
     `
+      WITH ${latestInstallEditionCte()}
       SELECT
         e.user_id,
         MAX(e.created_at_unix) AS last_seen_unix,
-        NULLIF(TRIM(LOWER(u.status)), '') AS access_status_norm
+        NULLIF(TRIM(LOWER(u.status)), '') AS access_status_norm,
+        COALESCE(lie.install_edition, 'free') AS install_edition
       FROM tile_request_events e
       LEFT JOIN cloud_installs u ON u.id = e.user_id
+      LEFT JOIN latest_install_editions lie ON lie.user_id = e.user_id
       WHERE
         e.created_at_unix >= ?
         AND e.user_id IS NOT NULL
@@ -699,7 +768,8 @@ export async function collectAnalyticsSnapshot(
         ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       GROUP BY
         e.user_id,
-        NULLIF(TRIM(LOWER(u.status)), '')
+        NULLIF(TRIM(LOWER(u.status)), ''),
+        COALESCE(lie.install_edition, 'free')
     `,
     [
       activeWindow6mStartUnix,
@@ -707,9 +777,7 @@ export async function collectAnalyticsSnapshot(
     ],
   );
 
-  const makeActiveCounts = () => ({
-    total: 0,
-  });
+  const makeActiveCounts = () => splitActiveCounts();
   const activeWindows = {
     installs_6m: makeActiveCounts(),
     installs_3m: makeActiveCounts(),
@@ -737,7 +805,7 @@ export async function collectAnalyticsSnapshot(
       }
       const windowCounts = activeWindows[windowKey];
       if (windowCounts) {
-        windowCounts.total += 1;
+        addSplitCount(windowCounts, row && row.install_edition);
       }
     }
   }
@@ -1179,6 +1247,10 @@ export async function collectAnalyticsSnapshot(
   }));
 
   const totalEarnedEur = Number(topLineRevenue && topLineRevenue.total_earned_eur);
+  const topLineInstalls = splitMetricFromRows(topLineInstallsByEdition, "total_installs");
+  const topLineResolves = splitMetricFromRows(topLineResolvesByEdition, "total_resolves");
+  const topLineTileRequests = splitMetricFromRows(topLineTrafficByEdition, "total_requests");
+  const topLineBytesServed = splitMetricFromRows(topLineTrafficByEdition, "total_bytes");
 
   return {
     generated_at: deps.nowIso(),
@@ -1186,16 +1258,24 @@ export async function collectAnalyticsSnapshot(
     window_start_unix: windowStartUnix,
     top_line: {
       installs: {
-        total: deps.clampNonNegativeInt(topLineInstalls && topLineInstalls.total_installs),
+        free: deps.clampNonNegativeInt(topLineInstalls.free),
+        pro: deps.clampNonNegativeInt(topLineInstalls.pro),
+        total: deps.clampNonNegativeInt(topLineInstalls.total),
       },
       resolves: {
-        total: deps.clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
+        free: deps.clampNonNegativeInt(topLineResolves.free),
+        pro: deps.clampNonNegativeInt(topLineResolves.pro),
+        total: deps.clampNonNegativeInt(topLineResolves.total),
       },
       tile_requests: {
-        total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
+        free: deps.clampNonNegativeInt(topLineTileRequests.free),
+        pro: deps.clampNonNegativeInt(topLineTileRequests.pro),
+        total: deps.clampNonNegativeInt(topLineTileRequests.total),
       },
       gb_served: {
-        total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
+        free: deps.clampNonNegativeInt(topLineBytesServed.free),
+        pro: deps.clampNonNegativeInt(topLineBytesServed.pro),
+        total: deps.clampNonNegativeInt(topLineBytesServed.total),
       },
       earned_eur: {
         total: Number.isFinite(totalEarnedEur) ? Number(totalEarnedEur.toFixed(2)) : 0,
@@ -1213,7 +1293,7 @@ export async function collectAnalyticsSnapshot(
       tagged_resolve_count: deps.clampNonNegativeInt(summary && summary.tagged_resolve_count),
     },
     active: {
-      installs_total: deps.clampNonNegativeInt(topLineInstalls && topLineInstalls.total_installs),
+      installs_total: deps.clampNonNegativeInt(topLineInstalls.total),
       installs_6m: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.total),
       installs_3m: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.total),
       installs_1m: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.total),
@@ -1222,21 +1302,33 @@ export async function collectAnalyticsSnapshot(
       installs_1h: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.total),
       windows: {
         "6m": {
+          free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.free),
+          pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.total),
         },
         "3m": {
+          free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.free),
+          pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.total),
         },
         "1m": {
+          free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.free),
+          pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.total),
         },
         "1w": {
+          free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.free),
+          pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.total),
         },
         "1d": {
+          free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.free),
+          pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.total),
         },
         "1h": {
+          free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.free),
+          pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.total),
         },
       },
@@ -1301,6 +1393,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   await deps.ensureTileRequestEventsTable(db);
   await deps.ensureTileRequestRollupTables(db);
   await deps.ensureCloudInstallAccessColumns(db);
+  await deps.ensureRefreshSessionColumns(db);
   const sortBy = parseAnalyticsUsersSort(options.sort_by);
   const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
   const query = String(options.query || "").trim().toLowerCase();
@@ -1321,7 +1414,8 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   return deps.dbAll(
     db,
     `
-      WITH resolve_counts AS (
+      WITH ${latestInstallEditionCte()},
+      resolve_counts AS (
         SELECT
           user_id,
           COUNT(DISTINCT resolve_id) AS total_resolve_count
@@ -1344,6 +1438,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
           ELSE u.email
         END AS user_email,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
+        COALESCE(lie.install_edition, 'free') AS install_edition,
         COALESCE(rc.total_resolve_count, 0) AS total_resolve_count,
         COALESCE(du.data_downloaded_bytes, 0) AS data_downloaded_bytes,
         COALESCE(
@@ -1352,6 +1447,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         ) AS last_seen_at,
         COALESCE(du.last_seen_unix, strftime('%s', COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))), 0) AS last_seen_unix
       FROM cloud_installs u
+      LEFT JOIN latest_install_editions lie ON lie.user_id = u.id
       LEFT JOIN daily_usage du ON du.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
       ${whereSql}

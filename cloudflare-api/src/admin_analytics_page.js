@@ -22,17 +22,19 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
 
-  const renderTotalValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
+  const renderEditionValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
     const total = Number(safeValues.total || fallbackTotal || 0);
-    return `<span class="metric-total">${escapeHtml(String(valueFormatter(total)))}</span>`;
+    const free = Number(safeValues.free || 0);
+    const pro = Number(safeValues.pro || 0);
+    return `<span class="metric-total">${escapeHtml(String(valueFormatter(total)))}</span><div class="subvalue">Free: ${escapeHtml(String(valueFormatter(free)))} | Pro: ${escapeHtml(String(valueFormatter(pro)))} | Total: ${escapeHtml(String(valueFormatter(total)))}</div>`;
   };
 
-  const topInstallsHtml = renderTotalValue(topLineInstalls, (value) => fmtIntLocal(value), topLineInstalls.total);
-  const topResolvesHtml = renderTotalValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
-  const topTileRequestsHtml = renderTotalValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
+  const topInstallsHtml = renderEditionValue(topLineInstalls, (value) => fmtIntLocal(value), topLineInstalls.total);
+  const topResolvesHtml = renderEditionValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
+  const topTileRequestsHtml = renderEditionValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
   const fmtWholeGbLocal = (value) => `${Math.round(Number(value || 0) / (1024 * 1024 * 1024)).toLocaleString("en-US")} GB`;
-  const topGbServedHtml = renderTotalValue(topLineGbServed, fmtWholeGbLocal, topLineGbServed.total);
+  const topGbServedHtml = renderEditionValue(topLineGbServed, fmtWholeGbLocal, topLineGbServed.total);
   return `
 <!doctype html>
 <html>
@@ -178,12 +180,18 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     };
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
     const fmtWholeGb = (v) => Math.round(Number(v || 0) / (1024 * 1024 * 1024)).toLocaleString() + " GB";
-    const renderTotalMetric = (id, values, asGb = false, fallbackTotal = 0) => {
+    const renderEditionMetric = (id, values, asGb = false, fallbackTotal = 0) => {
       const target = document.getElementById(id);
       if (!target) return;
       const safeValues = values && typeof values === "object" ? values : {};
       const total = Number(safeValues.total || fallbackTotal || 0);
-      target.textContent = asGb ? fmtWholeGb(total) : fmtInt(total);
+      const free = Number(safeValues.free || 0);
+      const pro = Number(safeValues.pro || 0);
+      const formatter = asGb ? fmtWholeGb : fmtInt;
+      target.innerHTML = '<span class="metric-total">' + escapeHtml(formatter(total)) + '</span>' +
+        '<div class="subvalue">Free: ' + escapeHtml(formatter(free)) +
+        ' | Pro: ' + escapeHtml(formatter(pro)) +
+        ' | Total: ' + escapeHtml(formatter(total)) + '</div>';
     };
     const decodeDataValue = (v) => {
       try {
@@ -457,10 +465,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         }
         const s = data.summary || {};
         const topLine = data.top_line || {};
-        renderTotalMetric("topInstallsSplit", topLine.installs || {}, false, Number(topLine && topLine.installs && topLine.installs.total || 0));
-        renderTotalMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
-        renderTotalMetric("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));
-        renderTotalMetric("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
+        renderEditionMetric("topInstallsSplit", topLine.installs || {}, false, Number(topLine && topLine.installs && topLine.installs.total || 0));
+        renderEditionMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
+        renderEditionMetric("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));
+        renderEditionMetric("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
         setText("reqCount", fmtInt(s.request_count));
         setText("bytesServed", fmtBytes(s.bytes_served));
         setText("errors", fmtInt(s.error_count));

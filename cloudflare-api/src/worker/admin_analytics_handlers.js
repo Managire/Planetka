@@ -24,7 +24,7 @@ function snapshotHasTopLineTotals(snapshot) {
   const topLine = snapshot && snapshot.top_line && typeof snapshot.top_line === "object" ? snapshot.top_line : {};
   return ["installs", "resolves", "tile_requests", "gb_served"].every((key) => {
     const section = topLine[key] && typeof topLine[key] === "object" ? topLine[key] : {};
-    return Object.prototype.hasOwnProperty.call(section, "total");
+    return ["free", "pro", "total"].every((field) => Object.prototype.hasOwnProperty.call(section, field));
   });
 }
 
@@ -316,6 +316,7 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
     const installEmailRaw = String(row && row.install_email || "");
     const installEmail = deps.escapeHtml(installEmailRaw);
     const status = String(row && row.install_status || "").trim().toLowerCase();
+    const edition = String(row && row.install_edition || "").trim().toLowerCase() === "pro" ? "Pro" : "Free";
     const installState = status === "blocked" ? "blocked" : "active";
     const installStateLabel = installState === "blocked" ? "Blocked" : "Active";
     let actionButtons = "";
@@ -327,6 +328,7 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
     return `<tr>
       <td><code>${deps.escapeHtml(installIdRaw)}</code></td>
       <td>${installEmail || '<span class="muted">Anonymous install</span>'}</td>
+      <td>${deps.escapeHtml(edition)}</td>
       <td><span class="access_status-pill ${deps.escapeHtml(installState)}">${deps.escapeHtml(installStateLabel)}</span></td>
       <td>${fmtInt(row && (row.total_resolve_count ?? row.resolve_count))}</td>
       <td>${fmtMb(row && row.data_downloaded_bytes)} MB</td>
@@ -379,8 +381,9 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
   <table>
     <thead>
       <tr>
-        <th>Email</th>
         <th>Planetka Install ID</th>
+        <th>Email</th>
+        <th>Edition</th>
         <th>Status</th>
         <th><a href="${buildSortHref("total_resolves")}">Total Resolves${sortMarker("total_resolves")}</a></th>
         <th><a href="${buildSortHref("data_downloaded")}">Data Downloaded${sortMarker("data_downloaded")}</a></th>

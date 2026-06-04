@@ -1561,6 +1561,7 @@ const ANALYTICS_QUERY_DEPS = {
   dbRun,
   ensureCloudInstallAccessColumns,
   ensureAuthRefreshEventsTable,
+  ensureRefreshSessionColumns,
   ensureTileRequestEventsTable,
   ensureTileRequestRollupTables,
   estimateR2MonthlyCostUsd,
