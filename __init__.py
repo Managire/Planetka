@@ -44,9 +44,11 @@ from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
     _planetka_load_post,
     _sync_logging_from_scenes,
+    clear_atmosphere_render_engine_msgbus,
     mark_render_job_progress,
     mark_render_job_started,
     recover_post_render_state,
+    register_atmosphere_render_engine_msgbus,
     stop_resolve,
 )
 from .ui import (
@@ -241,6 +243,11 @@ def _planetka_render_cancel(scene):
 
 
 def _planetka_render_pre(scene):
+    try:
+        from .clouds_local import sanitize_texture_based_cloud_image_assignments
+        sanitize_texture_based_cloud_image_assignments(scene=scene)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed sanitizing texture-based clouds before render", exc_info=True)
     mark_render_job_started(scene)
 
 
@@ -352,6 +359,7 @@ def register():
         logger.debug("Planetka: failed initializing anonymous install id during register", exc_info=True)
 
     _sync_logging_from_scenes()
+    register_atmosphere_render_engine_msgbus()
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()
     bpy.app.handlers.load_post.append(_planetka_load_post)
@@ -388,6 +396,10 @@ def unregister():
         _remove_render_handlers()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed removing render handlers during unregister", exc_info=True)
+    try:
+        clear_atmosphere_render_engine_msgbus()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed clearing atmosphere render-engine msgbus during unregister", exc_info=True)
     try:
         stop_resolve()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:

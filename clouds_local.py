@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 import urllib.error
@@ -184,6 +185,7 @@ VDB_CLOUD_PREVIEW_D_LEVEL_PROP = "planetka_vdb_cloud_preview_d_level"
 VDB_CLOUD_PROJECTED_PIXELS_PROP = "planetka_vdb_cloud_projected_pixels"
 VDB_CLOUD_DENSITY_NODE_NAME = "VDB Density"
 DEFAULT_CLOUD_ALTITUDE_M = 2000.0
+DEFAULT_LOCAL_CLOUD_SIZE_COEF = 2.0
 DEFAULT_VDB_CLOUD_DENSITY = 1.0
 VDB_CLOUD_REFERENCE_EARTH_RADIUS_BU = 2.0
 VDB_CLOUD_DEFAULT_SCALE_FACTOR = 5e-6
@@ -282,6 +284,109 @@ def _clear_local_cloud_lod_cache(obj):
                 del obj[key]
         except (AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka clouds: failed clearing texture-based cloud LOD cache", exc_info=True)
+
+
+def _clear_local_cloud_prepared_texture_props(obj):
+    if obj is None:
+        return
+    for key in (
+        LOCAL_CLOUD_LOADED_TEXTURE_PROP,
+        LOCAL_CLOUD_FINAL_TEXTURE_PROP,
+        LOCAL_CLOUD_BALANCED_TEXTURE_PROP,
+        LOCAL_CLOUD_PREVIEW_TEXTURE_PROP,
+    ):
+        try:
+            obj[key] = ""
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed clearing stale texture-based cloud path", exc_info=True)
+    for key in (
+        LOCAL_CLOUD_D_LEVEL_PROP,
+        LOCAL_CLOUD_FINAL_D_LEVEL_PROP,
+        LOCAL_CLOUD_BALANCED_D_LEVEL_PROP,
+        LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP,
+    ):
+        try:
+            obj[key] = 0
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed clearing stale texture-based cloud d-level", exc_info=True)
+
+
+def _image_path_exists(image):
+    if image is None:
+        return False
+    try:
+        path = bpy.path.abspath(str(getattr(image, "filepath", "") or ""))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        path = ""
+    return bool(path and os.path.isfile(path) and os.path.getsize(path) > 0)
+
+
+def _image_file_path(image):
+    try:
+        return bpy.path.abspath(str(getattr(image, "filepath", "") or ""))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+
+
+def _path_is_legacy_temp_planetka_cache(path):
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        return False
+    try:
+        normalized_path = os.path.normcase(os.path.abspath(os.path.normpath(raw_path)))
+        temp_cache_root = os.path.normcase(os.path.abspath(os.path.normpath(os.path.join(str(tempfile.gettempdir() or "/tmp"), "planetka_cache"))))
+        current_cache_root = os.path.normcase(os.path.abspath(os.path.normpath(str(get_remote_cache_folder("") or ""))))
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        return False
+    if not temp_cache_root or not normalized_path.startswith(temp_cache_root + os.sep):
+        return False
+    return bool(current_cache_root and current_cache_root != temp_cache_root)
+
+
+def _image_edge_size(image):
+    try:
+        size = tuple(int(v) for v in getattr(image, "size", ()) or ())
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        size = ()
+    return max(size) if size else 0
+
+
+def _local_cloud_assigned_image_is_unsafe(obj):
+    if not _is_local_cloud_object(obj):
+        return False
+    material = _resolve_object_material(obj)
+    image_node = _find_image_texture_node(material)
+    image = getattr(image_node, "image", None) if image_node else None
+    if image is None:
+        return False
+    if _path_is_legacy_temp_planetka_cache(_image_file_path(image)):
+        return True
+    if not _image_path_exists(image):
+        return True
+    edge = _image_edge_size(image)
+    if edge <= 0:
+        return True
+    return edge > int(_effective_local_cloud_gpu_texture_max_size())
+
+
+def sanitize_texture_based_cloud_image_assignments(scene=None):
+    """Replace missing/oversized assigned cloud textures with thumbnails.
+
+    Resolve Planetka will download and assign the correct adaptive EXR again.
+    This guard prevents stale saved cache paths or CPU-only oversized images from
+    reaching GPU upload, which can fail on Metal.
+    """
+    _ = scene
+    changed = 0
+    for obj in list(_iter_local_cloud_objects()):
+        if not _local_cloud_assigned_image_is_unsafe(obj):
+            continue
+        texture_name = _local_cloud_texture_name(obj)
+        _clear_local_cloud_prepared_texture_props(obj)
+        if texture_name:
+            _assign_local_cloud_placeholder_texture(obj, texture_name)
+        changed += 1
+    return changed
 
 
 def _clear_vdb_cloud_lod_cache(obj):
@@ -3584,7 +3689,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             setattr(new_obj, LOCAL_CLOUD_PROP_LONGITUDE, float(lon))
             setattr(new_obj, LOCAL_CLOUD_PROP_LATITUDE, float(lat))
             setattr(new_obj, LOCAL_CLOUD_PROP_ALTITUDE_M, float(DEFAULT_CLOUD_ALTITUDE_M))
-            setattr(new_obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)
+            setattr(new_obj, LOCAL_CLOUD_PROP_SIZE_COEF, float(DEFAULT_LOCAL_CLOUD_SIZE_COEF))
             setattr(new_obj, LOCAL_CLOUD_PROP_ROTATION_DEG, 0.0)
             setattr(new_obj, LOCAL_CLOUD_PROP_THICKNESS_M, 50.0)
             setattr(new_obj, LOCAL_CLOUD_PROP_CLOUD_COLOR, tuple(_local_cloud_material_input_default("Cloud Color", (1.0, 1.0, 1.0, 1.0))))
@@ -4234,7 +4339,7 @@ def register_object_properties():
         ),
         (
             LOCAL_CLOUD_PROP_SIZE_COEF,
-            dict(name="Texture-Based Cloud Size Coef", default=1.0, min=1e-6, precision=3, update=update_local_cloud_object_size),
+            dict(name="Texture-Based Cloud Size Coef", default=float(DEFAULT_LOCAL_CLOUD_SIZE_COEF), min=1e-6, precision=3, update=update_local_cloud_object_size),
         ),
         (
             LOCAL_CLOUD_PROP_ROTATION_DEG,

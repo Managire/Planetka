@@ -1581,6 +1581,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             float(max(0.0, float(resolve_total_ms) / 1000.0)),
             log_label="Planetka: failed storing manual resolve summary stats",
         )
+        
 
     def execute(self, context):
         resolve_start = time.perf_counter()

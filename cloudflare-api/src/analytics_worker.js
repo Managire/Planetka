@@ -1,4 +1,6 @@
 import {
+  corsHeaders,
+  html,
   json,
   jsonWithHeaders,
   publicErrorCode,
@@ -83,6 +85,10 @@ import {
   handleAdminInstallHardBlock as handleAdminInstallHardBlockRoute,
   handleAdminInstallUnblock as handleAdminInstallUnblockRoute,
 } from "./worker/admin_user_handlers.js";
+import {
+  handleAdminBillingPrices as handleAdminBillingPricesRoute,
+  readAdminBillingSettings,
+} from "./worker/billing_handlers.js";
 import {
   runScheduledMaintenanceJobs,
 } from "./worker/maintenance_jobs.js";
@@ -773,7 +779,8 @@ async function ensureRefreshSessionColumns(db) {
         auth_method TEXT,
         install_edition TEXT NOT NULL DEFAULT 'pro',
         edition_signature TEXT,
-        device_id TEXT
+        device_id TEXT,
+        addon_version TEXT
       )
     `,
   );
@@ -786,6 +793,7 @@ async function ensureRefreshSessionColumns(db) {
     !names.has("edition_signature") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN edition_signature TEXT` : "",
     !names.has("device_id") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN device_id TEXT` : "",
     !names.has("client_ip_scope") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN client_ip_scope TEXT` : "",
+    !names.has("addon_version") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN addon_version TEXT` : "",
   ].filter(Boolean)) {
     try {
       await dbRun(db, statement);
@@ -1433,9 +1441,15 @@ async function ensureTileRequestEventsTable(db) {
     duration_ms INTEGER NOT NULL DEFAULT 0,
     cf_ray TEXT,
     cf_country TEXT,
+    cf_region TEXT,
     client_ip TEXT,
     error_code TEXT
   )`);
+  const eventPragma = await db.prepare(`PRAGMA table_info(tile_request_events)`).all();
+  const eventColumnNames = new Set((Array.isArray(eventPragma && eventPragma.results) ? eventPragma.results : []).map((row) => String(row && row.name || "")));
+  if (!eventColumnNames.has("cf_region")) {
+    await dbRun(db, `ALTER TABLE tile_request_events ADD COLUMN cf_region TEXT`);
+  }
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_unix ON tile_request_events(created_at_unix DESC)`);
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_user_created ON tile_request_events(user_id, created_at_unix DESC)`);
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_quality_created ON tile_request_events(quality_mode, created_at_unix DESC)`);
@@ -1484,8 +1498,8 @@ async function recordTileRequestEvent(db, payload) {
   const createdAtUnix = parseNonNegativeInteger(payload.created_at_unix, Math.floor(Date.now() / 1000));
   await dbRun(db, `INSERT INTO tile_request_events (
     id, created_at, created_at_unix, user_id, user_email, resolve_id, method, path, folder, file_name,
-    tile_key, quality_mode, status_code, bytes_served, cache_status, duration_ms, cf_ray, cf_country, client_ip, error_code
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    tile_key, quality_mode, status_code, bytes_served, cache_status, duration_ms, cf_ray, cf_country, cf_region, client_ip, error_code
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
     crypto.randomUUID(),
     createdAt,
     createdAtUnix,
@@ -1504,6 +1518,7 @@ async function recordTileRequestEvent(db, payload) {
     clampNonNegativeInt(payload.duration_ms),
     String(payload.cf_ray || ""),
     String(payload.cf_country || ""),
+    String(payload.cf_region || ""),
     String(payload.client_ip || ""),
     String(payload.error_code || ""),
   ]);
@@ -1590,6 +1605,7 @@ const requireAnalyticsAdmin = (request, env) => requireAnalyticsAdminRoute(reque
 
 const ADMIN_ANALYTICS_DEPS = {
   buildAdminSessionCookie,
+  buildAnalyticsInstallsSnapshot: (db, env) => buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS),
   buildAnalyticsUsersSnapshot: (db, env) => buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS),
   collectAnalyticsSnapshot: (db, minutes, access_statusFilter, liveTileMapWindowMinutes, env) =>
     collectAnalyticsSnapshotQuery(db, minutes, access_statusFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
@@ -1600,13 +1616,19 @@ const ADMIN_ANALYTICS_DEPS = {
   findInstallByEmail: findCloudInstallByEmail,
   findCloudInstallById,
   findInstallById: findCloudInstallById,
+  corsHeaders,
+  escapeHtml,
+  html,
   isAnalyticsSnapshotStale,
   json,
   listAnalyticsUsers: (db, env, options = {}) => listAnalyticsUsersQuery(db, env, options, ANALYTICS_QUERY_DEPS),
   loadAnalyticsSnapshot,
+  loadAnalyticsInstallsSnapshot: loadAnalyticsUsersSnapshot,
   loadAnalyticsUsersSnapshot,
   normalizeAccessStatus,
   nowIso,
+  parseAnalyticsInstallsSort: (value) => parseAnalyticsUsersSortQuery(value),
+  parseAnalyticsInstallsSortDirection: (value) => parseAnalyticsUsersSortDirectionQuery(value),
   parseAnalyticsUsersSort: (value) => parseAnalyticsUsersSortQuery(value),
   parseAnalyticsUsersSortDirection: (value) => parseAnalyticsUsersSortDirectionQuery(value),
   parseHeavyUserAccessStatusFilter: (value) => parseHeavyUserAccessStatusFilterQuery(value, ANALYTICS_QUERY_DEPS),
@@ -1624,6 +1646,7 @@ const ADMIN_ANALYTICS_DEPS = {
   dbRun,
   requireDb,
   BYTES_PER_GB: 1024 * 1024 * 1024,
+  readAdminBillingSettings,
 };
 
 const WORKER_OVERLOAD_MONITOR_DEPS = {
@@ -1644,6 +1667,9 @@ const ADMIN_SESSION_DEPS = {
   DEFAULT_ADMIN_LOGIN_EMAIL,
   enforceCloudInstallAccessStatusPolicy,
   ensureRateLimitsTable,
+  corsHeaders,
+  escapeHtml,
+  html,
   isAnalyticsAdmin,
   json,
   jsonWithHeaders,
@@ -1759,6 +1785,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminInstallHardBlock: (request, env) => handleAdminInstallHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminInstallUnblock: (request, env) => handleAdminInstallUnblockRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminBillingPrices: (request, env) => handleAdminBillingPricesRoute(request, env, ADMIN_ANALYTICS_DEPS),
 };
 
 function analyticsWorkerHealth(env) {

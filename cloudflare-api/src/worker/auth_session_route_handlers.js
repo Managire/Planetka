@@ -98,6 +98,7 @@ export function createAuthSessionRouteHandlers(deps) {
     const requestIpScope = typeof deps.requestClientIpScope === "function"
       ? String(deps.requestClientIpScope(request) || "").trim()
       : "";
+    const requestAddonVersion = String(body.addon_version || body.addonVersion || request.headers.get("X-Planetka-Addon-Version") || "").trim().slice(0, 80);
     if (!refreshToken) {
       return errorResponse("missing_refresh_token", 400, null, {
         has_body: Boolean(body && Object.keys(body).length),
@@ -118,6 +119,7 @@ export function createAuthSessionRouteHandlers(deps) {
           rs.edition_signature,
           rs.device_id,
           rs.client_ip_scope,
+          rs.addon_version,
           u.email,
           u.status
         FROM cloud_session_refresh_tokens rs
@@ -197,6 +199,7 @@ export function createAuthSessionRouteHandlers(deps) {
         edition_signature: editionSignature,
         device_id: String(session.device_id || "").trim(),
         client_ip_scope: requestIpScope || String(session.client_ip_scope || "").trim(),
+        addon_version: requestAddonVersion || String(session.addon_version || "").trim(),
       },
     );
     await recordRefreshEvent({

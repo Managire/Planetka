@@ -48,6 +48,8 @@ from .planetka_ops.scene_setup_ops import (
     PLANETKA_OT_OptimizeSettings,
     PLANETKA_OT_OptimizeSettingsPopup,
 )
+from .billing import ensure_paid_access_or_open_checkout
+from .auth import AuthApiError
 from .asset_builder import (
     PLANETKA_ROOT_OBJECT_NAME,
     ensure_atmosphere_for_mode,
@@ -306,6 +308,26 @@ class PLANETKA_OT_ResolvePlanetka(bpy.types.Operator):
         quality_mode = _normalize_startup_texture_quality_mode(
             getattr(props, "texture_quality_mode", "PREVIEW")
         )
+        if quality_mode == "FULL":
+            try:
+                allowed, message = ensure_paid_access_or_open_checkout("full_resolve", prefs=get_prefs())
+            except AuthApiError as exc:
+                return fail(
+                    self,
+                    f"Planetka checkout is not available: {exc}",
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
+                )
+            except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+                return fail(
+                    self,
+                    f"Planetka checkout failed: {exc}",
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
+                )
+            if not allowed:
+                self.report({'INFO'}, str(message or "Complete Planetka checkout, then press Resolve Planetka again."))
+                return {'CANCELLED'}
         try:
             result = bpy.ops.planetka.load_textures(
                 scope_mode="CAMERA",

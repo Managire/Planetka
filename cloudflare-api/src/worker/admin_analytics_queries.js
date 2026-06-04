@@ -81,6 +81,26 @@ function latestInstallEditionCte() {
       )`;
 }
 
+function latestInstallVersionCte() {
+  return `
+      latest_install_versions AS (
+        SELECT user_id, addon_version
+        FROM (
+          SELECT
+            user_id,
+            NULLIF(TRIM(COALESCE(addon_version, '')), '') AS addon_version,
+            ROW_NUMBER() OVER (
+              PARTITION BY user_id
+              ORDER BY datetime(COALESCE(NULLIF(TRIM(created_at), ''), '1970-01-01T00:00:00Z')) DESC
+            ) AS rn
+          FROM cloud_session_refresh_tokens
+          WHERE user_id IS NOT NULL AND user_id != ''
+            AND NULLIF(TRIM(COALESCE(addon_version, '')), '') IS NOT NULL
+        )
+        WHERE rn = 1
+      )`;
+}
+
 function splitMetricFromRows(rows, valueKey) {
   const split = { free: 0, pro: 0, total: 0 };
   for (const row of (Array.isArray(rows) ? rows : [])) {
@@ -948,6 +968,7 @@ export async function collectAnalyticsSnapshot(
     }
     return {
       user_id: userId,
+      install_id: userId,
       user_email: userEmail,
       user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
       tile_key: tileKey,
@@ -963,6 +984,7 @@ export async function collectAnalyticsSnapshot(
     `
       SELECT
         created_at,
+        user_id,
         user_email,
         folder,
         file_name,
@@ -1178,6 +1200,7 @@ export async function collectAnalyticsSnapshot(
 
   let heavyInstalls30d = (Array.isArray(topHeavyLifetime) ? topHeavyLifetime : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
+    install_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
     user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
     lifetime_bytes: deps.clampNonNegativeInt(row && row.lifetime_bytes),
@@ -1240,6 +1263,7 @@ export async function collectAnalyticsSnapshot(
     });
   const normalizedActiveInstalls10m = (Array.isArray(activeInstalls10m) ? activeInstalls10m : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
+    install_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
     user_status: normalizeAccessStatusStrict(row && row.user_status, deps),
     request_count: deps.clampNonNegativeInt(row && row.request_count),
@@ -1417,6 +1441,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
     db,
     `
       WITH ${latestInstallEditionCte()},
+      ${latestInstallVersionCte()},
       resolve_counts AS (
         SELECT
           user_id,
@@ -1432,15 +1457,39 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
           COALESCE(MAX(r.last_event_unix), 0) AS last_seen_unix
         FROM tile_request_rollup_daily_install r
         GROUP BY r.user_id
+      ),
+      latest_location AS (
+        SELECT user_id, cf_country, cf_region
+        FROM (
+          SELECT
+            user_id,
+            NULLIF(TRIM(UPPER(COALESCE(cf_country, ''))), '') AS cf_country,
+            NULLIF(TRIM(COALESCE(cf_region, '')), '') AS cf_region,
+            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at_unix DESC) AS rn
+          FROM tile_request_events
+          WHERE user_id IS NOT NULL AND user_id != ''
+            AND (NULLIF(TRIM(COALESCE(cf_country, '')), '') IS NOT NULL OR NULLIF(TRIM(COALESCE(cf_region, '')), '') IS NOT NULL)
+        )
+        WHERE rn = 1
       )
       SELECT
+        u.id AS install_id,
         u.id AS user_id,
         CASE
           WHEN LOWER(COALESCE(u.email, '')) LIKE 'anonymous+%@planetka.local' THEN ''
           ELSE u.email
         END AS user_email,
+        CASE
+          WHEN LOWER(COALESCE(u.email, '')) LIKE 'anonymous+%@planetka.local' THEN ''
+          ELSE u.email
+        END AS install_email,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
+        NULLIF(TRIM(LOWER(u.status)), '') AS install_status,
         COALESCE(lie.install_edition, 'pro') AS install_edition,
+        COALESCE(liv.addon_version, '') AS addon_version,
+        COALESCE(NULLIF(TRIM(u.created_at), ''), '') AS installed_at,
+        COALESCE(NULLIF(ll.cf_country, 'UNKNOWN'), '') AS last_country,
+        COALESCE(ll.cf_region, '') AS last_region,
         COALESCE(rc.total_resolve_count, 0) AS total_resolve_count,
         COALESCE(du.data_downloaded_bytes, 0) AS data_downloaded_bytes,
         COALESCE(
@@ -1450,8 +1499,10 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         COALESCE(du.last_seen_unix, strftime('%s', COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))), 0) AS last_seen_unix
       FROM cloud_installs u
       LEFT JOIN latest_install_editions lie ON lie.user_id = u.id
+      LEFT JOIN latest_install_versions liv ON liv.user_id = u.id
       LEFT JOIN daily_usage du ON du.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
+      LEFT JOIN latest_location ll ON ll.user_id = u.id
       ${whereSql}
       ORDER BY ${orderSql} ${sortDir.toUpperCase()}, LOWER(COALESCE(u.email, '')) ASC
       LIMIT ${limit}

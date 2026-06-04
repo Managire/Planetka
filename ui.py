@@ -17,6 +17,7 @@ from .auth import (
     ensure_authenticated_session,
     is_authenticated,
 )
+from .billing import animation_render_button_label, full_resolve_button_label
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
@@ -1067,7 +1068,7 @@ def _draw_general_cloud_summary(layout):
     cloud_overloaded = bool(cloud_message == CLOUD_OVERLOADED_MESSAGE)
     status_icon = "CHECKMARK" if connected else ("INFO" if authenticated and not checked else "ERROR")
     if connected:
-        status_text = f"Connected ({addon_edition_label(get_session_edition(prefs))})"
+        status_text = "Connected"
     elif authenticated and not checked:
         status_text = "Checking"
     elif authenticated and cloud_overloaded:
@@ -1080,9 +1081,14 @@ def _draw_general_cloud_summary(layout):
 
     cloud_box = layout.box()
     cloud_box.label(text="Planetka Data", icon="WORLD")
-    row = cloud_box.row()
+    row = cloud_box.row(align=True)
+    row.use_property_split = False
     row.label(text="Status")
     row.label(text=status_text, icon=status_icon)
+    edition_row = cloud_box.row(align=True)
+    edition_row.use_property_split = False
+    edition_row.label(text="Edition")
+    edition_row.label(text=addon_edition_label(get_session_edition(prefs)), icon="SOLO_ON")
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1105,13 +1111,18 @@ def _draw_new_earth(layout):
     has_earth = _has_earth()
     create_enabled = _planetka_controls_enabled(not has_earth)
 
+    if not has_earth:
+        start_row = layout.row()
+        start_row.alignment = 'CENTER'
+        start_row.label(text="Start here", icon="TRIA_DOWN")
+
     row = layout.row(align=True)
     row.alert = False
     row.enabled = create_enabled
     split = row.split(factor=0.88, align=True)
     main_col = split.column(align=True)
     main_col.scale_y = ADD_EARTH_BUTTON_SCALE_Y
-    main_col.operator("planetka.optimize_settings", text="Optimize Settings", icon="PREFERENCES")
+    main_col.operator("planetka.optimize_settings", text="Prepare / Optimize Settings", icon="PREFERENCES")
     cog_col = split.column(align=True)
     cog_col.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     cog_col.operator("planetka.optimize_settings_popup", text="", icon="PREFERENCES", emboss=True)
@@ -1134,10 +1145,6 @@ def _draw_new_earth(layout):
         status_row.alert = bool(not create_status_active and "failed" in create_status.casefold())
         status_icon = "TIME" if create_status_active else ("CHECKMARK" if "success" in create_status.casefold() else "INFO")
         status_row.label(text=create_status, icon=status_icon)
-    elif not has_earth:
-        start_row = layout.row()
-        start_row.alignment = 'CENTER'
-        start_row.label(text="Start here", icon="TRIA_UP")
 
 
 def _draw_live_telemetry(layout, scene):
@@ -1188,7 +1195,7 @@ def _draw_live_telemetry(layout, scene):
         qualities = (
             ("PREVIEW", "Preview"),
             ("BALANCED", "Balanced"),
-            ("FULL", "Full"),
+            ("FULL", full_resolve_button_label(prefs)),
         )
         button_row = quality_box.row(align=True)
         for mode_key, label in qualities:
@@ -2448,8 +2455,12 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
         else:
             render_button_row.enabled = bool(earth_workflow_enabled)
+            try:
+                frame_count = max(1, int(getattr(props, "anim_frame_end", 250)) - int(getattr(props, "anim_frame_start", 1)) + 1)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                frame_count = 1
             render_button_row.operator(
                 "planetka.animation_render",
-                text="Render Animation",
+                text=animation_render_button_label(frame_count, prefs),
                 icon="RENDER_ANIMATION",
             )

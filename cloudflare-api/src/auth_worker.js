@@ -34,6 +34,12 @@ import {
   handleAddonUpdateManifest,
   handleLegalDocumentRequest,
 } from "./worker/public_misc_handlers.js";
+import {
+  handleBillingCheckout,
+  handleBillingConsume,
+  handleBillingPrices,
+  handleBillingWebhook,
+} from "./worker/billing_handlers.js";
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
@@ -685,7 +691,8 @@ async function ensureRefreshSessionColumns(db) {
         install_edition TEXT NOT NULL DEFAULT 'pro',
         edition_signature TEXT,
         device_id TEXT,
-        client_ip_scope TEXT
+        client_ip_scope TEXT,
+        addon_version TEXT
       )
     `,
   );
@@ -698,6 +705,7 @@ async function ensureRefreshSessionColumns(db) {
     !names.has("edition_signature") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN edition_signature TEXT` : "",
     !names.has("device_id") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN device_id TEXT` : "",
     !names.has("client_ip_scope") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN client_ip_scope TEXT` : "",
+    !names.has("addon_version") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN addon_version TEXT` : "",
   ].filter(Boolean)) {
     try {
       await dbRun(db, statement);
@@ -1143,6 +1151,7 @@ async function handleAnonymousAuth(request, env) {
   const deviceId = normalizeDeviceId(body.device_id || request.headers.get("X-Planetka-Device-Id") || "");
   const requestedInstallEdition = await resolveVerifiedInstallEdition(body, env);
   const editionSignature = String(body.edition_signature || body.package_signature || "").trim().slice(0, 256);
+  const addonVersion = String(body.addon_version || body.addonVersion || request.headers.get("X-Planetka-Addon-Version") || "").trim().slice(0, 80);
   const clientIpScope = requestClientIpScope(request);
   if (!deviceId) {
     return json({ ok: false, error: "missing_device_id" }, 400, env);
@@ -1198,6 +1207,7 @@ async function handleAnonymousAuth(request, env) {
       edition_signature: editionSignature,
       device_id: deviceId,
       client_ip_scope: clientIpScope,
+      addon_version: addonVersion,
     },
   );
   const publicEmail = isSyntheticAnonymousEmail(policyUser.email) ? "" : String(policyUser.email || "");
@@ -1220,6 +1230,13 @@ async function handleAnonymousAuth(request, env) {
   );
 }
 
+
+const billingDeps = {
+  requireDb,
+  requireCloudSessionContext,
+  parseJson,
+  json,
+};
 
 const updateManifestDeps = {
   ADDON_ID,
@@ -1322,6 +1339,31 @@ async function dispatchAuthRequest(request, env) {
       return methodNotAllowed(env);
     }
     return handleLegalDocumentRequest(request, env, path, updateManifestDeps);
+  }
+
+  if (path === "/billing/prices") {
+    if (request.method !== "GET") {
+      return methodNotAllowed(env);
+    }
+    return handleBillingPrices(request, env, billingDeps);
+  }
+  if (path === "/billing/checkout") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return handleBillingCheckout(request, env, billingDeps);
+  }
+  if (path === "/billing/consume") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return handleBillingConsume(request, env, billingDeps);
+  }
+  if (path === "/billing/webhook") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return handleBillingWebhook(request, env, billingDeps);
   }
   if (path === "/auth/anonymous") {
     if (request.method !== "POST") {

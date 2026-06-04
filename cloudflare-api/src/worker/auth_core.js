@@ -145,6 +145,7 @@ export function createAuthCore(deps) {
     const editionSignature = String(metadata.edition_signature || metadata.editionSignature || "").trim().slice(0, 256);
     const deviceId = deps.normalizeDeviceId(metadata.device_id || metadata.deviceId || "");
     const clientIpScope = String(metadata.client_ip_scope || metadata.clientIpScope || "").trim().slice(0, 80);
+    const addonVersion = String(metadata.addon_version || metadata.addonVersion || "").trim().slice(0, 80);
     await deps.dbRun(
       db,
       `
@@ -158,8 +159,9 @@ export function createAuthCore(deps) {
           install_edition,
           edition_signature,
           device_id,
-          client_ip_scope
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          client_ip_scope,
+          addon_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         refreshSessionId,
@@ -172,6 +174,7 @@ export function createAuthCore(deps) {
         editionSignature || null,
         deviceId || null,
         clientIpScope || null,
+        addonVersion || null,
       ],
     );
     return refreshToken;

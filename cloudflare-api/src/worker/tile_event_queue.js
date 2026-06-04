@@ -31,6 +31,7 @@ export async function handleTileEventQueueBatch(batch, env, deps) {
         duration_ms: deps.clampNonNegativeInt(payload.duration_ms),
         cf_ray: String(payload.cf_ray || ""),
         cf_country: String(payload.cf_country || ""),
+        cf_region: String(payload.cf_region || ""),
         client_ip: String(payload.client_ip || ""),
         error_code: String(payload.error_code || ""),
       });

@@ -148,6 +148,8 @@ export async function handleResolveSummary(request, env, deps) {
   const totalBytes = clampNonNegativeInt(body && (body.total_bytes || body.totalBytes));
   const tileCount = clampNonNegativeInt(body && (body.tile_count || body.tileCount));
   const durationMs = clampNonNegativeInt(body && (body.duration_ms || body.durationMs));
+  const cfCountryRaw = String(request.headers.get("CF-IPCountry") || request.cf && request.cf.country || "").trim().toUpperCase();
+  const cfRegion = String(request.cf && (request.cf.region || request.cf.regionCode) || "").trim();
 
   if (typeof recordResolveSummaryEvent !== "function") {
     return jsonResponse({ ok: false, error: "resolve_summary_unavailable" }, 503, env);
@@ -164,6 +166,8 @@ export async function handleResolveSummary(request, env, deps) {
     total_bytes: totalBytes,
     tile_count: tileCount,
     duration_ms: durationMs,
+    cf_country: cfCountryRaw && cfCountryRaw !== "XX" && cfCountryRaw !== "T1" ? cfCountryRaw : "UNKNOWN",
+    cf_region: cfRegion,
     path: "/tiles/resolve-summary",
   });
   return jsonResponse({ ok: true, stored: Boolean(result && result.stored) }, 200, env);

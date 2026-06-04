@@ -363,9 +363,15 @@ async function ensureResolveUsageTables(db) {
     duration_ms INTEGER NOT NULL DEFAULT 0,
     cf_ray TEXT,
     cf_country TEXT,
+    cf_region TEXT,
     client_ip TEXT,
     error_code TEXT
   )`);
+  const eventPragma = await db.prepare(`PRAGMA table_info(tile_request_events)`).all();
+  const eventColumnNames = new Set((Array.isArray(eventPragma && eventPragma.results) ? eventPragma.results : []).map((row) => String(row && row.name || "")));
+  if (!eventColumnNames.has("cf_region")) {
+    await dbRun(db, `ALTER TABLE tile_request_events ADD COLUMN cf_region TEXT`);
+  }
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_unix ON tile_request_events(created_at_unix DESC)`);
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_user_created ON tile_request_events(user_id, created_at_unix DESC)`);
   await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_quality_created ON tile_request_events(quality_mode, created_at_unix DESC)`);
@@ -447,8 +453,8 @@ async function recordResolveSummaryEvent(db, payload = {}) {
     `
       INSERT OR IGNORE INTO tile_request_events (
         id, created_at, created_at_unix, user_id, user_email, resolve_id, method, path, folder, file_name,
-        tile_key, quality_mode, status_code, bytes_served, cache_status, duration_ms, cf_ray, cf_country, client_ip, error_code
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        tile_key, quality_mode, status_code, bytes_served, cache_status, duration_ms, cf_ray, cf_country, cf_region, client_ip, error_code
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       eventId,
@@ -468,7 +474,8 @@ async function recordResolveSummaryEvent(db, payload = {}) {
       "SUMMARY",
       clampNonNegativeInt(payload.duration_ms),
       "",
-      "",
+      String(payload.cf_country || ""),
+      String(payload.cf_region || ""),
       "",
       "",
     ],

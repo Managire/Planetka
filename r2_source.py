@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import sys
 import threading
 import tempfile
 import time
@@ -122,7 +123,17 @@ def _env(name, fallback=None):
 
 
 def _default_cache_root():
-    return os.path.join(str(tempfile.gettempdir() or "/tmp"), "planetka_cache")
+    override = _env("PLANETKA_R2_CACHE_DIR", ("PLANETKA_CACHE_DIR",))
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    home = os.path.expanduser("~")
+    if os.name == "nt":
+        base = _env("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        return os.path.join(base, "Planetka", "Cache")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Caches", "Planetka")
+    base = _env("XDG_CACHE_HOME") or os.path.join(home, ".cache")
+    return os.path.join(base, "planetka")
 
 
 def _parse_positive_float(value, default):

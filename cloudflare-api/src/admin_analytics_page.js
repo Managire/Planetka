@@ -14,6 +14,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
+    billingSettings,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -21,13 +22,21 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topLineResolves = safeTopLine.resolves && typeof safeTopLine.resolves === "object" ? safeTopLine.resolves : {};
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
+  const safeBillingSettings = billingSettings && typeof billingSettings === "object" ? billingSettings : {};
+  const billingFullCents = Number(safeBillingSettings.full_resolve_price_cents || 1000);
+  const billingAnimationCents = Number(safeBillingSettings.animation_price_per_300_cents || 2900);
+  const billingCurrency = String(safeBillingSettings.currency || "EUR").toUpperCase();
 
   const renderEditionValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
     const total = Number(safeValues.total || fallbackTotal || 0);
     const free = Number(safeValues.free || 0);
     const pro = Number(safeValues.pro || 0);
-    return `<span class="metric-total">${escapeHtml(String(valueFormatter(total)))}</span><div class="subvalue">Free: ${escapeHtml(String(valueFormatter(free)))} | Pro: ${escapeHtml(String(valueFormatter(pro)))} | Total: ${escapeHtml(String(valueFormatter(total)))}</div>`;
+    return `<div class="metric-split">
+      <span class="metric-item metric-free"><span class="metric-number">${escapeHtml(String(valueFormatter(free)))}</span></span>
+      <span class="metric-item metric-pro"><span class="metric-number">${escapeHtml(String(valueFormatter(pro)))}</span></span>
+      <span class="metric-item metric-total"><span class="metric-number">${escapeHtml(String(valueFormatter(total)))}</span></span>
+    </div>`;
   };
 
   const topInstallsHtml = renderEditionValue(topLineInstalls, (value) => fmtIntLocal(value), topLineInstalls.total);
@@ -51,14 +60,22 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 12px; }
     .label { color: #93c5fd; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
     .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
-    .metric-total { color: #ffffff; }
+    .metric-split { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:baseline; margin-top: 6px; }
+    .metric-item { display:inline-flex; gap:4px; align-items:baseline; white-space:nowrap; }
+    .metric-number { font-size:20px; font-weight:700; }
+    .metric-free { color:#86efac; }
+    .metric-pro { color:#fca5a5; }
+    .metric-total { color:#ffffff; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
     .map-shell { position: relative; width: 100%; max-width: 980px; aspect-ratio: 2 / 1; margin-top: 8px; border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; background: #0a1628; }
     .map-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
     .map-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     .map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; }
     select, button, input { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
-    input[type=number] { width: 90px; }
+    input[type=number] { width: 110px; }
+    .billing-form { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:10px; }
+    .billing-field { display:flex; flex-direction:column; gap:4px; }
+    .billing-field label { color:#93c5fd; font-size:12px; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
@@ -97,7 +114,18 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <a id="refresh" href="/admin/analytics?refresh=${encodeURIComponent(buildStamp)}" style="display:inline-block;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:7px 10px;text-decoration:none;">Refresh now</a>
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
-	  <div class="grid">
+	  <div class="section card">
+    <h3 style="margin:0 0 4px;">Billing Prices</h3>
+    <div class="muted">Used by Blender UI and Planetka checkout for Free edition Full data access.</div>
+    <form id="billingPriceForm" class="billing-form">
+      <div class="billing-field"><label>Full Resolve</label><input id="billingFullPrice" type="number" min="0" step="0.01" value="${escapeHtml((billingFullCents / 100).toFixed(2))}" /></div>
+      <div class="billing-field"><label>Animation / 300 frames</label><input id="billingAnimationPrice" type="number" min="0" step="0.01" value="${escapeHtml((billingAnimationCents / 100).toFixed(2))}" /></div>
+      <div class="billing-field"><label>Currency</label><input id="billingCurrency" maxlength="3" value="${escapeHtml(billingCurrency)}" /></div>
+      <button type="submit">Save Prices</button>
+      <span id="billingPriceStatus" class="muted"></span>
+    </form>
+  </div>
+  <div class="grid">
     <div class="card"><div class="label">Installs</div><div id="topInstallsSplit" class="value">${topInstallsHtml}</div></div>
     <div class="card"><div class="label">Resolves</div><div id="topResolvesSplit" class="value">${topResolvesHtml}</div></div>
     <div class="card"><div class="label">Tile Requests</div><div id="topRequestsSplit" class="value">${topTileRequestsHtml}</div></div>
@@ -142,7 +170,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   </div>
   <div class="section">
     <h3>Heavy Installs (Top 20 by Lifetime GB)</h3>
-    <table id="heavyTable"><thead><tr><th>Email</th><th>Resolves</th><th>Lifetime GB</th><th>Last Seen</th></tr></thead><tbody>${serverHeavyRowsHtml}</tbody></table>
+    <table id="heavyTable"><thead><tr><th>Install</th><th>Resolves</th><th>Lifetime GB</th><th>Last Seen</th></tr></thead><tbody>${serverHeavyRowsHtml}</tbody></table>
   </div>
   <script>
     const statusEl = document.getElementById("status");
@@ -188,10 +216,11 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const free = Number(safeValues.free || 0);
       const pro = Number(safeValues.pro || 0);
       const formatter = asGb ? fmtWholeGb : fmtInt;
-      target.innerHTML = '<span class="metric-total">' + escapeHtml(formatter(total)) + '</span>' +
-        '<div class="subvalue">Free: ' + escapeHtml(formatter(free)) +
-        ' | Pro: ' + escapeHtml(formatter(pro)) +
-        ' | Total: ' + escapeHtml(formatter(total)) + '</div>';
+      target.innerHTML = '<div class="metric-split">' +
+        '<span class="metric-item metric-free"><span class="metric-number">' + escapeHtml(formatter(free)) + '</span></span>' +
+        '<span class="metric-item metric-pro"><span class="metric-number">' + escapeHtml(formatter(pro)) + '</span></span>' +
+        '<span class="metric-item metric-total"><span class="metric-number">' + escapeHtml(formatter(total)) + '</span></span>' +
+        '</div>';
     };
     const decodeDataValue = (v) => {
       try {
@@ -235,7 +264,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       return TILE_COLOR_ACTIVE;
     }
     function installKeyForRow(row) {
-      return String((row && row.install_id) || (row && row.install_email) || "").trim();
+      return String((row && row.install_id) || (row && row.user_id) || "").trim();
     }
     function setTileMapInstallFilter(selectedInstallKey) {
       const normalized = String(selectedInstallKey || "").trim();
@@ -357,8 +386,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         if (!parsed) continue;
         if (shouldExcludeTileFromMap(parsed)) continue;
         const installId = String(row && row.install_id || "").trim();
-        const installEmail = String(row && row.install_email || "").trim();
-        const installKey = installId || installEmail || "unknown";
+        const installKey = installId || "unknown";
         if (tileMapSelectedInstallKey && installKey !== tileMapSelectedInstallKey) {
           continue;
         }
@@ -375,8 +403,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const row = item.row;
         const parsed = item.parsed;
         const installId = String(row && row.install_id || "").trim();
-        const installEmail = String(row && row.install_email || "").trim();
-        const installKey = String(item.installKey || installId || installEmail || "unknown");
+        const installKey = String(item.installKey || installId || "unknown");
         const installColor = activeInstallColor();
         const alpha = tileAlphaByD(parsed);
         const x = parsed.x * scaleX;
@@ -401,7 +428,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         if (!stat) {
           stat = {
             installKey,
-            email: installEmail || installKey,
+            label: installKey,
             tileCount: 0,
             requestCount: 0,
             bytesServed: 0,
@@ -438,7 +465,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         .sort((a, b) => (b.bytesServed - a.bytesServed) || (b.requestCount - a.requestCount))
         .slice(0, 50);
       renderRows("tileMapInstallsTable", installRows, (row) => ({
-        html: \`<td>\${row.email || ""}</td>
+        html: \`<td><code>\${escapeHtml(row.label || "")}</code></td>
         <td>\${fmtInt(row.tileCount)}</td>
         <td>\${fmtInt(row.requestCount)}</td>
         <td>\${fmtGb(row.bytesServed)}</td>
@@ -446,6 +473,37 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         rowClass: tileMapSelectedInstallKey && tileMapSelectedInstallKey === row.installKey ? "install-filter-active" : "",
       }));
     }
+    async function saveBillingPrices(event) {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      const status = document.getElementById("billingPriceStatus");
+      const fullEl = document.getElementById("billingFullPrice");
+      const animationEl = document.getElementById("billingAnimationPrice");
+      const currencyEl = document.getElementById("billingCurrency");
+      const cents = (value) => Math.max(0, Math.round(Number(value || 0) * 100));
+      try {
+        if (status) status.textContent = "Saving...";
+        const res = await fetch("/admin/billing/prices", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            full_resolve_price_cents: cents(fullEl && fullEl.value),
+            animation_price_per_300_cents: cents(animationEl && animationEl.value),
+            currency: String(currencyEl && currencyEl.value || "EUR").toUpperCase(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(String(data && (data.message || data.error) || "save_failed"));
+        if (status) status.textContent = "Saved";
+      } catch (error) {
+        if (status) {
+          status.textContent = "Error: " + String(error && error.message || error);
+          status.className = "error";
+        }
+      }
+    }
+    const billingForm = document.getElementById("billingPriceForm");
+    if (billingForm) billingForm.addEventListener("submit", saveBillingPrices);
     async function loadAnalytics() {
       try {
         const minutes = String((windowEl && windowEl.value) || "60");
@@ -486,21 +544,23 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         setText("authRefreshCriticalFailures", fmtInt(refreshCriticalFailures));
         setText("authRefreshCriticalInstalls", fmtInt(refreshCriticalInstalls));
         renderRows("activeInstallsTable", data.active_installs_10m, (row) => {
-          return \`<td>\${row.install_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
+          const installId = row.install_id || row.user_id || "";
+          return \`<td><code>\${escapeHtml(installId)}</code></td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
         });
         renderRows("heavyTable", data.heavy_installs_30d || [], (row) => {
           const lastSeen = Number.isFinite(Number(row.last_event_unix))
             ? new Date(Number(row.last_event_unix) * 1000).toISOString()
             : "";
           const lifetimeBytes = (row && (row.lifetime_bytes ?? row.bytes_served_lifetime ?? row.bytes_served_30d ?? row.month_bytes));
-          return \`<td>\${row.install_email || ""}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(lifetimeBytes)}</td><td>\${lastSeen}</td>\`;
+          const installId = row.install_id || row.user_id || "";
+          return \`<td><code>\${escapeHtml(installId)}</code></td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(lifetimeBytes)}</td><td>\${lastSeen}</td>\`;
         });
         renderLiveTileMap(data.live_tile_map || {});
-        renderRows("authRefreshInstallsTable", refreshHealth.top_failure_installs || [], (row) => \`<td>\${row.install_email || row.install_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
+        renderRows("authRefreshInstallsTable", refreshHealth.top_failure_installs || [], (row) => \`<td><code>\${escapeHtml(row.install_id || row.user_id || "")}</code></td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
         renderRows("authRefreshErrorsTable", refreshHealth.error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
-        renderRows("authRefreshCriticalInstallsTable", refreshHealth.top_critical_failure_installs || [], (row) => \`<td>\${row.install_email || row.install_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
+        renderRows("authRefreshCriticalInstallsTable", refreshHealth.top_critical_failure_installs || [], (row) => \`<td><code>\${escapeHtml(row.install_id || row.user_id || "")}</code></td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
         renderRows("authRefreshCriticalErrorsTable", refreshHealth.critical_error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
-        renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.install_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
+        renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td><code>\${escapeHtml(row.install_id || row.user_id || "")}</code></td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
         if (statusEl) {
           statusEl.textContent = "Updated " + new Date().toLocaleTimeString();
           statusEl.className = "muted";

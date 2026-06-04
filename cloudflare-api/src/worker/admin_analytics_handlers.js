@@ -11,11 +11,14 @@ function fmtGbLocal(value, parseNonNegativeInteger, bytesPerGb) {
   });
 }
 
-function fmtMbLocal(value, parseNonNegativeInteger) {
-  return (Number(parseNonNegativeInteger(value, 0)) / (1024 * 1024)).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+function fmtAdminDateTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const parsedMs = Date.parse(text);
+  if (!Number.isFinite(parsedMs)) {
+    return text.replace("T", " ").replace(/\.\d{1,6}Z?$/i, "").replace(/Z$/i, "").trim();
+  }
+  return new Date(parsedMs).toISOString().replace("T", " ").replace(/\.\d{3}Z$/i, "");
 }
 
 const ANALYTICS_TILE_COLOR = "#60a5fa";
@@ -48,9 +51,10 @@ function filterAnalyticsInstallsRows(rows, query) {
     return safeRows.slice();
   }
   return safeRows.filter((row) => {
-    const email = String(row && row.install_email || "").trim().toLowerCase();
     const installId = String(row && row.install_id || "").trim().toLowerCase();
-    return email.includes(needle) || installId.includes(needle);
+    const country = String(row && row.last_country || "").trim().toLowerCase();
+    const region = String(row && row.last_region || "").trim().toLowerCase();
+    return installId.includes(needle) || country.includes(needle) || region.includes(needle);
   });
 }
 
@@ -69,7 +73,7 @@ function sortAnalyticsInstallsRows(rows, sortBy, sortDir) {
     if (primary !== 0) {
       return primary * direction;
     }
-    return String(left && left.install_email || "").localeCompare(String(right && right.install_email || "")) * direction;
+    return String(left && left.install_id || "").localeCompare(String(right && right.install_id || "")) * direction;
   });
   return safeRows;
 }
@@ -106,7 +110,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
     return deps.json(
       {
         ok: true,
-        admin_email: String(install.email || ""),
+        admin_install_id: String(install.id || ""),
         ...snapshot,
       },
       200,
@@ -119,7 +123,6 @@ export async function handleAdminAnalyticsData(request, env, deps) {
       JSON.stringify({
         error: message,
         install_id: String(install && install.id || ""),
-        install_email: String(install && install.email || ""),
         access_status_filter: "all",
         window_minutes: windowMinutes,
         tile_map_minutes: tileMapMinutes,
@@ -195,9 +198,14 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
       JSON.stringify({
         error: String(error && error.message || "analytics_page_snapshot_failed"),
         install_id: String(install && install.id || ""),
-        install_email: String(install && install.email || ""),
       }),
     );
+  }
+  let billingSettings = null;
+  try {
+    billingSettings = typeof deps.readAdminBillingSettings === "function" ? await deps.readAdminBillingSettings(auth.db) : null;
+  } catch (error) {
+    console.error("planetka.admin.analytics.billing_settings_failed", String(error && error.message || "billing_settings_failed"));
   }
   const snapshotTopLine = initialSnapshot && initialSnapshot.top_line ? initialSnapshot.top_line : {};
   const snapshotSummary = initialSnapshot && initialSnapshot.summary ? initialSnapshot.summary : {};
@@ -212,16 +220,16 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
   const serverActiveInstallsRowsHtml = snapshotActiveInstalls10m.map((row) => {
-    const email = deps.escapeHtml(String(row && row.install_email || ""));
-    return `<tr><td>${email}</td><td>${fmtInt(row && row.request_count)}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(row && row.bytes_served)}</td><td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td></tr>`;
+    const installId = deps.escapeHtml(String(row && (row.install_id || row.user_id) || ""));
+    return `<tr><td><code>${installId}</code></td><td>${fmtInt(row && row.request_count)}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(row && row.bytes_served)}</td><td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td></tr>`;
   }).join("");
   const serverHeavyRowsHtml = snapshotHeavyInstalls.slice(0, 20).map((row) => {
-    const email = deps.escapeHtml(String(row && row.install_email || ""));
+    const installId = deps.escapeHtml(String(row && (row.install_id || row.user_id) || ""));
     const lastSeen = Number.isFinite(Number(row && row.last_event_unix))
       ? new Date(Number(row.last_event_unix) * 1000).toISOString()
       : "";
     const lifetimeBytes = row && (row.lifetime_bytes ?? row.bytes_served_lifetime ?? row.month_bytes ?? row.bytes_served_30d);
-    return `<tr><td>${email}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(lifetimeBytes)}</td><td>${deps.escapeHtml(lastSeen)}</td></tr>`;
+    return `<tr><td><code>${installId}</code></td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(lifetimeBytes)}</td><td>${deps.escapeHtml(lastSeen)}</td></tr>`;
   }).join("");
   const serverMapRectsSvg = snapshotLiveRows
     .map((row) => {
@@ -258,6 +266,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
+    billingSettings,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");
@@ -301,7 +310,8 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
     sortDir,
   );
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
-  const fmtMb = (value) => fmtMbLocal(value, deps.parseNonNegativeInteger);
+  const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
+  const adminInstallId = String(install && install.id || "").trim();
   const buildSortHref = (key) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
@@ -313,25 +323,32 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
   const sortMarker = (key) => (sortBy === key ? (sortDir === "desc" ? " ▼" : " ▲") : "");
   const rowsHtml = (Array.isArray(rows) ? rows : []).map((row) => {
     const installIdRaw = String(row && row.install_id || "");
-    const installEmailRaw = String(row && row.install_email || "");
-    const installEmail = deps.escapeHtml(installEmailRaw);
+    const isOwnInstall = Boolean(adminInstallId && installIdRaw === adminInstallId);
+    const country = String(row && row.last_country || "").trim().toUpperCase();
+    const region = String(row && row.last_region || "").trim();
+    const addonVersion = String(row && row.addon_version || "").trim();
+    const installedAt = fmtAdminDateTime(row && row.installed_at);
     const status = String(row && row.install_status || "").trim().toLowerCase();
     const edition = String(row && row.install_edition || "").trim().toLowerCase() === "pro" ? "Pro" : "Free";
     const installState = status === "blocked" ? "blocked" : "active";
     const installStateLabel = installState === "blocked" ? "Blocked" : "Active";
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn warn" data-action="unblock" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn warn" data-action="unblock" data-install-id="${encodeURIComponent(installIdRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-install-id="${encodeURIComponent(installIdRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `<button class="action-btn danger" data-action="block" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-install-id="${encodeURIComponent(installIdRaw)}" data-install-email="${encodeURIComponent(installEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn danger" data-action="block" data-install-id="${encodeURIComponent(installIdRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-install-id="${encodeURIComponent(installIdRaw)}">Hard Block</button>`;
     }
-    return `<tr>
+    const ownInstallBadge = isOwnInstall ? ` <span class="own-install-badge">My install</span>` : "";
+    return `<tr class="${isOwnInstall ? "own-install-row" : ""}">
       <td><code>${deps.escapeHtml(installIdRaw)}</code></td>
-      <td>${installEmail || '<span class="muted">Anonymous install</span>'}</td>
+      <td>${country ? deps.escapeHtml(country) : '<span class="muted">Unknown</span>'}</td>
+      <td>${region ? deps.escapeHtml(region) : '<span class="muted">Unknown</span>'}${ownInstallBadge}</td>
+      <td>${addonVersion ? deps.escapeHtml(addonVersion) : '<span class="muted">Unknown</span>'}</td>
+      <td>${installedAt ? deps.escapeHtml(installedAt) : '<span class="muted">Unknown</span>'}</td>
       <td>${deps.escapeHtml(edition)}</td>
       <td><span class="access_status-pill ${deps.escapeHtml(installState)}">${deps.escapeHtml(installStateLabel)}</span></td>
       <td>${fmtInt(row && (row.total_resolve_count ?? row.resolve_count))}</td>
-      <td>${fmtMb(row && row.data_downloaded_bytes)} MB</td>
+      <td>${fmtGb(row && row.data_downloaded_bytes)} GB</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
       <td class="action-wrap">${actionButtons}</td>
     </tr>`;
@@ -357,6 +374,8 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
     .action-wrap { white-space: normal; min-width: 300px; }
+    .own-install-row { background: rgba(96,165,250,.10); }
+    .own-install-badge { display:inline-block; margin-left:8px; border:1px solid #60a5fa; color:#bfdbfe; border-radius:999px; padding:2px 7px; font-size:11px; font-weight:600; white-space:nowrap; }
     .access_status-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
     .access_status-pill.active { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.20); }
     .error { color: #fca5a5; }
@@ -364,14 +383,14 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
 </head>
 <body>
   <h1>All Installs</h1>
-  <div class="muted">Signed in as ${deps.escapeHtml(String(install.email || ""))}</div>
+  <div class="muted">Admin session active</div>
   <div class="controls">
     <a href="/admin/analytics" style="color:#93c5fd; text-decoration:none;">Back to analytics</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
   <form class="controls" method="GET" action="/admin/analytics/installs">
     <label for="q">Search install:</label>
-    <input id="q" name="q" type="text" value="${deps.escapeHtml(query)}" placeholder="email or Planetka install id" />
+    <input id="q" name="q" type="text" value="${deps.escapeHtml(query)}" placeholder="install id, country, or region" />
     <input type="hidden" name="sort" value="${deps.escapeHtml(sortBy)}" />
     <input type="hidden" name="dir" value="${deps.escapeHtml(sortDir)}" />
     <button type="submit">Search</button>
@@ -382,7 +401,10 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
     <thead>
       <tr>
         <th>Planetka Install ID</th>
-        <th>Email</th>
+        <th>Country</th>
+        <th>Region</th>
+        <th>Version</th>
+        <th>Installed</th>
         <th>Edition</th>
         <th>Status</th>
         <th><a href="${buildSortHref("total_resolves")}">Total Resolves${sortMarker("total_resolves")}</a></th>
@@ -410,10 +432,9 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
         tbody.appendChild(tr);
       }
     }
-    async function performInstallAction(action, installId, installEmail) {
+    async function performInstallAction(action, installId) {
       const safeAction = String(action || "").trim();
       const safeInstallId = String(installId || "").trim();
-      const safeInstallEmail = String(installEmail || "").trim();
       const endpointByAction = {
         block: "/admin/installs/block",
         unblock: "/admin/installs/unblock",
@@ -427,7 +448,7 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
-      const payload = { email: safeInstallEmail };
+      const payload = {};
       if (safeInstallId) payload.install_id = safeInstallId;
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
@@ -442,7 +463,7 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
         if (!res.ok || !data.ok) {
           throw new Error((data && (data.message || data.error)) || ("HTTP " + res.status));
         }
-        statusEl.textContent = "Action applied: " + safeAction + " (" + safeInstallEmail + ")";
+        statusEl.textContent = "Action applied: " + safeAction + " (" + safeInstallId + ")";
         statusEl.className = "muted";
         window.location.reload();
       } catch (error) {
@@ -456,8 +477,7 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
       const action = String(button.getAttribute("data-action") || "").trim();
       if (!action) return;
       const installId = decodeDataValue(button.getAttribute("data-install-id"));
-      const installEmail = decodeDataValue(button.getAttribute("data-install-email"));
-      performInstallAction(action, installId, installEmail);
+      performInstallAction(action, installId);
     });
   </script>
 </body>

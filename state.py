@@ -87,6 +87,7 @@ _IDPROP_SYNCING = False
 _LOGGING_SYNCING = False
 _FINAL_ANIMATION_RENDER_ACTIVE = False
 _PROPERTY_UPDATE_SIDE_EFFECTS_SUSPEND_COUNT = 0
+_ATMOSPHERE_RENDER_ENGINE_MSGBUS_OWNER = object()
 
 _SYNC_IDPROP_MAP = {
     "show_earth_preview": "planetka_show_earth_preview",
@@ -397,6 +398,46 @@ def update_auto_switch_atmosphere(self, context):
     scene = getattr(context, "scene", None) if context else None
     if scene is not None:
         _sync_idprops_from_props(scene, ("auto_switch_atmosphere",))
+        if bool(getattr(self, "auto_switch_atmosphere", True)):
+            sync_atmosphere_mode_to_render_engine(scene)
+
+
+def _on_render_engine_changed():
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    if scene is None:
+        return
+    try:
+        sync_atmosphere_mode_to_render_engine(scene)
+        from .clouds_local import sanitize_texture_based_cloud_image_assignments
+        sanitize_texture_based_cloud_image_assignments(scene=scene)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed syncing atmosphere after render engine change", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed syncing atmosphere after render engine change", exc_info=True)
+
+
+def register_atmosphere_render_engine_msgbus():
+    clear_atmosphere_render_engine_msgbus()
+    try:
+        bpy.msgbus.subscribe_rna(
+            key=(bpy.types.RenderSettings, "engine"),
+            owner=_ATMOSPHERE_RENDER_ENGINE_MSGBUS_OWNER,
+            args=(),
+            notify=_on_render_engine_changed,
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed registering atmosphere render-engine msgbus", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed registering atmosphere render-engine msgbus", exc_info=True)
+
+
+def clear_atmosphere_render_engine_msgbus():
+    try:
+        bpy.msgbus.clear_by_owner(_ATMOSPHERE_RENDER_ENGINE_MSGBUS_OWNER)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed clearing atmosphere render-engine msgbus", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing atmosphere render-engine msgbus", exc_info=True)
 
 
 def set_planetka_logging(enabled):
@@ -998,7 +1039,15 @@ def sync_atmosphere_mode_to_render_engine(scene=None):
 
 @persistent
 def _planetka_load_post(_dummy):
-    return _handler_runtime.load_post(_dummy, _HANDLER_RUNTIME_CTX)
+    result = _handler_runtime.load_post(_dummy, _HANDLER_RUNTIME_CTX)
+    try:
+        from .clouds_local import sanitize_texture_based_cloud_image_assignments
+        sanitize_texture_based_cloud_image_assignments(scene=getattr(bpy.context, "scene", None))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed sanitizing texture-based clouds after file load", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed sanitizing texture-based clouds after file load", exc_info=True)
+    return result
 
 
 def _build_resolve_contexts():

@@ -10,11 +10,13 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
 from mathutils import Euler, Matrix, Quaternion, Vector
 
 from .auth import (
+    AuthApiError,
     get_authorized_headers,
     get_status_message,
     is_authenticated,
     refresh_cloud_session,
 )
+from .billing import ensure_paid_access_or_open_checkout
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -4020,6 +4022,30 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
 
         selected_texture_quality_mode = self._get_selected_texture_quality_mode(props)
         prefs = get_prefs()
+        try:
+            billing_start, billing_end = _cinematic_frame_range_from_props(scene, props)
+            billing_frame_count = max(1, int(billing_end) - int(billing_start) + 1)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            billing_frame_count = 1
+        try:
+            allowed, message = ensure_paid_access_or_open_checkout("animation", frame_count=billing_frame_count, prefs=prefs)
+        except AuthApiError as exc:
+            return fail(
+                self,
+                f"Planetka checkout is not available: {exc}",
+                code=ErrorCode.RENDER_FAILED,
+                logger=logger,
+            )
+        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+            return fail(
+                self,
+                f"Planetka checkout failed: {exc}",
+                code=ErrorCode.RENDER_FAILED,
+                logger=logger,
+            )
+        if not allowed:
+            self.report({'INFO'}, str(message or "Complete Planetka checkout, then press Render Animation again."))
+            return {'CANCELLED'}
         if not _require_animation_texture_quality_access(self, prefs, selected_texture_quality_mode):
             return {'CANCELLED'}
         base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""

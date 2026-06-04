@@ -1,3 +1,5 @@
+import textwrap
+
 import bpy
 
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
@@ -14,6 +16,15 @@ def _log_recoverable_once(code, message):
     if count == 0:
         logger.warning("Planetka recoverable issue [%s]: %s", code, message)
     _RECOVERABLE_LOG_COUNTS[code] = count + 1
+
+
+def _draw_popup_help(layout, text, icon="INFO", width=62):
+    column = layout.column(align=True)
+    column.use_property_split = False
+    column.use_property_decorate = False
+    wrapped = textwrap.wrap(str(text or "").strip(), width=max(24, int(width))) or [""]
+    for index, line in enumerate(wrapped):
+        column.label(text=line, icon=icon if index == 0 else "BLANK1")
 
 
 def _float_close(value, target, tol=1e-4):
@@ -431,7 +442,7 @@ def _cleanup_pristine_default_scene(scene):
 
 class PLANETKA_OT_OptimizeSettings(bpy.types.Operator):
     bl_idname = "planetka.optimize_settings"
-    bl_label = "Optimize Settings"
+    bl_label = "Prepare / Optimize Settings"
     bl_description = (
         "Apply the saved Planetka preparation settings before Create Earth: optionally remove the default "
         "Cube scene, set the background to black, set EEVEE volume resolution, and set Cycles volume, "
@@ -465,8 +476,8 @@ class PLANETKA_OT_OptimizeSettings(bpy.types.Operator):
 
 class PLANETKA_OT_OptimizeSettingsPopup(bpy.types.Operator):
     bl_idname = "planetka.optimize_settings_popup"
-    bl_label = "Optimize Settings"
-    bl_description = "Edit the saved settings applied by the Optimize Settings button"
+    bl_label = "Prepare / Optimize Settings"
+    bl_description = "Edit the saved settings applied by the Prepare / Optimize Settings button"
 
     def invoke(self, context, _event):
         try:
@@ -484,13 +495,23 @@ class PLANETKA_OT_OptimizeSettingsPopup(bpy.types.Operator):
         layout.use_property_split = True
         layout.use_property_decorate = False
 
+        _draw_popup_help(
+            layout,
+            "These are the most commonly used Blender settings that usually need adjusting for Planetka to render correctly.",
+        )
+
         box = layout.box()
         box.label(text="Preparation", icon="SCENE_DATA")
+        _draw_popup_help(box, "One click scene preparation for new scenes.")
         box.prop(prefs, "optimize_remove_default_scene")
         box.prop(prefs, "optimize_background_black")
 
         box = layout.box()
         box.label(text="EEVEE Render Settings", icon="RENDER_STILL")
+        _draw_popup_help(
+            box,
+            "Default 1:8 volume resolution can produce blotchy volumetrics. 1:2 is a good balance between quality and speed.",
+        )
         box.prop(prefs, "optimize_eevee_volume_resolution")
 
         box = layout.box()
@@ -498,15 +519,40 @@ class PLANETKA_OT_OptimizeSettingsPopup(bpy.types.Operator):
 
         section = box.box()
         section.label(text="Light Paths")
+        _draw_popup_help(
+            section,
+            "Default Volume bounces of 0 prevents light rays from entering volumetric clouds, so they can render black. "
+            "Values around 12-16 are recommended for high quality VDB clouds; lower values are faster but rays do not penetrate as deeply.",
+        )
         section.prop(prefs, "optimize_cycles_volume_bounces")
 
         section = box.box()
         section.label(text="Volumes")
+        _draw_popup_help(
+            section,
+            "For GPU rendering keep Biased on and reduce Max Steps. 16 is a good quality/speed balance. Higher values can significantly increase render time; lower values reduce detail, especially in VDB clouds.",
+        )
+        _draw_popup_help(
+            section,
+            "With Unbiased rendering, CPU rendering is often faster than GPU rendering on fast CPU setups.",
+        )
         section.prop(prefs, "optimize_cycles_volume_biased")
         section.prop(prefs, "optimize_cycles_volume_max_steps")
 
         section = box.box()
         section.label(text="Subdivision")
+        _draw_popup_help(
+            section,
+            "Slightly increasing Dicing Rate Render from 1.00 to 1.25 or 1.5 can significantly reduce memory usage while keeping high elevation detail.",
+        )
+        _draw_popup_help(
+            section,
+            "Keep Offscreen Scale similar for animations. As the camera moves, offscreen areas enter view and can lack elevation detail if this is much higher than Dicing Rate Render.",
+        )
+        _draw_popup_help(
+            section,
+            "Viewport is personal preference and does not affect final renders. Max Subdivisions is set high to avoid losing fine elevation detail.",
+        )
         section.prop(prefs, "optimize_cycles_dicing_rate_render")
         section.prop(prefs, "optimize_cycles_dicing_rate_viewport")
         section.prop(prefs, "optimize_cycles_offscreen_scale")
@@ -514,7 +560,16 @@ class PLANETKA_OT_OptimizeSettingsPopup(bpy.types.Operator):
 
         section = box.box()
         section.label(text="Performance")
+        _draw_popup_help(
+            section,
+            "Persistent Data is recommended for animation rendering to avoid preprocessing every frame.",
+        )
         section.prop(prefs, "optimize_persistent_data")
+
+        _draw_popup_help(
+            layout,
+            "Save Settings stores these choices for this Planetka installation and reuses them in future projects when you click Prepare / Optimize Settings.",
+        )
 
     def execute(self, _context):
         try:
