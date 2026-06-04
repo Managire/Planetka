@@ -404,7 +404,7 @@ def clear_cloud_session(prefs=None, state="logged_out", status_message=""):
 
     prefs.cloud_session_access_token = ""
     prefs.cloud_session_refresh_token = ""
-    prefs.cloud_session_edition = _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
+    prefs.cloud_session_edition = _normalize_addon_edition(read_local_addon_edition().get("edition", "pro"))
     prefs.cloud_session_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
@@ -552,7 +552,7 @@ def _normalize_addon_edition(value):
 
 
 def addon_edition_label(value=None):
-    edition = _normalize_addon_edition(value if value is not None else read_local_addon_edition().get("edition", "free"))
+    edition = _normalize_addon_edition(value if value is not None else read_local_addon_edition().get("edition", "pro"))
     return "Pro" if edition == "pro" else "Free"
 
 
@@ -562,8 +562,8 @@ def read_local_addon_edition():
     if isinstance(cached, dict):
         return dict(cached)
     payload = {
-        "edition": "free",
-        "label": "Free",
+        "edition": "pro",
+        "label": "Pro",
         "signature": "",
         "signature_version": 1,
     }
@@ -571,7 +571,7 @@ def read_local_addon_edition():
         marker_path = os.path.join(os.path.dirname(__file__), "Resources", "planetka_edition.json")
         with open(marker_path, "r", encoding="utf-8") as handle:
             raw = json.load(handle) or {}
-        payload["edition"] = _normalize_addon_edition(raw.get("edition", "free"))
+        payload["edition"] = _normalize_addon_edition(raw.get("edition", "pro"))
         payload["label"] = addon_edition_label(payload["edition"])
         payload["signature"] = str(raw.get("signature", "") or "").strip()
         try:
@@ -579,8 +579,8 @@ def read_local_addon_edition():
         except (TypeError, ValueError):
             payload["signature_version"] = 1
     except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        payload["edition"] = "free"
-        payload["label"] = "Free"
+        payload["edition"] = "pro"
+        payload["label"] = "Pro"
     _ADDON_EDITION_CACHE = dict(payload)
     return dict(payload)
 
@@ -590,7 +590,7 @@ def _store_session_edition(prefs, payload):
         payload.get("install_edition")
         or payload.get("edition")
         or payload.get("access_tier")
-        or read_local_addon_edition().get("edition", "free")
+        or read_local_addon_edition().get("edition", "pro")
     )
     try:
         prefs.cloud_session_edition = edition
@@ -605,11 +605,11 @@ def get_session_edition(prefs=None):
         stored_raw = str(getattr(prefs, "cloud_session_edition", "") or "").strip()
         if stored_raw:
             return _normalize_addon_edition(stored_raw)
-    return _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
+    return _normalize_addon_edition(read_local_addon_edition().get("edition", "pro"))
 
 
 def local_addon_edition_code():
-    return _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
+    return _normalize_addon_edition(read_local_addon_edition().get("edition", "pro"))
 
 
 def session_edition_matches_package(prefs=None):
@@ -646,7 +646,7 @@ def connect_anonymous(prefs=None):
             "device_id": device_id,
             "device_name": _build_device_name(),
             "addon_version": _read_local_addon_version(),
-            "install_edition": edition.get("edition", "free"),
+            "install_edition": edition.get("edition", "pro"),
             "edition_signature": edition.get("signature", ""),
             "edition_signature_version": edition.get("signature_version", 1),
         },
@@ -693,7 +693,7 @@ def refresh_cloud_session(prefs=None):
             {
                 "refresh_token": refresh_token,
                 "device_id": device_id,
-                "install_edition": edition.get("edition", "free"),
+                "install_edition": edition.get("edition", "pro"),
                 "edition_signature": edition.get("signature", ""),
                 "edition_signature_version": edition.get("signature_version", 1),
             },

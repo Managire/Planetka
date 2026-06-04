@@ -51,7 +51,9 @@ function normalizeDeviceId(value) {
 }
 
 function normalizeInstallEdition(value) {
-  return String(value || "").trim().toLowerCase() === "pro" ? "pro" : "free";
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "pro";
+  return normalized === "pro" ? "pro" : "free";
 }
 
 function requestClientIp(request) {

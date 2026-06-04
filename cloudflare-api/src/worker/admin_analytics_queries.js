@@ -52,7 +52,9 @@ const AUTH_REFRESH_CRITICAL_ERROR_CODES = new Set([
 ]);
 
 function normalizeAnalyticsEdition(value) {
-  return String(value || "").trim().toLowerCase() === "pro" ? "pro" : "free";
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "pro";
+  return normalized === "pro" ? "pro" : "free";
 }
 
 function latestInstallEditionCte() {
@@ -62,7 +64,7 @@ function latestInstallEditionCte() {
           user_id,
           CASE
             WHEN LOWER(COALESCE(install_edition, '')) = 'pro' THEN 'pro'
-            ELSE 'free'
+            ELSE 'pro'
           END AS install_edition
         FROM (
           SELECT
@@ -684,13 +686,13 @@ export async function collectAnalyticsSnapshot(
     `
       WITH ${latestInstallEditionCte()}
       SELECT
-        COALESCE(lie.install_edition, 'free') AS install_edition,
+        COALESCE(lie.install_edition, 'pro') AS install_edition,
         COUNT(*) AS total_installs
       FROM cloud_installs u
       LEFT JOIN latest_install_editions lie ON lie.user_id = u.id
       WHERE 1 = 1
       ${userEmailFilter.condition ? `AND ${userEmailFilter.condition}` : ""}
-      GROUP BY COALESCE(lie.install_edition, 'free')
+      GROUP BY COALESCE(lie.install_edition, 'pro')
     `,
     [...userEmailFilter.bindings],
   );
@@ -700,7 +702,7 @@ export async function collectAnalyticsSnapshot(
     `
       WITH ${latestInstallEditionCte()}
       SELECT
-        COALESCE(lie.install_edition, 'free') AS install_edition,
+        COALESCE(lie.install_edition, 'pro') AS install_edition,
         COALESCE(SUM(r.request_count), 0) AS total_requests,
         COALESCE(SUM(r.bytes_served), 0) AS total_bytes
       FROM tile_request_rollup_daily_install r
@@ -708,7 +710,7 @@ export async function collectAnalyticsSnapshot(
       LEFT JOIN latest_install_editions lie ON lie.user_id = r.user_id
       WHERE 1 = 1
       ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
-      GROUP BY COALESCE(lie.install_edition, 'free')
+      GROUP BY COALESCE(lie.install_edition, 'pro')
     `,
     [...rollupEmailFilterAliasR.bindings],
   );
@@ -721,7 +723,7 @@ export async function collectAnalyticsSnapshot(
         SELECT DISTINCT
           e.user_id,
           e.resolve_id,
-          COALESCE(lie.install_edition, 'free') AS install_edition
+          COALESCE(lie.install_edition, 'pro') AS install_edition
         FROM tile_request_events e
         LEFT JOIN cloud_installs u ON u.id = e.user_id
         LEFT JOIN latest_install_editions lie ON lie.user_id = e.user_id
@@ -757,7 +759,7 @@ export async function collectAnalyticsSnapshot(
         e.user_id,
         MAX(e.created_at_unix) AS last_seen_unix,
         NULLIF(TRIM(LOWER(u.status)), '') AS access_status_norm,
-        COALESCE(lie.install_edition, 'free') AS install_edition
+        COALESCE(lie.install_edition, 'pro') AS install_edition
       FROM tile_request_events e
       LEFT JOIN cloud_installs u ON u.id = e.user_id
       LEFT JOIN latest_install_editions lie ON lie.user_id = e.user_id
@@ -769,7 +771,7 @@ export async function collectAnalyticsSnapshot(
       GROUP BY
         e.user_id,
         NULLIF(TRIM(LOWER(u.status)), ''),
-        COALESCE(lie.install_edition, 'free')
+        COALESCE(lie.install_edition, 'pro')
     `,
     [
       activeWindow6mStartUnix,
@@ -1438,7 +1440,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
           ELSE u.email
         END AS user_email,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
-        COALESCE(lie.install_edition, 'free') AS install_edition,
+        COALESCE(lie.install_edition, 'pro') AS install_edition,
         COALESCE(rc.total_resolve_count, 0) AS total_resolve_count,
         COALESCE(du.data_downloaded_bytes, 0) AS data_downloaded_bytes,
         COALESCE(

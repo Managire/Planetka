@@ -114,7 +114,7 @@ export async function requireCloudSessionContext(request, env, options = {}, dep
   }
 
   const authMethod = String(access.auth_method || "").trim().toLowerCase();
-  const installEdition = String(access.install_edition || access.access_tier || "").trim().toLowerCase() === "pro" ? "pro" : "free";
+  const installEdition = String(access.install_edition || access.access_tier || "pro").trim().toLowerCase() === "pro" ? "pro" : "free";
   const tokenIpScope = String(access.client_ip_scope || access.clientIpScope || "").trim();
   if (authMethod === "anonymous" && tokenIpScope && requestIpScope && tokenIpScope !== requestIpScope) {
     return { error: deps.json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };

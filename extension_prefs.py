@@ -62,7 +62,7 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     cloud_session_access_token: StringProperty(name="Cloud Session Access Token", default="", options={'HIDDEN'})
     cloud_session_refresh_token: StringProperty(name="Cloud Session Refresh Token", default="", options={'HIDDEN'})
     cloud_session_status_message: StringProperty(name="Cloud Session Status Message", default="", options={'HIDDEN'})
-    cloud_session_edition: StringProperty(name="Cloud Session Edition", default="free", options={'HIDDEN'})
+    cloud_session_edition: StringProperty(name="Cloud Session Edition", default="pro", options={'HIDDEN'})
     optimize_remove_default_scene: BoolProperty(
         name="Remove Default Cube Scene",
         description="Remove Blender's untouched default Cube/Camera/Light scene before Create Earth",
@@ -281,7 +281,7 @@ def get_prefs():
             lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_STATUS_MESSAGE_KEY, value),
         )
         cloud_session_edition = property(
-            lambda self: self._get_value(FALLBACK_CLOUD_SESSION_EDITION_KEY, "free"),
+            lambda self: self._get_value(FALLBACK_CLOUD_SESSION_EDITION_KEY, "pro"),
             lambda self, value: self._set_value(FALLBACK_CLOUD_SESSION_EDITION_KEY, value),
         )
         optimize_remove_default_scene = property(

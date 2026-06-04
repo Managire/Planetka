@@ -54,7 +54,7 @@ export function normalizeRequestedAccessTier(value) {
 
 export function defaultSignupAccessTier(env = {}) {
   void env;
-  return ACCESS_TIER_FREE;
+  return ACCESS_TIER_PRO;
 }
 
 export function accessTierDisplayName(accessTier) {

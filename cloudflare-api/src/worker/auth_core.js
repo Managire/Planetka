@@ -49,7 +49,7 @@ export function createAuthCore(deps) {
       quality_mode: safeQualityMode,
       resolve_id: safeResolveId,
       auth_method: String(auth && auth.authMethod || "").trim(),
-      install_edition: String(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "free").trim().toLowerCase() === "pro" ? "pro" : "free",
+      install_edition: String(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "pro").trim().toLowerCase() === "pro" ? "pro" : "free",
       device_id: String(auth && auth.deviceId || "").trim(),
       client_ip_scope: String(auth && auth.access && (auth.access.client_ip_scope || auth.access.clientIpScope) || "").trim(),
       exp,
@@ -119,7 +119,7 @@ export function createAuthCore(deps) {
       qualityMode,
       resolveId,
       authMethod,
-      installEdition: String(payload && (payload.install_edition || payload.access_tier) || "free").trim().toLowerCase() === "pro" ? "pro" : "free",
+      installEdition: String(payload && (payload.install_edition || payload.access_tier) || "pro").trim().toLowerCase() === "pro" ? "pro" : "free",
       deviceId: deps.normalizeDeviceId(payload && payload.device_id || ""),
     };
     deps.authContextCacheSet(
@@ -141,7 +141,7 @@ export function createAuthCore(deps) {
     const createdAt = deps.nowIso();
     const expiresAt = String(expiresAtOverride || "").trim() || deps.addDaysIso(30);
     const authMethod = String(metadata.auth_method || metadata.authMethod || "").trim();
-    const installEdition = String(metadata.install_edition || metadata.installEdition || "free").trim().toLowerCase() === "pro" ? "pro" : "free";
+    const installEdition = String(metadata.install_edition || metadata.installEdition || "pro").trim().toLowerCase() === "pro" ? "pro" : "free";
     const editionSignature = String(metadata.edition_signature || metadata.editionSignature || "").trim().slice(0, 256);
     const deviceId = deps.normalizeDeviceId(metadata.device_id || metadata.deviceId || "");
     const clientIpScope = String(metadata.client_ip_scope || metadata.clientIpScope || "").trim().slice(0, 80);

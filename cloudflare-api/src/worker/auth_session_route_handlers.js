@@ -148,7 +148,7 @@ export function createAuthSessionRouteHandlers(deps) {
       return errorResponse("refresh_token_expired", 400, session);
     }
     const sessionAuthMethod = String(session.auth_method || "").trim().toLowerCase();
-    const installEdition = normalizeEdition(requestInstallEdition || session.install_edition || "free");
+    const installEdition = normalizeEdition(requestInstallEdition || session.install_edition || "pro");
     const editionSignature = requestEditionSignature || String(session.edition_signature || "").trim().slice(0, 256);
     const sessionDeviceId = deps.normalizeDeviceId(session.device_id || "");
     if (sessionAuthMethod === "anonymous" && sessionDeviceId && (!requestDeviceId || sessionDeviceId !== requestDeviceId)) {
@@ -322,7 +322,7 @@ export function createAuthSessionRouteHandlers(deps) {
       return auth.error;
     }
     const { install } = auth;
-    const installEdition = normalizeEdition(auth && auth.access && (auth.access.install_edition || auth.access.access_tier) || auth.installEdition || "free");
+    const installEdition = normalizeEdition(auth && auth.access && (auth.access.install_edition || auth.access.access_tier) || auth.installEdition || "pro");
     const installEditionLabel = typeof deps.accessTierDisplayName === "function"
       ? deps.accessTierDisplayName(installEdition)
       : (installEdition === "pro" ? "Pro" : "Free");

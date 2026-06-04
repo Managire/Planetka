@@ -349,6 +349,9 @@ async function resolveVerifiedInstallEdition(body = {}, env = {}) {
     return "pro";
   }
   const signature = String(body.edition_signature || body.package_signature || "").trim().toLowerCase();
+  if (!signature) {
+    return "pro";
+  }
   const version = String(body.edition_signature_version || body.signature_version || "1").trim() || "1";
   const expected = await hmacSha256Hex(secret, `planetka-edition:v${version}:pro`);
   return timingSafeHexEquals(signature, expected) ? "pro" : "free";
@@ -679,7 +682,7 @@ async function ensureRefreshSessionColumns(db) {
         revoked_at TEXT,
         created_at TEXT NOT NULL,
         auth_method TEXT,
-        install_edition TEXT NOT NULL DEFAULT 'free',
+        install_edition TEXT NOT NULL DEFAULT 'pro',
         edition_signature TEXT,
         device_id TEXT,
         client_ip_scope TEXT
@@ -691,7 +694,7 @@ async function ensureRefreshSessionColumns(db) {
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
   for (const statement of [
     !names.has("auth_method") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN auth_method TEXT` : "",
-    !names.has("install_edition") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN install_edition TEXT NOT NULL DEFAULT 'free'` : "",
+    !names.has("install_edition") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN install_edition TEXT NOT NULL DEFAULT 'pro'` : "",
     !names.has("edition_signature") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN edition_signature TEXT` : "",
     !names.has("device_id") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN device_id TEXT` : "",
     !names.has("client_ip_scope") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN client_ip_scope TEXT` : "",
