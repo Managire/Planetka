@@ -50,6 +50,10 @@ function normalizeDeviceId(value) {
   return String(value || "").trim().replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128);
 }
 
+function normalizeInstallEdition(value) {
+  return String(value || "").trim().toLowerCase() === "pro" ? "pro" : "free";
+}
+
 function requestClientIp(request) {
   const direct = String(request.headers.get("CF-Connecting-IP") || request.headers.get("True-Client-IP") || "").trim();
   if (direct) return direct;
@@ -199,6 +203,7 @@ async function requireCloudSessionContext(request, env) {
     },
     access,
     authMethod,
+    installEdition: normalizeInstallEdition(access.install_edition || access.access_tier || ""),
     deviceId: normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || ""),
     tokenSource: "bearer_lightweight",
   };
@@ -257,6 +262,7 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     quality_mode: qualityMode,
     resolve_id: resolveId,
     auth_method: String(auth && auth.authMethod || "").trim(),
+    install_edition: normalizeInstallEdition(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || ""),
     device_id: String(auth && auth.deviceId || "").trim(),
     client_ip_scope: String(auth && auth.access && (auth.access.client_ip_scope || auth.access.clientIpScope) || "").trim(),
     scene_id: String(options && options.sceneId || "").trim(),
@@ -301,6 +307,7 @@ async function readTileSessionClaims(request, env) {
     qualityMode: normalizeQualityMode(payload.quality_mode || ""),
     resolveId: normalizeResolveId(payload.resolve_id || ""),
     authMethod,
+    installEdition: normalizeInstallEdition(payload.install_edition || payload.access_tier || ""),
     deviceId: normalizeDeviceId(payload.device_id || ""),
     sceneId: String(payload.scene_id || payload.sceneId || "").trim(),
   };
