@@ -2514,6 +2514,12 @@ def _ensure_local_cloud_subdivision_modifier(obj):
         modifier.render_levels = max(1, int(getattr(modifier, "render_levels", 2)))
         if hasattr(modifier, "use_adaptive_subdivision"):
             modifier.use_adaptive_subdivision = True
+        if hasattr(modifier, "quality"):
+            modifier.quality = 1
+        if hasattr(modifier, "use_limit_surface"):
+            modifier.use_limit_surface = False
+        if hasattr(modifier, "use_creases"):
+            modifier.use_creases = False
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka clouds: failed configuring local cloud subdivision modifier", exc_info=True)
     return modifier

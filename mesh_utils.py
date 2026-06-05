@@ -1006,7 +1006,7 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     if hasattr(subsurf_mod, "use_limit_surface"):
         subsurf_mod.use_limit_surface = False
     if hasattr(subsurf_mod, "quality"):
-        subsurf_mod.quality = 1
+        subsurf_mod.quality = 3
     _set_enum_property_safe(
         subsurf_mod,
         "uv_smooth",
