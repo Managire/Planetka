@@ -290,6 +290,30 @@ def _remove_render_handlers():
                 handler_list.remove(handler)
 
 
+def _planetka_shutdown_cleanup(*_args):
+    try:
+        stop_resolve()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed stopping resolve pipeline during shutdown", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed stopping resolve pipeline during shutdown", exc_info=True)
+    try:
+        recover_post_render_state(None, cancelled=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed clearing render state during shutdown", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing render state during shutdown", exc_info=True)
+
+
+def _remove_quit_pre_handler():
+    handlers = getattr(bpy.app.handlers, "quit_pre", None)
+    if handlers is None:
+        return
+    for handler in list(handlers):
+        if handler is _planetka_shutdown_cleanup or getattr(handler, "__name__", "") == "_planetka_shutdown_cleanup":
+            handlers.remove(handler)
+
+
 def _register_keymaps():
     try:
         wm = getattr(getattr(bpy, "context", None), "window_manager", None)
@@ -371,6 +395,10 @@ def register():
         render_write_handlers.append(_planetka_render_write)
     bpy.app.handlers.render_complete.append(_planetka_render_complete)
     bpy.app.handlers.render_cancel.append(_planetka_render_cancel)
+    _remove_quit_pre_handler()
+    quit_pre_handlers = getattr(bpy.app.handlers, "quit_pre", None)
+    if quit_pre_handlers is not None:
+        quit_pre_handlers.append(_planetka_shutdown_cleanup)
     _unregister_keymaps()
     _register_keymaps()
     try:
@@ -396,6 +424,10 @@ def unregister():
         _remove_render_handlers()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed removing render handlers during unregister", exc_info=True)
+    try:
+        _remove_quit_pre_handler()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed removing quit_pre handler during unregister", exc_info=True)
     try:
         clear_atmosphere_render_engine_msgbus()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
