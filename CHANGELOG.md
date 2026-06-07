@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.9.0] - 2026-06-07
+
+- Rebuilt the public beta package from the current simplified Planetka runtime.
+- Requires users to update from older beta builds; 0.8.3 backwards compatibility is not maintained.
+- Keeps anonymous Planetka Cloud connection and manual Resolve Planetka workflow as the supported runtime path.
+
 ## [v0.8.3] - 2026-06-02
 
 - Simplified Planetka to one runtime access path backed by anonymous install sessions and short-lived tile session tokens.

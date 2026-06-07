@@ -14,6 +14,7 @@ auth.py
 clouds_global.py
 clouds_local.py
 clouds_vdb.py
+compatibility_utils.py
 coverage.py
 diagnostics.py
 error_utils.py
@@ -31,12 +32,10 @@ state.py
 streaming_utils.py
 tile_utils.py
 ui.py
-updater.py
 validation.py
 
 # Runtime subpackages
 planetka_ops/__init__.py
-planetka_ops/update_ops.py
 planetka_ops/earth_lifecycle_helpers.py
 planetka_ops/earth_lifecycle_ops.py
 planetka_ops/import_export_ops.py
