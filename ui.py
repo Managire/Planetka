@@ -131,6 +131,7 @@ def _draw_addon_update_controls(layout):
         total_bytes = 0
 
     update_box = layout.box()
+    update_box.label(text="Add-on", icon="BLENDER")
     update_box.label(text=f"Version: {current_version or 'unknown'}", icon="BLENDER")
     row = update_box.row(align=True)
     row.enabled = not busy
@@ -2081,6 +2082,8 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 icon="FILE_BLEND",
             )
 
+            _draw_addon_update_controls(layout)
+
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Data Control"
     bl_idname = "PLANETKA_PT_live_telemetry"
@@ -2160,8 +2163,6 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="URL",
         ).url = "https://www.planetka.io"
 
-        _draw_addon_update_controls(layout)
-
 
 class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Links"
@@ -2189,8 +2190,6 @@ class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel)
             text="www.planetka.io",
             icon="URL",
         ).url = "https://www.planetka.io"
-
-        _draw_addon_update_controls(layout)
 
 
 class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):

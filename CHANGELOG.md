@@ -5,6 +5,7 @@
 - Restored the in-add-on update checker and installer.
 - Update installation now writes the downloaded package immediately, then asks for Blender restart to load the new code.
 - Added startup safety handling for any pending staged update left by older beta builds.
+- Restored Check for updates to General Settings.
 
 ## [v0.9.0] - 2026-06-07
 
