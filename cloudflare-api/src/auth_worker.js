@@ -310,6 +310,15 @@ function isSyntheticAnonymousEmail(value) {
   return /^anonymous\+[a-f0-9]{32}@planetka\.local$/i.test(String(value || "").trim());
 }
 
+function legacyPublicEmail(value, fallbackId = "") {
+  const email = String(value || "").trim();
+  if (email) {
+    return email;
+  }
+  const id = String(fallbackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 64);
+  return `${id || "anonymous"}@planetka.local`;
+}
+
 function normalizeAccessStatusStrict(value) {
   const normalized = normalizeAccessStatus(value);
   if (normalized === ACCESS_STATUS_ACTIVE) {
@@ -1084,6 +1093,8 @@ const authSessionDepsBase = {
   isAnalyticsAdmin: () => false,
   isPrimaryAnalyticsAdmin: () => false,
   json,
+  isSyntheticAnonymousEmail,
+  legacyPublicEmail,
   legacyAccessFields: legacyProfessionalAccessFields,
 };
 
@@ -1164,6 +1175,7 @@ const authSessionRouteDeps = {
   readBearerInstall,
   requireCloudSessionContext,
   isSyntheticAnonymousEmail,
+  legacyPublicEmail,
   legacyAccessFields: legacyProfessionalAccessFields,
 };
 
@@ -1372,7 +1384,7 @@ async function handleLegacyApiKeyExchange(request, env) {
       addon_version: String(body.addon_version || body.addonVersion || request.headers.get("X-Planetka-Addon-Version") || "").trim().slice(0, 80),
     },
   );
-  const publicEmail = isSyntheticAnonymousEmail(policyUser.email) ? "" : String(policyUser.email || "");
+  const publicEmail = legacyPublicEmail(policyUser.email, policyUser.id);
   return json(
     {
       ok: true,

@@ -230,8 +230,8 @@ export function createAuthSessionRouteHandlers(deps) {
         refresh_token: nextRefreshToken,
         planetka_install_id: String(install.id || ""),
         install_id: String(install.id || ""),
-        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
-          ? ""
+        email: typeof deps.legacyPublicEmail === "function"
+          ? deps.legacyPublicEmail(install.email, install.id)
           : install.email,
         ...(typeof deps.legacyAccessFields === "function" ? deps.legacyAccessFields(installEdition) : {}),
         install_edition: installEdition,
@@ -342,8 +342,8 @@ export function createAuthSessionRouteHandlers(deps) {
         ok: true,
         planetka_install_id: String(install.id || ""),
         install_id: String(install.id || ""),
-        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
-          ? ""
+        email: typeof deps.legacyPublicEmail === "function"
+          ? deps.legacyPublicEmail(install.email, install.id)
           : install.email,
         ...(typeof deps.legacyAccessFields === "function" ? deps.legacyAccessFields(installEdition) : {}),
         install_edition: installEdition,
