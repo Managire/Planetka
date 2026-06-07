@@ -374,6 +374,17 @@ def _tag_view3d_ui_redraw():
     return None
 
 
+def _detach_planetka_camera_after_register():
+    try:
+        from .planetka_ops.earth_lifecycle_helpers import detach_planetka_camera_from_root
+        detach_planetka_camera_from_root(scene=getattr(bpy.context, "scene", None))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed detaching Planetka Camera during register", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+        logger.debug("Planetka: failed detaching Planetka Camera during register", exc_info=True)
+    return None
+
+
 def register():
     try:
         _planetka_updater.apply_pending_update_on_import()
@@ -408,6 +419,12 @@ def register():
     quit_pre_handlers = getattr(bpy.app.handlers, "quit_pre", None)
     if quit_pre_handlers is not None:
         quit_pre_handlers.append(_planetka_shutdown_cleanup)
+    try:
+        bpy.app.timers.register(_detach_planetka_camera_after_register, first_interval=0.1)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed scheduling Planetka Camera detach during register", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed scheduling Planetka Camera detach during register", exc_info=True)
     _unregister_keymaps()
     _register_keymaps()
     try:

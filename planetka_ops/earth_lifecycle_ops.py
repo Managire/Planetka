@@ -319,6 +319,8 @@ def reset_earth_transform_execute(operator, context, deps):
     ErrorCode = deps["ErrorCode"]
     PLANETKA_RECOVERABLE_EXCEPTIONS = deps["PLANETKA_RECOVERABLE_EXCEPTIONS"]
     PLANETKA_ROOT_OBJECT_NAME = deps["PLANETKA_ROOT_OBJECT_NAME"]
+    set_radius_fn = deps.get("_set_planetka_earth_radius_bu")
+    sync_idprops_from_props = deps.get("_sync_idprops_from_props")
 
     scene = require_scene(operator, context, logger=logger)
     if scene is None:
@@ -348,6 +350,8 @@ def reset_earth_transform_execute(operator, context, deps):
         )
 
     try:
+        from .earth_lifecycle_helpers import detach_planetka_camera_from_root
+        detach_planetka_camera_from_root(scene)
         root.location = (0.0, 0.0, 0.0)
         root.rotation_euler = (0.0, 0.0, 0.0)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -358,5 +362,28 @@ def reset_earth_transform_execute(operator, context, deps):
             logger=logger,
         )
 
-    operator.report({'INFO'}, "Planetka Root transform reset.")
+    try:
+        props = getattr(scene, "planetka", None)
+        if props is not None:
+            props.earth_radius_bu = 2.0
+            if callable(sync_idprops_from_props):
+                sync_idprops_from_props(scene, ("earth_radius_bu",))
+        elif callable(set_radius_fn):
+            set_radius_fn(scene, 2.0)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return fail(
+            operator,
+            "Failed to reset Earth Radius.",
+            code=ErrorCode.NAV_APPLY_FAILED,
+            logger=logger,
+        )
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return fail(
+            operator,
+            "Failed to reset Earth Radius.",
+            code=ErrorCode.NAV_APPLY_FAILED,
+            logger=logger,
+        )
+
+    operator.report({'INFO'}, "Planetka Earth transform reset.")
     return {'FINISHED'}

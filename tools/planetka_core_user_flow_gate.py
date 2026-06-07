@@ -82,6 +82,44 @@ def _camera_local_signature(camera):
         return None
 
 
+def _earth_object_for_gate():
+    return (
+        bpy.data.objects.get("Planetka Earth Surface")
+        or bpy.data.objects.get("Planetka Earth")
+    )
+
+
+def _camera_center_distance(camera, earth_obj):
+    if camera is None or earth_obj is None:
+        return None
+    try:
+        return float((camera.matrix_world.translation - earth_obj.matrix_world.translation).length)
+    except Exception:
+        return None
+
+
+def _camera_direction_from_center(camera, earth_obj):
+    if camera is None or earth_obj is None:
+        return None
+    try:
+        vec = camera.matrix_world.translation - earth_obj.matrix_world.translation
+        if float(vec.length) <= 1e-9:
+            return None
+        normalized = vec.normalized()
+        return tuple(round(float(v), 8) for v in normalized)
+    except Exception:
+        return None
+
+
+def _tuple_max_delta(a, b):
+    if a is None or b is None or len(a) != len(b):
+        return None
+    try:
+        return max(abs(float(left) - float(right)) for left, right in zip(a, b))
+    except Exception:
+        return None
+
+
 def _wait_for_camera_change(scene, previous_signature, timeout_sec=3.0):
     deadline = time.time() + float(max(0.2, timeout_sec))
     while time.time() < deadline:
@@ -359,17 +397,61 @@ def main():
             camera_after=cam_after_full,
         )
 
-        # Earth radius change must not implicitly move Planetka Camera. The user
-        # can still explicitly reapply the navigation shot afterward.
+        # Earth radius change must preserve visual framing. The camera distance
+        # from Earth center scales with radius, while direction/orientation stay
+        # stable so Earth does not visually grow/shrink in the camera view.
         radius_camera = getattr(scene, "camera", None)
-        camera_local_before_radius = _camera_local_signature(radius_camera)
+        earth_for_radius = _earth_object_for_gate()
+        old_radius_bu = float(getattr(props, "earth_radius_bu", 2.0) or 2.0)
+        camera_world_before_radius = _camera_signature(radius_camera)
+        camera_distance_before_radius = _camera_center_distance(radius_camera, earth_for_radius)
+        camera_direction_before_radius = _camera_direction_from_center(radius_camera, earth_for_radius)
         props.earth_radius_bu = 3.5
         bpy.context.view_layer.update()
-        camera_local_after_radius = _camera_local_signature(radius_camera)
+        camera_world_after_radius = _camera_signature(radius_camera)
+        camera_distance_after_radius = _camera_center_distance(radius_camera, earth_for_radius)
+        camera_direction_after_radius = _camera_direction_from_center(radius_camera, earth_for_radius)
+        radius_ratio = 3.5 / max(1e-9, float(old_radius_bu))
         _assert(
-            camera_local_before_radius == camera_local_after_radius,
-            f"Earth Radius changed camera local transform: before={camera_local_before_radius} after={camera_local_after_radius}",
+            camera_distance_before_radius is not None and camera_distance_after_radius is not None,
+            "Could not measure camera distance for Earth Radius framing check.",
         )
+        _assert(
+            abs((camera_distance_after_radius / max(1e-9, camera_distance_before_radius)) - radius_ratio) < 1e-4,
+            (
+                "Earth Radius did not scale camera distance correctly: "
+                f"old_distance={camera_distance_before_radius} new_distance={camera_distance_after_radius} "
+                f"expected_ratio={radius_ratio}"
+            ),
+        )
+        direction_delta = _tuple_max_delta(camera_direction_before_radius, camera_direction_after_radius)
+        _assert(
+            direction_delta is not None and direction_delta < 1e-5,
+            (
+                "Earth Radius changed camera direction: "
+                f"before={camera_direction_before_radius} after={camera_direction_after_radius} delta={direction_delta}"
+            ),
+        )
+        _assert(
+            camera_world_before_radius[3:] == camera_world_after_radius[3:],
+            f"Earth Radius changed camera rotation: before={camera_world_before_radius} after={camera_world_after_radius}",
+        )
+        root_obj = bpy.data.objects.get("Planetka Root")
+        _assert(root_obj is not None, "Planetka Root missing before transform stability check.")
+        camera_world_before_root = _camera_signature(radius_camera)
+        root_location_before = tuple(float(v) for v in root_obj.location)
+        root_rotation_before = tuple(float(v) for v in root_obj.rotation_euler)
+        root_obj.location = (0.25, -0.125, 0.5)
+        root_obj.rotation_euler = (0.1, -0.2, 0.3)
+        bpy.context.view_layer.update()
+        camera_world_after_root = _camera_signature(radius_camera)
+        _assert(
+            camera_world_before_root == camera_world_after_root,
+            f"Planetka Root transform changed camera world transform: before={camera_world_before_root} after={camera_world_after_root}",
+        )
+        root_obj.location = root_location_before
+        root_obj.rotation_euler = root_rotation_before
+        bpy.context.view_layer.update()
         apply_radius = bpy.ops.planetka.navigation_apply_shot()
         _assert(_operator_ok(apply_radius) or _operator_cancelled(apply_radius), f"navigation_apply_shot failed after radius change: {apply_radius}")
         resolve_textures(state, scene, texture_quality_mode="PREVIEW")
@@ -377,8 +459,11 @@ def main():
         record_step(
             "earth_radius_change",
             earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0),
-            camera_local_before=camera_local_before_radius,
-            camera_local_after=camera_local_after_radius,
+            camera_world_before=camera_world_before_radius,
+            camera_world_after=camera_world_after_radius,
+            camera_distance_before=camera_distance_before_radius,
+            camera_distance_after=camera_distance_after_radius,
+            camera_world_after_root_transform=camera_world_after_root,
             apply_result=list(apply_radius),
         )
 

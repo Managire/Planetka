@@ -124,6 +124,53 @@ def _is_planetka_create_camera(obj):
         return False
 
 
+def detach_planetka_camera_from_root(scene=None):
+    """Detach Planetka Camera while preserving its world transform.
+
+    Earth Location/Rotation are edits to Planetka Root. Planetka Camera must not
+    inherit those transforms, otherwise moving/rotating Earth also moves the
+    rendered camera.
+    """
+    try:
+        view_layer = getattr(getattr(bpy, "context", None), "view_layer", None)
+        if view_layer is not None:
+            view_layer.update()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed updating view layer before camera detachment", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed updating view layer before camera detachment", exc_info=True)
+
+    cameras = []
+    named = bpy.data.objects.get(_PLANETKA_CREATE_CAMERA_NAME)
+    if _is_planetka_create_camera(named):
+        cameras.append(named)
+    if scene is not None:
+        try:
+            for obj in tuple(getattr(scene, "objects", ())):
+                if _is_planetka_create_camera(obj) and obj not in cameras:
+                    cameras.append(obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed scanning scene cameras for root detachment", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed scanning scene cameras for root detachment", exc_info=True)
+
+    changed = 0
+    for camera_obj in cameras:
+        if getattr(camera_obj, "parent", None) is None:
+            continue
+        try:
+            world_matrix = camera_obj.matrix_world.copy()
+            camera_obj.parent = None
+            camera_obj.matrix_parent_inverse.identity()
+            camera_obj.matrix_world = world_matrix
+            changed += 1
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed detaching Planetka Camera from parent", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed detaching Planetka Camera from parent", exc_info=True)
+    return int(changed)
+
+
 def _ensure_planetka_camera_in_surface_collection(scene, camera_obj):
     if scene is None or camera_obj is None:
         return False
@@ -215,19 +262,7 @@ def _ensure_planetka_create_camera(scene):
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed tagging Planetka Camera role", exc_info=True)
 
-    try:
-        root = ensure_planetka_root(scene)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        root = None
-    if root is not None:
-        try:
-            world_matrix = camera_obj.matrix_world.copy()
-            if getattr(camera_obj, "parent", None) is not root:
-                camera_obj.parent = root
-                camera_obj.matrix_parent_inverse = root.matrix_world.inverted()
-                camera_obj.matrix_world = world_matrix
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed parenting Planetka Camera to Planetka Root", exc_info=True)
+    detach_planetka_camera_from_root(scene)
 
     return camera_obj
 

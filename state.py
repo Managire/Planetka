@@ -1041,13 +1041,37 @@ def sync_atmosphere_mode_to_render_engine(scene=None):
 def _planetka_load_post(_dummy):
     result = _handler_runtime.load_post(_dummy, _HANDLER_RUNTIME_CTX)
     try:
+        bpy.app.timers.register(_detach_planetka_camera_after_load_timer, first_interval=0.1)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed scheduling Planetka Camera detach after file load", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed scheduling Planetka Camera detach after file load", exc_info=True)
+    try:
         from .clouds_local import sanitize_texture_based_cloud_image_assignments
         sanitize_texture_based_cloud_image_assignments(scene=getattr(bpy.context, "scene", None))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed sanitizing texture-based clouds after file load", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed sanitizing texture-based clouds after file load", exc_info=True)
+    try:
+        from .shader_utils import sanitize_missing_planetka_texture_images
+        sanitize_missing_planetka_texture_images()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed sanitizing missing Earth texture images after file load", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+        logger.debug("Planetka: failed sanitizing missing Earth texture images after file load", exc_info=True)
     return result
+
+
+def _detach_planetka_camera_after_load_timer():
+    try:
+        from .planetka_ops.earth_lifecycle_helpers import detach_planetka_camera_from_root
+        detach_planetka_camera_from_root(scene=getattr(bpy.context, "scene", None))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed detaching Planetka Camera after file load", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+        logger.debug("Planetka: failed detaching Planetka Camera after file load", exc_info=True)
+    return None
 
 
 def _build_resolve_contexts():

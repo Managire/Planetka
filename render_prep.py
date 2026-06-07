@@ -21,6 +21,7 @@ from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import (
     ensure_authenticated_session,
+    get_authorized_headers,
     is_authenticated,
 )
 from .asset_builder import (
@@ -830,22 +831,24 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ui_reports=ui_reports,
             )
         if is_remote_source_configured(normalized):
-            if not is_authenticated(prefs):
-                try:
+            try:
+                if not is_authenticated(prefs):
                     ensure_authenticated_session(prefs)
-                except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-                    return ResolvePrepareContextResult(
-                        response=fail(
-                            self,
-                            "Planetka session could not be started. Check your connection and try again.",
-                            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                            logger=logger,
-                            exc=exc,
-                        ),
-                        ui_reports=ui_reports,
-                    )
-            # Keep the resolve hot path local. The background fetch of the
-            # requested assets is the authoritative remote health/access check.
+                # Download workers cannot read Blender preferences off-thread.
+                # Prime the authorized-header snapshot on the main thread before
+                # any parallel tile/cloud fetch starts.
+                get_authorized_headers(prefs=prefs, allow_refresh=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+                return ResolvePrepareContextResult(
+                    response=fail(
+                        self,
+                        "Planetka session could not be started. Check your connection and try again.",
+                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                        logger=logger,
+                        exc=exc,
+                    ),
+                    ui_reports=ui_reports,
+                )
         prefs.texture_base_path = normalized
 
         try:
@@ -1511,6 +1514,15 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             scene["planetka_last_resolved_tiles"] = list(tiles)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed caching resolved tiles", exc_info=True)
+
+        try:
+            applied_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
+            props.texture_quality_mode = applied_quality_mode
+            scene["planetka_last_resolve_texture_quality_mode"] = applied_quality_mode
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed storing applied texture quality mode", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed storing applied texture quality mode", exc_info=True)
 
         try:
             retain_recent_resolve_cache(resolved_paths, keep_count=2)

@@ -230,10 +230,13 @@ def use_current_view_navigation_execute(operator, context, deps):
 
 
 def auto_adjust_clipping_execute(operator, context, deps):
-    require_scene = deps["require_scene"]
-    logger = deps["logger"]
-    get_earth_object = deps["get_earth_object"]
-    _earth_radius_blender_units = deps["_earth_radius_blender_units"]
+    require_scene = deps.get("require_scene")
+    logger = deps.get("logger")
+    get_earth_object = deps.get("get_earth_object")
+    _earth_radius_blender_units = deps.get("_earth_radius_blender_units")
+    if not callable(require_scene) or not callable(get_earth_object) or not callable(_earth_radius_blender_units):
+        operator.report({'ERROR'}, "Clipping adjustment is unavailable in this Planetka session.")
+        return {'CANCELLED'}
 
     if _cancel_if_animation_render_active(operator, deps, "Clipping adjustment"):
         return {'CANCELLED'}

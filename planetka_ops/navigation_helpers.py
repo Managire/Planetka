@@ -14,7 +14,7 @@ from ..state import (
     logger,
     mark_navigation_camera_control_signature,
 )
-from .earth_lifecycle_helpers import _ensure_close_clip_limits
+from .earth_lifecycle_helpers import _ensure_close_clip_limits, detach_planetka_camera_from_root
 
 _RECOVERABLE_LOG_COUNTS = {}
 
@@ -299,9 +299,35 @@ def _earth_radius_blender_units(earth_obj):
 
 
 def _set_planetka_earth_radius_bu(scene, target_radius_bu):
+    scene_for_camera = scene if isinstance(scene, bpy.types.Scene) else getattr(bpy.context, "scene", None)
+    camera_obj = getattr(scene_for_camera, "camera", None) if scene_for_camera is not None else None
+
     earth_obj = get_earth_object()
     if earth_obj is None or str(getattr(earth_obj, "type", "")) != "MESH":
         return False
+
+    camera_matrix_before = None
+    camera_center_vector_before = None
+    old_radius = 0.0
+    if camera_obj is not None:
+        try:
+            bpy.context.view_layer.update()
+            detach_planetka_camera_from_root(scene_for_camera)
+            bpy.context.view_layer.update()
+            camera_matrix_before = camera_obj.matrix_world.copy()
+            old_radius = float(_earth_radius_blender_units(earth_obj))
+            earth_center_before = earth_obj.matrix_world.translation.copy()
+            camera_center_vector_before = camera_matrix_before.translation - earth_center_before
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-OPS-043", "Failed preserving camera framing before Earth radius change")
+            camera_matrix_before = None
+            camera_center_vector_before = None
+            old_radius = 0.0
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-043", "Failed preserving camera framing before Earth radius change")
+            camera_matrix_before = None
+            camera_center_vector_before = None
+            old_radius = 0.0
 
     mesh_data = getattr(earth_obj, "data", None)
     vertices = getattr(mesh_data, "vertices", None)
@@ -391,6 +417,25 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
         _log_recoverable_once("PKA-OPS-041", "Failed syncing clouds after Earth radius change")
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         _log_recoverable_once("PKA-OPS-041", "Failed syncing clouds after Earth radius change")
+
+    try:
+        if (
+            camera_obj is not None
+            and camera_matrix_before is not None
+            and camera_center_vector_before is not None
+            and old_radius > 1e-9
+        ):
+            detach_planetka_camera_from_root(scene_for_camera)
+            scale_ratio = float(target_radius) / float(old_radius)
+            restored_matrix = camera_matrix_before.copy()
+            earth_center_after = earth_obj.matrix_world.translation.copy()
+            restored_matrix.translation = earth_center_after + (camera_center_vector_before * float(scale_ratio))
+            camera_obj.matrix_world = restored_matrix
+            bpy.context.view_layer.update()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-044", "Failed restoring camera framing after Earth radius change")
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-044", "Failed restoring camera framing after Earth radius change")
 
     try:
         scene_for_camera = scene if isinstance(scene, bpy.types.Scene) else getattr(bpy.context, "scene", None)

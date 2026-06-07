@@ -59,6 +59,7 @@ from .asset_builder import (
 from .clouds_global import ensure_global_cloud_layer
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import (
+    get_earth_object,
     get_prefs,
     read_saved_locations,
     write_saved_locations,
@@ -458,7 +459,7 @@ class PLANETKA_OT_AutoAdjustClipping(bpy.types.Operator):
 class PLANETKA_OT_ResetEarthTransform(bpy.types.Operator):
     bl_idname = "planetka.reset_earth_transform"
     bl_label = "Reset Transform"
-    bl_description = "Reset Planetka Root Location and Rotation to defaults (0, 0, 0)"
+    bl_description = "Reset Planetka Root Location/Rotation and Earth Radius to defaults"
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Reset transform"):

@@ -1171,10 +1171,24 @@ def _draw_new_earth(layout):
     has_earth = _has_earth()
     create_enabled = _planetka_controls_enabled(not has_earth)
 
-    if not has_earth:
-        start_row = layout.row()
-        start_row.alignment = 'CENTER'
-        start_row.label(text="Start here", icon="TRIA_DOWN")
+    try:
+        create_status = str(scene.get("planetka_create_earth_status", "") or "").strip() if scene is not None else ""
+        create_status_active = bool(scene.get("planetka_create_earth_status_active", False)) if scene is not None else False
+    except (TypeError, ValueError, AttributeError):
+        create_status = ""
+        create_status_active = False
+
+    status_text = create_status or "Start here"
+    status_icon = "TRIA_DOWN"
+    status_alert = False
+    if create_status:
+        status_alert = bool(not create_status_active and "failed" in create_status.casefold())
+        status_icon = "TIME" if create_status_active else ("CHECKMARK" if "success" in create_status.casefold() else "INFO")
+
+    start_row = layout.row()
+    start_row.alignment = 'CENTER'
+    start_row.alert = bool(status_alert)
+    start_row.label(text=status_text, icon=status_icon)
 
     row = layout.row(align=True)
     row.alert = False
@@ -1193,18 +1207,6 @@ def _draw_new_earth(layout):
     row.alert = False
     row.enabled = create_enabled
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
-
-    try:
-        create_status = str(scene.get("planetka_create_earth_status", "") or "").strip() if scene is not None else ""
-        create_status_active = bool(scene.get("planetka_create_earth_status_active", False)) if scene is not None else False
-    except (TypeError, ValueError, AttributeError):
-        create_status = ""
-        create_status_active = False
-    if create_status:
-        status_row = layout.row()
-        status_row.alert = bool(not create_status_active and "failed" in create_status.casefold())
-        status_icon = "TIME" if create_status_active else ("CHECKMARK" if "success" in create_status.casefold() else "INFO")
-        status_row.label(text=create_status, icon=status_icon)
 
 
 def _draw_live_telemetry(layout, scene):

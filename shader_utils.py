@@ -220,6 +220,61 @@ def _load_image_cached(path, cache_by_path, image_name=None):
     return img
 
 
+def sanitize_missing_planetka_texture_images():
+    """Replace missing saved Earth tile images with bundled fallbacks.
+
+    Opening an old scene after cache cleanup can leave Blender image datablocks
+    pointing at non-existent runtime cache files. This function does not resolve
+    or download data; it only prevents Blender/Cycles from repeatedly trying to
+    load stale paths before the user presses Resolve Planetka.
+    """
+    fallback_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Resources", "Fallback Images")
+    fallback_paths = {
+        "S2": os.path.join(fallback_dir, "ocean_pixel_final_20.exr"),
+        "EL": os.path.join(fallback_dir, "black_pixel_20.exr"),
+        "WT": os.path.join(fallback_dir, "blue_pixel_20.exr"),
+        "PO": os.path.join(fallback_dir, "black_pixel_20.exr"),
+    }
+    image_cache = {}
+    fallback_images = {
+        image_type: _load_image_cached(path, image_cache, image_name=os.path.basename(path))
+        for image_type, path in fallback_paths.items()
+    }
+    changed = 0
+    for node_group in tuple(getattr(bpy.data, "node_groups", ()) or ()):
+        if str(getattr(node_group, "name", "") or "") != TEXTURE_LOADING_GROUP_NAME:
+            continue
+        for node in tuple(getattr(node_group, "nodes", ()) or ()):
+            if str(getattr(node, "type", "")) != "TEX_IMAGE":
+                continue
+            node_name = str(getattr(node, "name", "") or "")
+            if not node_name.startswith(TEST_TILE_IMAGE_NODE_PREFIX):
+                continue
+            image_type = node_name.rsplit("_", 1)[-1].upper()
+            if image_type not in fallback_images:
+                continue
+            image = getattr(node, "image", None)
+            if image is None:
+                missing = True
+            else:
+                raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "")
+                abs_path = bpy.path.abspath(raw_path) if raw_path else ""
+                missing = not bool(abs_path and os.path.isfile(abs_path))
+            if not missing:
+                continue
+            fallback = fallback_images.get(image_type)
+            if fallback is None:
+                continue
+            try:
+                node.image = fallback
+                changed += 1
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-SHADER-900", "Failed assigning fallback to missing texture node")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-901", "Failed assigning fallback to missing texture node")
+    return int(changed)
+
+
 def _assign_image_to_node(img_node, image, img_type, use_fallback):
     img_node.image = image
     try:
