@@ -5,7 +5,10 @@ find_additional_modules = true
 
 routes = [
   { pattern = "api.planetka.io/auth/*", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/api-key", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/api-key/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/billing/*", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/billing/lemonsqueezy/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/me", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/health", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/addon/update-manifest", zone_name = "planetka.io" },

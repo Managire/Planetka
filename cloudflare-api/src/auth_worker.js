@@ -55,6 +55,7 @@ const DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS = 60;
 const DEFAULT_AUTH_CONTEXT_CACHE_TTL_SECONDS = 60;
 const DEFAULT_AUTH_CONTEXT_CACHE_MAX_ENTRIES = 4096;
 const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 1800;
+const LEGACY_PLAN_CODE_PROFESSIONAL = "professional";
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 
@@ -1040,6 +1041,28 @@ function authContextCacheSet(key, value, env = {}) {
   authContextCache.set(safeKey, { expiresAtMs: Date.now() + ttlMs, value });
 }
 
+function legacyProfessionalAccessFields(edition = "pro") {
+  const safeEdition = String(edition || "").trim().toLowerCase() === "free" ? "free" : "pro";
+  const editionLabel = accessTierDisplayName(safeEdition);
+  return {
+    install_edition: safeEdition,
+    install_edition_label: editionLabel,
+    access_tier: safeEdition,
+    access_tier_label: editionLabel,
+    plan_code: LEGACY_PLAN_CODE_PROFESSIONAL,
+    plan_name: "Professional",
+    user_status: LEGACY_PLAN_CODE_PROFESSIONAL,
+    account_tier: LEGACY_PLAN_CODE_PROFESSIONAL,
+    account_tier_label: "Professional",
+    stored_plan_code: LEGACY_PLAN_CODE_PROFESSIONAL,
+    stored_plan_name: "Professional",
+    stored_account_tier: LEGACY_PLAN_CODE_PROFESSIONAL,
+    stored_account_tier_label: "Professional",
+    quality_access_plan_code: LEGACY_PLAN_CODE_PROFESSIONAL,
+    quality_access_plan_name: "Professional",
+  };
+}
+
 const authSessionDepsBase = {
   requireDb,
   parseBooleanFlag,
@@ -1061,6 +1084,7 @@ const authSessionDepsBase = {
   isAnalyticsAdmin: () => false,
   isPrimaryAnalyticsAdmin: () => false,
   json,
+  legacyAccessFields: legacyProfessionalAccessFields,
 };
 
 const readBearerInstall = (request, env) => readBearerInstallRoute(request, env, authSessionDeps);
@@ -1140,6 +1164,7 @@ const authSessionRouteDeps = {
   readBearerInstall,
   requireCloudSessionContext,
   isSyntheticAnonymousEmail,
+  legacyAccessFields: legacyProfessionalAccessFields,
 };
 
 const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRouteDeps);
@@ -1218,12 +1243,144 @@ async function handleAnonymousAuth(request, env) {
       planetka_install_id: String(policyUser.id || ""),
       user_id: String(policyUser.id || ""),
       email: publicEmail,
+      ...legacyProfessionalAccessFields(requestedInstallEdition),
       install_edition: requestedInstallEdition,
       install_edition_label: accessTierDisplayName(requestedInstallEdition),
       access_tier: requestedInstallEdition,
       access_tier_label: accessTierDisplayName(requestedInstallEdition),
       access_token: accessToken,
       refresh_token: refreshToken,
+    },
+    200,
+    env,
+  );
+}
+
+function handleLegacyApiKeyPage(request, env) {
+  if (request.method === "HEAD") {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        ...corsHeaders(env),
+        "Content-Type": "text/html; charset=utf-8",
+      },
+    });
+  }
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planetka Cloud Access</title>
+    <style>
+      body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:#e5e7eb}
+      main{width:min(92vw,560px);padding:28px;border-radius:16px;background:#111827;border:1px solid #263244;box-shadow:0 24px 70px rgba(0,0,0,.35)}
+      h1{margin:0 0 12px;font-size:28px}p{line-height:1.5;color:#cbd5e1}code{display:block;margin:16px 0;padding:14px;border-radius:10px;background:#020617;color:#f8fafc;font-size:16px;word-break:break-all}
+      button{border:0;border-radius:10px;padding:12px 16px;background:#2563eb;color:white;font-weight:600;cursor:pointer}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Planetka Cloud Access</h1>
+      <p>Planetka now connects to Planetka Cloud automatically. If your installed add-on still asks for an access key, paste this compatibility key:</p>
+      <code id="key">PLANETKA-AUTO</code>
+      <button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('key').textContent)">Copy Access Key</button>
+      <p>After connecting, update Planetka when possible so this access-key step is no longer shown.</p>
+    </main>
+  </body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      ...corsHeaders(env),
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+async function handleLegacyApiKeyExchange(request, env) {
+  const db = requireDb(env);
+  await ensureRateLimitsTable(db);
+  const body = await parseJson(request);
+  const apiKey = String(body.api_key || "").trim();
+  const deviceId = normalizeDeviceId(body.device_id || request.headers.get("X-Planetka-Device-Id") || "");
+  if (!apiKey) {
+    return json({ ok: false, error: "invalid_api_key" }, 400, env);
+  }
+  if (!deviceId) {
+    return json({ ok: false, error: "missing_device_id" }, 400, env);
+  }
+  const clientIp = requestClientIp(request);
+  const exchangeIpRate = await consumeRateLimitWindow(
+    db,
+    "legacy_api_key_exchange_ip",
+    clientIp,
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT, 120),
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS, 60),
+  );
+  if (!exchangeIpRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "api_key_exchange_ip_rate_limited",
+      "Too many sign-in attempts. Please try again shortly.",
+      exchangeIpRate.retryAfterSeconds,
+    );
+  }
+
+  const block = await findActiveHardBlock(db, {
+    device_id: deviceId,
+    ip: clientIp,
+  });
+  if (block) {
+    return blockedCloudSessionResponse(env);
+  }
+
+  const user = await upsertAnonymousInstallByDeviceId(db, deviceId, env);
+  if (!user || !user.id) {
+    return json({ ok: false, error: "anonymous_install_create_failed" }, 500, env);
+  }
+  if (isBlockedStatus(user.status)) {
+    return blockedCloudSessionResponse(env);
+  }
+  const policyUser = await enforceCloudInstallAccessStatusPolicy(db, user, env);
+  const clientIpScope = requestClientIpScope(request);
+  const installEdition = "pro";
+  const accessToken = await authCore.createAccessToken(
+    env,
+    policyUser,
+    {
+      auth_method: "api_key",
+      access_tier: installEdition,
+      install_edition: installEdition,
+      device_id: deviceId,
+      client_ip_scope: clientIpScope,
+      plan_code: LEGACY_PLAN_CODE_PROFESSIONAL,
+      user_status: LEGACY_PLAN_CODE_PROFESSIONAL,
+      account_tier: LEGACY_PLAN_CODE_PROFESSIONAL,
+    },
+  );
+  const refreshToken = await authCore.createRefreshSession(
+    db,
+    policyUser.id,
+    "",
+    {
+      auth_method: "api_key",
+      install_edition: installEdition,
+      device_id: deviceId,
+      client_ip_scope: clientIpScope,
+      addon_version: String(body.addon_version || body.addonVersion || request.headers.get("X-Planetka-Addon-Version") || "").trim().slice(0, 80),
+    },
+  );
+  const publicEmail = isSyntheticAnonymousEmail(policyUser.email) ? "" : String(policyUser.email || "");
+  return json(
+    {
+      ok: true,
+      email: publicEmail,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      api_key_mask: "PLANETKA-****",
+      ...legacyProfessionalAccessFields(installEdition),
     },
     200,
     env,
@@ -1340,6 +1497,38 @@ async function dispatchAuthRequest(request, env) {
     }
     return handleLegalDocumentRequest(request, env, path, updateManifestDeps);
   }
+  if (path === "/api-key" || path === "/api-key/") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(env);
+    }
+    return handleLegacyApiKeyPage(request, env);
+  }
+  if (path === "/api-key/activate") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(env);
+    }
+    return handleLegacyApiKeyPage(request, env);
+  }
+  if (path === "/auth/api-key/exchange") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return handleLegacyApiKeyExchange(request, env);
+  }
+  if (path === "/auth/api-key/request" || path === "/auth/api-key/activate") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return json(
+      {
+        ok: true,
+        message: "Planetka connects automatically. If your add-on asks for an access key, use PLANETKA-AUTO.",
+        api_key: "PLANETKA-AUTO",
+      },
+      200,
+      env,
+    );
+  }
 
   if (path === "/billing/prices") {
     if (request.method !== "GET") {
@@ -1347,7 +1536,7 @@ async function dispatchAuthRequest(request, env) {
     }
     return handleBillingPrices(request, env, billingDeps);
   }
-  if (path === "/billing/checkout") {
+  if (path === "/billing/checkout" || path === "/billing/lemonsqueezy/checkout") {
     if (request.method !== "POST") {
       return methodNotAllowed(env);
     }

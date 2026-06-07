@@ -171,7 +171,13 @@ export function createAuthSessionRouteHandlers(deps) {
       email: session.email,
       status: strictSessionStatus,
     };
-    install = await deps.enforceInstallAccessStatusPolicy(db, install, env);
+    const enforceInstallPolicy = typeof deps.enforceCloudInstallAccessStatusPolicy === "function"
+      ? deps.enforceCloudInstallAccessStatusPolicy
+      : deps.enforceInstallAccessStatusPolicy;
+    if (typeof enforceInstallPolicy !== "function") {
+      return errorResponse("install_access_policy_unavailable", 500, session);
+    }
+    install = await enforceInstallPolicy(db, install, env);
 
     await deps.dbRun(
       db,
@@ -227,6 +233,7 @@ export function createAuthSessionRouteHandlers(deps) {
         email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
           ? ""
           : install.email,
+        ...(typeof deps.legacyAccessFields === "function" ? deps.legacyAccessFields(installEdition) : {}),
         install_edition: installEdition,
         install_edition_label: typeof deps.accessTierDisplayName === "function"
           ? deps.accessTierDisplayName(installEdition)
@@ -338,6 +345,7 @@ export function createAuthSessionRouteHandlers(deps) {
         email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(install.email)
           ? ""
           : install.email,
+        ...(typeof deps.legacyAccessFields === "function" ? deps.legacyAccessFields(installEdition) : {}),
         install_edition: installEdition,
         install_edition_label: installEditionLabel,
         access_tier: installEdition,
