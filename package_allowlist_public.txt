@@ -31,6 +31,7 @@ shader_utils.py
 state.py
 streaming_utils.py
 tile_utils.py
+updater.py
 ui.py
 validation.py
 

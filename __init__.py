@@ -6,6 +6,7 @@ from bpy.props import PointerProperty
 # Includes data from GeoNames (allCountries) licenced under CC BY 4.0.
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from . import updater as _planetka_updater
 from .animation_tools import (
     PLANETKA_OT_AnimationClearCameraKeyframes,
     PLANETKA_OT_AnimationClearPrepared,
@@ -23,6 +24,7 @@ from .animation_tools import (
 from .extension_prefs import PlanetkaExtensionPreferences
 from .operators import (
     PLANETKA_OT_AddEarth,
+    PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_DeleteSavedLocation,
     PLANETKA_OT_LoadSavedLocation,
     PLANETKA_OT_NavigationApplyShot,
@@ -33,6 +35,7 @@ from .operators import (
     PLANETKA_OT_AutoAdjustClipping,
     PLANETKA_OT_CreateStandaloneFile,
     PLANETKA_OT_SetTextureQuality,
+    PLANETKA_OT_UpdateNow,
     PLANETKA_OT_ResolvePlanetka,
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_SaveLocation,
@@ -117,6 +120,8 @@ classes = (
     PlanetkaAnimationWaypoint,
     PlanetkaProperties,
     PLANETKA_OT_AnimationPreviewShot,
+    PLANETKA_OT_CheckUpdates,
+    PLANETKA_OT_UpdateNow,
     PLANETKA_OT_OptimizeSettings,
     PLANETKA_OT_OptimizeSettingsPopup,
     PLANETKA_OT_AddEarth,
@@ -370,6 +375,10 @@ def _tag_view3d_ui_redraw():
 
 
 def register():
+    try:
+        _planetka_updater.apply_pending_update_on_import()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed applying pending update during register", exc_info=True)
     register_cloud_object_properties()
     for cls in classes:
         _safe_unregister_class(cls)

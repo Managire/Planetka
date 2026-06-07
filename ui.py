@@ -22,6 +22,7 @@ from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
 from .r2_source import get_download_progress, is_download_active
+from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
     ANIMATION_SEGMENT_TAG_KEY,
     ANIMATION_RENDER_STATUS_ICON_KEY,
@@ -95,6 +96,64 @@ def _tag_view3d_redraw():
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed tagging UI redraw", exc_info=True)
 
+
+def _updater_is_busy(status):
+    if bool(status.get("checking", False)):
+        return True
+    return str(status.get("phase") or "").strip().lower() in {
+        "checking_manifest",
+        "downloading",
+        "verifying",
+        "installing",
+    }
+
+
+def _draw_addon_update_controls(layout):
+    try:
+        updater = get_updater_public_status()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        logger.debug("Planetka: failed reading updater status", exc_info=True)
+        updater = {}
+    current_version = str(updater.get("current_version") or "").strip()
+    latest_version = str(updater.get("latest_version") or "").strip()
+    message = str(updater.get("message") or "").strip()
+    phase = str(updater.get("phase") or "").strip().lower()
+    last_error = str(updater.get("last_error") or "").strip()
+    busy = _updater_is_busy(updater)
+    ready = bool(updater.get("update_ready", False))
+    try:
+        downloaded_bytes = int(updater.get("downloaded_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        downloaded_bytes = 0
+    try:
+        total_bytes = int(updater.get("download_total_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        total_bytes = 0
+
+    update_box = layout.box()
+    update_box.label(text=f"Version: {current_version or 'unknown'}", icon="BLENDER")
+    row = update_box.row(align=True)
+    row.enabled = not busy
+    row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
+    if busy:
+        update_box.label(text=message or "Updating Planetka", icon="TIME")
+        if total_bytes > 0 and hasattr(update_box, "progress"):
+            update_box.progress(
+                factor=max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes))),
+                type='BAR',
+                text=f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}",
+            )
+    elif ready and latest_version:
+        ready_row = update_box.row(align=True)
+        ready_row.alert = True
+        ready_row.label(text=f"Update available: {latest_version}", icon="ERROR")
+        update_box.operator("planetka.update_now", text="Install update", icon="IMPORT")
+    elif message:
+        msg = update_box.row(align=True)
+        msg.alert = bool(phase == "error" or last_error)
+        msg.label(text=message, icon="ERROR" if msg.alert else "CHECKMARK")
+        if "restart blender" in message.casefold():
+            update_box.label(text="Restart Blender to load the installed update.", icon="INFO")
 
 def _cloud_refresh_timer():
     global _CLOUD_REFRESH_TIMER_REGISTERED
@@ -2101,6 +2160,8 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="URL",
         ).url = "https://www.planetka.io"
 
+        _draw_addon_update_controls(layout)
+
 
 class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Links"
@@ -2128,6 +2189,8 @@ class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel)
             text="www.planetka.io",
             icon="URL",
         ).url = "https://www.planetka.io"
+
+        _draw_addon_update_controls(layout)
 
 
 class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):

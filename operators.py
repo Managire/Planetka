@@ -72,6 +72,7 @@ from .r2_source import (
     is_remote_source_configured,
     texture_file_exists,
 )
+from .updater import kickoff_background_update_check, kickoff_background_update_install
 
 def _format_bytes_for_ui(size_bytes):
     try:
@@ -244,6 +245,7 @@ class PLANETKA_OT_SetTextureQuality(bpy.types.Operator):
         default="PREVIEW",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
+
     @classmethod
     def description(cls, _context, properties):
         mode = _normalize_startup_texture_quality_mode(
@@ -285,6 +287,38 @@ class PLANETKA_OT_SetTextureQuality(bpy.types.Operator):
                 log_message="Planetka texture quality selection failed",
             )
 
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_CheckUpdates(bpy.types.Operator):
+    bl_idname = "planetka.check_updates"
+    bl_label = "Check for Updates"
+    bl_description = "Check whether a newer Planetka version is available"
+
+    force: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        del context
+        started = kickoff_background_update_check(force=bool(getattr(self, "force", True)))
+        if started:
+            self.report({'INFO'}, "Planetka update check started.")
+        else:
+            self.report({'INFO'}, "Planetka update check is already running or recently completed.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_UpdateNow(bpy.types.Operator):
+    bl_idname = "planetka.update_now"
+    bl_label = "Install Update"
+    bl_description = "Download and install the available Planetka update. Restart Blender after installation."
+
+    def execute(self, context):
+        del context
+        started = kickoff_background_update_install(force=True)
+        if started:
+            self.report({'INFO'}, "Planetka update started.")
+        else:
+            self.report({'INFO'}, "Planetka update is already running.")
         return {'FINISHED'}
 
 

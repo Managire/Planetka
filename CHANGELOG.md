@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.9.1] - 2026-06-07
+
+- Restored the in-add-on update checker and installer.
+- Update installation now writes the downloaded package immediately, then asks for Blender restart to load the new code.
+- Added startup safety handling for any pending staged update left by older beta builds.
+
 ## [v0.9.0] - 2026-06-07
 
 - Rebuilt the public beta package from the current simplified Planetka runtime.
