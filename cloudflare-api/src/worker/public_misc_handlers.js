@@ -91,6 +91,45 @@ function parseAddonUpdateSha256(value) {
   return "";
 }
 
+function parseVersionTuple(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return [];
+  }
+  return text.split(".").map((part) => {
+    const match = String(part || "").trim().match(/^(\d+)/);
+    return match ? Number.parseInt(match[1], 10) : 0;
+  });
+}
+
+function compareVersions(left, right) {
+  const a = parseVersionTuple(left);
+  const b = parseVersionTuple(right);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const av = Number.isFinite(a[index]) ? a[index] : 0;
+    const bv = Number.isFinite(b[index]) ? b[index] : 0;
+    if (av !== bv) {
+      return av > bv ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function requestAddonUpdaterVersion(request) {
+  const explicit = String(
+    request.headers.get("X-Planetka-Addon-Version")
+      || request.headers.get("X-Planetka-Updater-Version")
+      || "",
+  ).trim();
+  if (explicit) {
+    return explicit;
+  }
+  const userAgent = String(request.headers.get("User-Agent") || "").trim();
+  const match = userAgent.match(/Planetka-Addon-Updater\/([0-9]+(?:\.[0-9]+)*(?:[-+._a-zA-Z0-9]*)?)/i);
+  return match ? String(match[1] || "").trim() : "";
+}
+
 export async function handleLegalDocumentRequest(request, env, path, deps) {
   if (!env.PLANETKA_DATA) {
     return deps.json({ ok: false, error: "missing_r2_binding" }, 500, env);
@@ -291,24 +330,35 @@ export async function handleAddonUpdateManifest(request, env, deps) {
   const minBlenderVersion = String(env.ADDON_UPDATE_MIN_BLENDER || "4.5.7").trim();
   const publishedAt = String(env.ADDON_UPDATE_PUBLISHED_AT || "").trim() || deps.nowIso();
   const mandatory = String(env.ADDON_UPDATE_MANDATORY || "").trim().toLowerCase() === "true";
+  const minimumUpdaterVersion = String(env.ADDON_UPDATE_MIN_UPDATER_VERSION || "0.9.1").trim();
+  const clientUpdaterVersion = requestAddonUpdaterVersion(request);
+  const updaterAllowed = !clientUpdaterVersion
+    || !minimumUpdaterVersion
+    || compareVersions(clientUpdaterVersion, minimumUpdaterVersion) >= 0;
   const maxAge = Math.max(
     30,
     deps.parseNonNegativeInteger(env.ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS, deps.DEFAULT_ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS),
   );
+  const effectiveDownloadUrl = updaterAllowed ? downloadUrl : "";
+  const effectiveSha256 = updaterAllowed ? sha256 : "";
 
   const payload = {
     ok: true,
     addon_id: deps.ADDON_ID,
     channel,
     version: localVersion,
-    download_url: downloadUrl,
-    sha256,
+    download_url: effectiveDownloadUrl,
+    sha256: effectiveSha256,
     release_notes_url: releaseNotesUrl,
     min_blender_version: minBlenderVersion,
     mandatory,
     published_at: publishedAt,
-    available: Boolean(downloadUrl),
+    available: Boolean(effectiveDownloadUrl),
+    minimum_updater_version: minimumUpdaterVersion,
   };
+  if (!updaterAllowed) {
+    payload.update_blocked_reason = "updater_too_old";
+  }
 
   if (request.method === "HEAD") {
     return new Response(null, {
@@ -316,12 +366,14 @@ export async function handleAddonUpdateManifest(request, env, deps) {
       headers: {
         ...deps.corsHeaders(env),
         "Cache-Control": `public, max-age=${maxAge}`,
+        "Vary": "User-Agent, X-Planetka-Addon-Version, X-Planetka-Updater-Version",
       },
     });
   }
 
   return deps.jsonWithHeaders(payload, 200, env, {
     "Cache-Control": `public, max-age=${maxAge}`,
+    "Vary": "User-Agent, X-Planetka-Addon-Version, X-Planetka-Updater-Version",
   });
 }
 

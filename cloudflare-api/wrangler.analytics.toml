@@ -46,6 +46,7 @@ ADDON_UPDATE_SHA256 = "132135d7dc530ea2145dce6856ffd5ab7f2b3edfcdcea59c8206fa698
 ADDON_UPDATE_PUBLISHED_AT = "2026-06-07T00:00:00Z"
 ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/"
 ADDON_UPDATE_CHANNEL = "stable"
+ADDON_UPDATE_MIN_UPDATER_VERSION = "0.9.1"
 
 [[d1_databases]]
 binding = "DB"
