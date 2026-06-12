@@ -38,6 +38,7 @@ try:
         _local_cloud_texture_items,
         _vdb_cloud_preset_items,
         update_enable_local_clouds,
+        update_vdb_cloud_shader_controls,
     )
     from .clouds_global import update_enable_global_clouds
     from .clouds_vdb import update_enable_vdb_clouds
@@ -55,6 +56,9 @@ except (ImportError, ModuleNotFoundError):
 
 
     def update_enable_local_clouds(_self=None, _context=None):
+        return None
+
+    def update_vdb_cloud_shader_controls(_self=None, _context=None):
         return None
 
 
@@ -769,6 +773,93 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="VDB Cloud Preset",
         description="Select a Planetka Cloud VDB cloud preset",
         items=_vdb_cloud_preset_items,
+    )
+
+    vdb_cloud_shader_color: FloatVectorProperty(
+        name="Color",
+        description="Universal VDB cloud scattering color",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0),
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_density_coefficient: FloatProperty(
+        name="Density Coefficient",
+        default=1.0,
+        min=0.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_density_gamma: FloatProperty(
+        name="Density Gamma",
+        default=1.0,
+        min=0.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_density_falloff: FloatProperty(
+        name="Density Falloff",
+        default=0.1,
+        min=0.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_anisotropy_blending: FloatProperty(
+        name="Anisotropy Blending",
+        default=0.2,
+        min=0.0,
+        max=1.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_anisotropy_1: FloatProperty(
+        name="Anisotropy 1",
+        default=0.98,
+        min=-1.0,
+        max=1.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_anisotropic_falloff_1: FloatProperty(
+        name="Anisotropic Falloff 1",
+        default=3.0,
+        min=0.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_anisotropy_2: FloatProperty(
+        name="Anisotropy 2",
+        default=-0.25,
+        min=-1.0,
+        max=1.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_anisotropic_falloff_2: FloatProperty(
+        name="Anisotropic Falloff 2",
+        default=0.1,
+        min=0.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_absorption_color: FloatVectorProperty(
+        name="Absorption Color",
+        description="Universal VDB cloud absorption color",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0),
+        update=update_vdb_cloud_shader_controls,
+    )
+    vdb_cloud_shader_absorption_amount: FloatProperty(
+        name="Absorption Amount",
+        default=0.0,
+        min=0.0,
+        precision=3,
+        update=update_vdb_cloud_shader_controls,
     )
 
     local_cloud_texture: EnumProperty(

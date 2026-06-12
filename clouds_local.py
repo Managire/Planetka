@@ -167,7 +167,6 @@ VDB_CLOUD_PROP_LATITUDE = "planetka_vdb_cloud_latitude"
 VDB_CLOUD_PROP_ALTITUDE_M = "planetka_vdb_cloud_altitude_m"
 VDB_CLOUD_PROP_SIZE_COEF = "planetka_vdb_cloud_size_coef"
 VDB_CLOUD_PROP_ROTATION_DEG = "planetka_vdb_cloud_rotation_deg"
-VDB_CLOUD_PROP_DENSITY = "planetka_vdb_cloud_density"
 VDB_CLOUD_PROP_BASE_SCALE_X = "planetka_vdb_cloud_base_scale_x"
 VDB_CLOUD_PROP_BASE_SCALE_Y = "planetka_vdb_cloud_base_scale_y"
 VDB_CLOUD_PROP_BASE_SCALE_Z = "planetka_vdb_cloud_base_scale_z"
@@ -183,10 +182,32 @@ VDB_CLOUD_FINAL_D_LEVEL_PROP = "planetka_vdb_cloud_final_d_level"
 VDB_CLOUD_BALANCED_D_LEVEL_PROP = "planetka_vdb_cloud_balanced_d_level"
 VDB_CLOUD_PREVIEW_D_LEVEL_PROP = "planetka_vdb_cloud_preview_d_level"
 VDB_CLOUD_PROJECTED_PIXELS_PROP = "planetka_vdb_cloud_projected_pixels"
-VDB_CLOUD_DENSITY_NODE_NAME = "VDB Density"
 DEFAULT_CLOUD_ALTITUDE_M = 2000.0
 DEFAULT_LOCAL_CLOUD_SIZE_COEF = 2.0
-DEFAULT_VDB_CLOUD_DENSITY = 1.0
+VDB_SHADER_COLOR_PROP = "vdb_cloud_shader_color"
+VDB_SHADER_DENSITY_COEFFICIENT_PROP = "vdb_cloud_shader_density_coefficient"
+VDB_SHADER_DENSITY_GAMMA_PROP = "vdb_cloud_shader_density_gamma"
+VDB_SHADER_DENSITY_FALLOFF_PROP = "vdb_cloud_shader_density_falloff"
+VDB_SHADER_ANISOTROPY_BLENDING_PROP = "vdb_cloud_shader_anisotropy_blending"
+VDB_SHADER_ANISOTROPY_1_PROP = "vdb_cloud_shader_anisotropy_1"
+VDB_SHADER_ANISOTROPIC_FALLOFF_1_PROP = "vdb_cloud_shader_anisotropic_falloff_1"
+VDB_SHADER_ANISOTROPY_2_PROP = "vdb_cloud_shader_anisotropy_2"
+VDB_SHADER_ANISOTROPIC_FALLOFF_2_PROP = "vdb_cloud_shader_anisotropic_falloff_2"
+VDB_SHADER_ABSORPTION_COLOR_PROP = "vdb_cloud_shader_absorption_color"
+VDB_SHADER_ABSORPTION_AMOUNT_PROP = "vdb_cloud_shader_absorption_amount"
+VDB_SHADER_SOCKET_PROPS = (
+    ("Color", VDB_SHADER_COLOR_PROP, (1.0, 1.0, 1.0, 1.0), "COLOR"),
+    ("Density Coefficient", VDB_SHADER_DENSITY_COEFFICIENT_PROP, 1.0, "FLOAT"),
+    ("Density Gamma", VDB_SHADER_DENSITY_GAMMA_PROP, 1.0, "FLOAT"),
+    ("Density Falloff", VDB_SHADER_DENSITY_FALLOFF_PROP, 0.1, "FLOAT"),
+    ("Anisotropy Blending", VDB_SHADER_ANISOTROPY_BLENDING_PROP, 0.2, "FLOAT"),
+    ("Anisotropy 1", VDB_SHADER_ANISOTROPY_1_PROP, 0.98, "FLOAT"),
+    ("Anisotropic Falloff 1", VDB_SHADER_ANISOTROPIC_FALLOFF_1_PROP, 3.0, "FLOAT"),
+    ("Anisotropy 2", VDB_SHADER_ANISOTROPY_2_PROP, -0.25, "FLOAT"),
+    ("Anisotropic Falloff 2", VDB_SHADER_ANISOTROPIC_FALLOFF_2_PROP, 0.1, "FLOAT"),
+    ("Absorption Color", VDB_SHADER_ABSORPTION_COLOR_PROP, (1.0, 1.0, 1.0, 1.0), "COLOR"),
+    ("Absorption Amount", VDB_SHADER_ABSORPTION_AMOUNT_PROP, 0.0, "FLOAT"),
+)
 VDB_CLOUD_REFERENCE_EARTH_RADIUS_BU = 2.0
 VDB_CLOUD_DEFAULT_SCALE_FACTOR = 5e-6
 VDB_CLOUD_SCALE_CALIBRATED_PROP = "planetka_vdb_cloud_scale_calibrated"
@@ -2798,6 +2819,7 @@ def _ensure_vdb_cloud_template(scene=None):
     if mat is not None:
         _clear_drivers_on_id_data(mat)
         _clear_drivers_on_node_tree(getattr(mat, "node_tree", None))
+        _apply_vdb_cloud_material_controls(mat, scene=scene)
 
     return source_obj
 
@@ -3101,23 +3123,21 @@ def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True, quality_mo
     if not source_name or not _is_known_remote_vdb_cloud_file(source_name):
         return False
 
-    final_d, projected_pixels = _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1)
-    if quality_mode == "BALANCED":
-        target_d = _coarser_vdb_cloud_d_level(final_d, multiplier=2)
-    elif quality_mode == "PREVIEW":
-        target_d = _coarser_vdb_cloud_d_level(final_d, multiplier=4)
+    # VDB d-level variants stay available in the system, but current runtime
+    # intentionally uses the original full VDB file for every quality level.
+    projected_pixels = _estimate_vdb_cloud_projected_pixels(obj, scene)
+    if allow_download:
+        target_path = _resolve_remote_vdb_cloud_asset(source_name, progress_label="Downloading VDB Cloud")
     else:
-        target_d = int(final_d)
-
-    target_path = _resolve_vdb_lod_path(source_name, target_d, allow_download=allow_download)
+        candidate = os.path.join(_vdb_clouds_dir(), source_name)
+        target_path = os.path.abspath(candidate) if _is_blender_readable_vdb_file(candidate) else ""
     if not target_path or not os.path.isfile(target_path):
         return False
-    _base_name, actual_d = _split_vdb_lod_filename(os.path.basename(target_path))
     file_prop, d_prop = _vdb_cloud_quality_props(quality_mode)
     try:
         obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = source_name
         obj[file_prop] = os.path.abspath(target_path)
-        obj[d_prop] = int(actual_d)
+        obj[d_prop] = 1
         obj[VDB_CLOUD_PROJECTED_PIXELS_PROP] = float(projected_pixels)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka clouds: failed storing VDB cloud variant", exc_info=True)
@@ -3230,27 +3250,74 @@ def _copy_volume_display_settings(source_volume, target_volume):
                 logger.debug("Planetka clouds: failed copying VDB volume display setting", exc_info=True)
 
 
-def _apply_vdb_cloud_material_density(obj):
-    material = _resolve_object_material(obj)
+def _set_vdb_group_socket_value(material, socket_name, value, value_type="FLOAT"):
     if material is None or getattr(material, "node_tree", None) is None:
-        return
+        return False
+    changed = False
     node_tree = getattr(material, "node_tree", None)
-    if node_tree is None:
-        return
-    density = max(0.0, float(getattr(obj, VDB_CLOUD_PROP_DENSITY, DEFAULT_VDB_CLOUD_DENSITY)))
-    _set_named_value_nodes_recursive(node_tree, (VDB_CLOUD_DENSITY_NODE_NAME,), density)
     for node in tuple(getattr(node_tree, "nodes", ())):
         if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
             continue
-        socket = node.inputs.get("Density")
+        group = getattr(node, "node_tree", None)
+        if group is None or str(getattr(group, "name", "")).split(".", 1)[0] != "Planetka VDB Cloud Group":
+            continue
+        socket = node.inputs.get(socket_name)
         if socket is None or not hasattr(socket, "default_value"):
             continue
         try:
-            socket.default_value = float(density)
+            if value_type == "COLOR":
+                socket.default_value = tuple(value)
+            else:
+                socket.default_value = float(value)
+            changed = True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed updating VDB material group Density", exc_info=True)
+            logger.debug("Planetka clouds: failed updating VDB material group input %s", socket_name, exc_info=True)
         except (TypeError, ValueError, AttributeError):
-            logger.debug("Planetka clouds: failed updating VDB material group Density", exc_info=True)
+            logger.debug("Planetka clouds: failed updating VDB material group input %s", socket_name, exc_info=True)
+    return changed
+
+
+def _apply_vdb_cloud_material_controls(material, scene=None):
+    if material is None:
+        return False
+    scene = scene or getattr(bpy.context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    changed = False
+    for socket_name, prop_name, default_value, value_type in VDB_SHADER_SOCKET_PROPS:
+        value = getattr(props, prop_name, default_value) if props is not None else default_value
+        changed |= _set_vdb_group_socket_value(material, socket_name, value, value_type=value_type)
+    return changed
+
+
+def apply_vdb_cloud_shader_controls(scene=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    materials = []
+    template_material = bpy.data.materials.get(VDB_CLOUD_MATERIAL_TEMPLATE_NAME)
+    if template_material is not None:
+        materials.append(template_material)
+    for obj in _iter_vdb_cloud_objects():
+        material = _resolve_object_material(obj)
+        if material is not None:
+            materials.append(material)
+    changed = False
+    seen = set()
+    for material in materials:
+        material_id = id(material)
+        if material_id in seen:
+            continue
+        seen.add(material_id)
+        changed |= _apply_vdb_cloud_material_controls(material, scene=scene)
+    return changed
+
+
+def update_vdb_cloud_shader_controls(_self=None, context=None):
+    scene = getattr(context, "scene", None) if context is not None else getattr(bpy.context, "scene", None)
+    try:
+        apply_vdb_cloud_shader_controls(scene=scene)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed applying VDB cloud shader controls", exc_info=True)
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        logger.debug("Planetka clouds: failed applying VDB cloud shader controls", exc_info=True)
 
 
 def _vdb_parent_scale(obj):
@@ -3360,7 +3427,7 @@ def _apply_vdb_cloud_object(obj, scene=None):
     if file_path:
         _set_vdb_cloud_filepath(obj, file_path)
 
-    _apply_vdb_cloud_material_density(obj)
+    _apply_vdb_cloud_material_controls(_resolve_object_material(obj), scene=scene)
 
 
 def _resolve_vdb_path(raw_value):
@@ -3940,6 +4007,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         new_mat.name = _vdb_cloud_material_name_for_object(new_obj.name)
         _clear_drivers_on_id_data(new_mat)
         _clear_drivers_on_node_tree(getattr(new_mat, "node_tree", None))
+        _apply_vdb_cloud_material_controls(new_mat, scene=scene)
 
         data = getattr(new_obj, "data", None)
         if data is not None and hasattr(data, "materials"):
@@ -3968,7 +4036,6 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             setattr(new_obj, VDB_CLOUD_PROP_ALTITUDE_M, float(DEFAULT_CLOUD_ALTITUDE_M))
             setattr(new_obj, VDB_CLOUD_PROP_SIZE_COEF, 1.0)
             setattr(new_obj, VDB_CLOUD_PROP_ROTATION_DEG, 0.0)
-            setattr(new_obj, VDB_CLOUD_PROP_DENSITY, DEFAULT_VDB_CLOUD_DENSITY)
             setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_X, abs(float(new_obj.scale.x)) * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR))
             setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_Y, abs(float(new_obj.scale.y)) * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR))
             setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_Z, abs(float(new_obj.scale.z)) * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR))
@@ -3995,7 +4062,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             quality_mode="PREVIEW",
         ):
             logger.warning(
-                "Planetka clouds: low-resolution VDB preview could not be loaded for %s.",
+                "Planetka clouds: VDB cloud could not be loaded for %s.",
                 str(selected),
             )
 
@@ -4272,6 +4339,20 @@ class PLANETKA_PT_VDBCloudsPanel(bpy.types.Panel):
         if not bool(getattr(props, "enable_vdb_clouds", False)):
             return
 
+        settings = layout.box()
+        settings.label(text="Settings", icon="SHADING_RENDERED")
+        settings.prop(props, "vdb_cloud_shader_color")
+        settings.prop(props, "vdb_cloud_shader_density_coefficient")
+        settings.prop(props, "vdb_cloud_shader_density_gamma")
+        settings.prop(props, "vdb_cloud_shader_density_falloff")
+        settings.prop(props, "vdb_cloud_shader_anisotropy_blending")
+        settings.prop(props, "vdb_cloud_shader_anisotropy_1")
+        settings.prop(props, "vdb_cloud_shader_anisotropic_falloff_1")
+        settings.prop(props, "vdb_cloud_shader_anisotropy_2")
+        settings.prop(props, "vdb_cloud_shader_anisotropic_falloff_2")
+        settings.prop(props, "vdb_cloud_shader_absorption_color")
+        settings.prop(props, "vdb_cloud_shader_absorption_amount")
+
         box = layout.box()
         box.label(text="Planetka Cloud VDB Presets", icon="VOLUME_DATA")
         box.template_icon_view(props, "vdb_cloud_preset", show_labels=True, scale=5.0, scale_popup=6.0)
@@ -4306,7 +4387,6 @@ class PLANETKA_PT_VDBCloudsPanel(bpy.types.Panel):
             panel_body.prop(cloud_obj, VDB_CLOUD_PROP_LONGITUDE, text="Longitude")
             panel_body.prop(cloud_obj, VDB_CLOUD_PROP_ROTATION_DEG, text="Rotation (deg)")
             panel_body.prop(cloud_obj, VDB_CLOUD_PROP_ALTITUDE_M, text="Altitude (m)")
-            panel_body.prop(cloud_obj, VDB_CLOUD_PROP_DENSITY, text="Density")
 
             row = panel_body.row()
             row.use_property_split = False
@@ -4440,10 +4520,6 @@ def register_object_properties():
             dict(name="VDB Cloud Rotation", default=0.0, min=-360.0, max=360.0, precision=3, update=update_vdb_cloud_object_prop),
         ),
         (
-            VDB_CLOUD_PROP_DENSITY,
-            dict(name="VDB Cloud Density", default=float(DEFAULT_VDB_CLOUD_DENSITY), min=0.0, max=1000.0, precision=3, update=update_vdb_cloud_object_prop),
-        ),
-        (
             VDB_CLOUD_PROP_BASE_SCALE_X,
             dict(name="VDB Cloud Base Scale X", default=1.0, min=1e-6, options={'HIDDEN'}),
         ),
@@ -4500,7 +4576,6 @@ def unregister_object_properties():
         VDB_CLOUD_PROP_ALTITUDE_M,
         VDB_CLOUD_PROP_SIZE_COEF,
         VDB_CLOUD_PROP_ROTATION_DEG,
-        VDB_CLOUD_PROP_DENSITY,
         VDB_CLOUD_PROP_BASE_SCALE_X,
         VDB_CLOUD_PROP_BASE_SCALE_Y,
         VDB_CLOUD_PROP_BASE_SCALE_Z,
