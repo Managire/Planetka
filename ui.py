@@ -1192,13 +1192,14 @@ def _draw_new_earth(layout):
 
     row = layout.row(align=True)
     row.alert = False
-    row.enabled = create_enabled
     split = row.split(factor=0.88, align=True)
     main_col = split.column(align=True)
     main_col.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    main_col.enabled = create_enabled
     main_col.operator("planetka.optimize_settings", text="Prepare / Optimize Settings", icon="PREFERENCES")
     cog_col = split.column(align=True)
     cog_col.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    cog_col.enabled = True
     cog_col.operator("planetka.optimize_settings_popup", text="", icon="PREFERENCES", emboss=True)
 
     row = layout.row()

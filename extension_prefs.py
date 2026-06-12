@@ -19,7 +19,14 @@ FALLBACK_CLOUD_SESSION_EDITION_KEY = "planetka_cloud_session_edition"
 FALLBACK_OPTIMIZE_REMOVE_DEFAULT_SCENE_KEY = "planetka_optimize_remove_default_scene"
 FALLBACK_OPTIMIZE_BACKGROUND_BLACK_KEY = "planetka_optimize_background_black"
 FALLBACK_OPTIMIZE_EEVEE_VOLUME_RESOLUTION_KEY = "planetka_optimize_eevee_volume_resolution"
+FALLBACK_OPTIMIZE_CYCLES_TOTAL_BOUNCES_KEY = "planetka_optimize_cycles_total_bounces"
 FALLBACK_OPTIMIZE_CYCLES_VOLUME_BOUNCES_KEY = "planetka_optimize_cycles_volume_bounces"
+FALLBACK_OPTIMIZE_CYCLES_TRANSPARENT_BOUNCES_KEY = "planetka_optimize_cycles_transparent_bounces"
+FALLBACK_OPTIMIZE_CYCLES_VIEWPORT_NOISE_THRESHOLD_KEY = "planetka_optimize_cycles_viewport_noise_threshold"
+FALLBACK_OPTIMIZE_CYCLES_VIEWPORT_MIN_SAMPLES_KEY = "planetka_optimize_cycles_viewport_min_samples"
+FALLBACK_OPTIMIZE_CYCLES_RENDER_NOISE_THRESHOLD_KEY = "planetka_optimize_cycles_render_noise_threshold"
+FALLBACK_OPTIMIZE_CYCLES_RENDER_MIN_SAMPLES_KEY = "planetka_optimize_cycles_render_min_samples"
+FALLBACK_OPTIMIZE_CYCLES_RENDER_DENOISE_KEY = "planetka_optimize_cycles_render_denoise"
 FALLBACK_OPTIMIZE_CYCLES_VOLUME_BIASED_KEY = "planetka_optimize_cycles_volume_biased"
 FALLBACK_OPTIMIZE_CYCLES_VOLUME_MAX_STEPS_KEY = "planetka_optimize_cycles_volume_max_steps"
 FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_RENDER_KEY = "planetka_optimize_cycles_dicing_rate_render"
@@ -82,8 +89,51 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     optimize_cycles_volume_bounces: IntProperty(
         name="Volume",
         description="Set Cycles volume max bounces",
-        default=16,
+        default=512,
         min=0,
+    )
+    optimize_cycles_total_bounces: IntProperty(
+        name="Total",
+        description="Set Cycles total max bounces",
+        default=512,
+        min=0,
+    )
+    optimize_cycles_transparent_bounces: IntProperty(
+        name="Transparent",
+        description="Set Cycles transparent max bounces",
+        default=32,
+        min=0,
+    )
+    optimize_cycles_viewport_noise_threshold: FloatProperty(
+        name="Noise Threshold",
+        description="Set Cycles viewport adaptive sampling noise threshold",
+        default=0.015,
+        min=0.0,
+        precision=4,
+    )
+    optimize_cycles_viewport_min_samples: IntProperty(
+        name="Min Samples",
+        description="Set Cycles viewport adaptive sampling minimum samples",
+        default=4,
+        min=0,
+    )
+    optimize_cycles_render_noise_threshold: FloatProperty(
+        name="Noise Threshold",
+        description="Set Cycles render adaptive sampling noise threshold",
+        default=0.015,
+        min=0.0,
+        precision=4,
+    )
+    optimize_cycles_render_min_samples: IntProperty(
+        name="Min Samples",
+        description="Set Cycles render adaptive sampling minimum samples",
+        default=8,
+        min=0,
+    )
+    optimize_cycles_render_denoise: BoolProperty(
+        name="Denoise",
+        description="Enable Cycles render denoising",
+        default=False,
     )
     optimize_cycles_volume_biased: BoolProperty(
         name="Biased",
@@ -113,7 +163,7 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     optimize_cycles_offscreen_scale: FloatProperty(
         name="Offscreen Scale",
         description="Set Cycles offscreen dicing scale",
-        default=1.5,
+        default=4.0,
         min=0.001,
         precision=3,
     )
@@ -297,8 +347,36 @@ def get_prefs():
             lambda self, value: self._set_value(FALLBACK_OPTIMIZE_EEVEE_VOLUME_RESOLUTION_KEY, value),
         )
         optimize_cycles_volume_bounces = property(
-            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BOUNCES_KEY, 16),
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BOUNCES_KEY, 512),
             lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BOUNCES_KEY, value),
+        )
+        optimize_cycles_total_bounces = property(
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_TOTAL_BOUNCES_KEY, 512),
+            lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_TOTAL_BOUNCES_KEY, value),
+        )
+        optimize_cycles_transparent_bounces = property(
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_TRANSPARENT_BOUNCES_KEY, 32),
+            lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_TRANSPARENT_BOUNCES_KEY, value),
+        )
+        optimize_cycles_viewport_noise_threshold = property(
+            lambda self: self._get_float(FALLBACK_OPTIMIZE_CYCLES_VIEWPORT_NOISE_THRESHOLD_KEY, 0.015),
+            lambda self, value: self._set_float(FALLBACK_OPTIMIZE_CYCLES_VIEWPORT_NOISE_THRESHOLD_KEY, value),
+        )
+        optimize_cycles_viewport_min_samples = property(
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_VIEWPORT_MIN_SAMPLES_KEY, 4),
+            lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_VIEWPORT_MIN_SAMPLES_KEY, value),
+        )
+        optimize_cycles_render_noise_threshold = property(
+            lambda self: self._get_float(FALLBACK_OPTIMIZE_CYCLES_RENDER_NOISE_THRESHOLD_KEY, 0.015),
+            lambda self, value: self._set_float(FALLBACK_OPTIMIZE_CYCLES_RENDER_NOISE_THRESHOLD_KEY, value),
+        )
+        optimize_cycles_render_min_samples = property(
+            lambda self: self._get_int(FALLBACK_OPTIMIZE_CYCLES_RENDER_MIN_SAMPLES_KEY, 8),
+            lambda self, value: self._set_int(FALLBACK_OPTIMIZE_CYCLES_RENDER_MIN_SAMPLES_KEY, value),
+        )
+        optimize_cycles_render_denoise = property(
+            lambda self: self._get_bool(FALLBACK_OPTIMIZE_CYCLES_RENDER_DENOISE_KEY, False),
+            lambda self, value: self._set_bool(FALLBACK_OPTIMIZE_CYCLES_RENDER_DENOISE_KEY, value),
         )
         optimize_cycles_volume_biased = property(
             lambda self: self._get_bool(FALLBACK_OPTIMIZE_CYCLES_VOLUME_BIASED_KEY, True),
@@ -317,7 +395,7 @@ def get_prefs():
             lambda self, value: self._set_float(FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_VIEWPORT_KEY, value),
         )
         optimize_cycles_offscreen_scale = property(
-            lambda self: self._get_float(FALLBACK_OPTIMIZE_CYCLES_OFFSCREEN_SCALE_KEY, 1.5),
+            lambda self: self._get_float(FALLBACK_OPTIMIZE_CYCLES_OFFSCREEN_SCALE_KEY, 4.0),
             lambda self, value: self._set_float(FALLBACK_OPTIMIZE_CYCLES_OFFSCREEN_SCALE_KEY, value),
         )
         optimize_cycles_max_subdivisions = property(

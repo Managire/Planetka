@@ -290,10 +290,66 @@ def _apply_optimize_render_settings(scene, prefs, changes=None):
 
     if _safe_set_attr(
         cycles,
+        "max_bounces",
+        max(0, _int_pref(prefs, "optimize_cycles_total_bounces", 512)),
+        changes,
+        "Cycles Light Paths / Max Bounces / Total",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
         "volume_bounces",
-        max(0, _int_pref(prefs, "optimize_cycles_volume_bounces", 16)),
+        max(0, _int_pref(prefs, "optimize_cycles_volume_bounces", 512)),
         changes,
         "Cycles Light Paths / Max Bounces / Volume",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "transparent_max_bounces",
+        max(0, _int_pref(prefs, "optimize_cycles_transparent_bounces", 32)),
+        changes,
+        "Cycles Light Paths / Max Bounces / Transparent",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "preview_adaptive_threshold",
+        max(0.0, _float_pref(prefs, "optimize_cycles_viewport_noise_threshold", 0.015)),
+        changes,
+        "Cycles Sampling / Viewport / Noise Threshold",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "preview_adaptive_min_samples",
+        max(0, _int_pref(prefs, "optimize_cycles_viewport_min_samples", 4)),
+        changes,
+        "Cycles Sampling / Viewport / Min Samples",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "adaptive_threshold",
+        max(0.0, _float_pref(prefs, "optimize_cycles_render_noise_threshold", 0.015)),
+        changes,
+        "Cycles Sampling / Render / Noise Threshold",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "adaptive_min_samples",
+        max(0, _int_pref(prefs, "optimize_cycles_render_min_samples", 8)),
+        changes,
+        "Cycles Sampling / Render / Min Samples",
+    ):
+        changed += 1
+    if _safe_set_attr(
+        cycles,
+        "use_denoising",
+        _bool_pref(prefs, "optimize_cycles_render_denoise", False),
+        changes,
+        "Cycles Sampling / Render / Denoise",
     ):
         changed += 1
     if _safe_set_attr(
@@ -331,7 +387,7 @@ def _apply_optimize_render_settings(scene, prefs, changes=None):
     if _safe_set_attr(
         cycles,
         "offscreen_dicing_scale",
-        max(0.001, _float_pref(prefs, "optimize_cycles_offscreen_scale", 1.5)),
+        max(0.001, _float_pref(prefs, "optimize_cycles_offscreen_scale", 4.0)),
         changes,
         "Cycles Subdivision / Offscreen Scale",
     ):
@@ -521,10 +577,23 @@ class PLANETKA_OT_OptimizeSettingsPopup(bpy.types.Operator):
         section.label(text="Light Paths")
         _draw_popup_help(
             section,
-            "Default Volume bounces of 0 prevents light rays from entering volumetric clouds, so they can render black. "
-            "Values around 12-16 are recommended for high quality VDB clouds; lower values are faster but rays do not penetrate as deeply.",
+            "Higher Total and Volume bounce limits help light travel through dense volumetric clouds. Lower values are faster but rays do not penetrate as deeply.",
         )
+        section.prop(prefs, "optimize_cycles_total_bounces")
         section.prop(prefs, "optimize_cycles_volume_bounces")
+        section.prop(prefs, "optimize_cycles_transparent_bounces")
+
+        section = box.box()
+        section.label(text="Sampling")
+        viewport = section.box()
+        viewport.label(text="Viewport")
+        viewport.prop(prefs, "optimize_cycles_viewport_noise_threshold")
+        viewport.prop(prefs, "optimize_cycles_viewport_min_samples")
+        render = section.box()
+        render.label(text="Render")
+        render.prop(prefs, "optimize_cycles_render_noise_threshold")
+        render.prop(prefs, "optimize_cycles_render_min_samples")
+        render.prop(prefs, "optimize_cycles_render_denoise")
 
         section = box.box()
         section.label(text="Volumes")

@@ -53,7 +53,7 @@ LOCAL_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
 VDB_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
     os.path.dirname(__file__),
     "Resources",
-    "planetka_vdb_cloud_template.blend",
+    "planetka_vdb_cloud_template_real.blend",
 )
 REMOTE_GLOBAL_CLOUDS_FOLDER = "clouds_global"
 REMOTE_GLOBAL_CLOUD_TEXTURE_FILE = "Clouds_16K.exr"
@@ -850,6 +850,24 @@ def _coarser_vdb_cloud_d_level(d_level, multiplier=1):
     return int(min(candidates) if candidates else max(levels))
 
 
+def _sharper_cloud_d_level(d_level, levels, factor=0.5):
+    """Return one sharper available d-level.
+
+    Planetka d-levels get sharper as the number gets smaller, so d008 sharpened
+    by factor 0.5 becomes d004. If the exact target is unavailable, choose the
+    nearest sharper/equal level rather than a lower-quality coarser one.
+    """
+    available = tuple(sorted(int(level) for level in levels if int(level) > 0))
+    if not available:
+        return max(1, int(d_level or 1))
+    try:
+        target = max(1.0, float(d_level or 1) * float(factor))
+    except (TypeError, ValueError):
+        target = 1.0
+    sharper_or_equal = [level for level in available if float(level) <= target]
+    return int(max(sharper_or_equal) if sharper_or_equal else min(available))
+
+
 def _initial_vdb_cloud_d_level_for_quality(quality_mode):
     mode = _normalize_cloud_quality_mode(quality_mode)
     if mode == "FULL":
@@ -898,6 +916,7 @@ def _select_local_cloud_adaptive_resolution(
     else:
         candidates = [level for level in levels if (source_edge / float(level)) >= required_edge]
         ideal_d_level = max(candidates) if candidates else min(levels)
+    ideal_d_level = _sharper_cloud_d_level(ideal_d_level, levels)
 
     d_level = max(int(ideal_d_level), int(min_gpu_safe_level))
     if d_level not in gpu_safe_levels:
@@ -3008,9 +3027,9 @@ def _estimate_vdb_cloud_projected_pixels(obj, scene):
 
 
 def _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1):
-    levels = tuple(int(level) for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(level) > 0)
+    levels = tuple(int(level) for level in _VDB_CLOUD_FULL_LOD_LEVELS if int(level) > 0)
     if not levels:
-        levels = (1,)
+        levels = (2,)
     projected_pixels = _estimate_vdb_cloud_projected_pixels(obj, scene)
     volume_data = getattr(obj, "data", None) if obj is not None else None
     voxel_size = _vdb_grid_voxel_size_from_volume(volume_data)
@@ -3031,6 +3050,7 @@ def _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1):
     target_max_d = max(1.0, (source_voxel_count / (float(projected_pixels) * float(VDB_CLOUD_ADAPTIVE_OVERSAMPLE))))
     candidates = [level for level in levels if float(level) <= target_max_d]
     final_d = max(candidates) if candidates else min(levels)
+    final_d = _sharper_cloud_d_level(final_d, levels)
     final_d = _coarser_vdb_cloud_d_level(final_d, multiplier=d_level_multiplier)
     return int(final_d), float(projected_pixels)
 

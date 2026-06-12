@@ -102,7 +102,8 @@ Resources/planetka_surface_material_library.blend
 Resources/planetka_base_sphere_mesh_cache.blend
 Resources/planetka_global_cloud_layer_min.blend
 Resources/planetka_local_cloud_material.blend
-Resources/planetka_vdb_cloud_template.blend
+Resources/planetka_vdb_cloud_template_simple.blend
+Resources/planetka_vdb_cloud_template_real.blend
 Resources/planetka_fake_atmosphere.blend
 Resources/planetka_volumetric_atmosphere.blend
 
