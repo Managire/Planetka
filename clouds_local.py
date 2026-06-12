@@ -24,6 +24,7 @@ from .r2_source import get_remote_cache_folder
 
 logger = logging.getLogger(__name__)
 _RECOVERABLE_LOG_COUNTS = {}
+VOLUME_MATERIAL_STEP_RATE = 0.001
 
 
 def _log_recoverable_once(code, message):
@@ -33,6 +34,22 @@ def _log_recoverable_once(code, message):
     elif count == 3:
         logger.debug("[%s] %s (further occurrences suppressed)", code, message)
     _RECOVERABLE_LOG_COUNTS[code] = count + 1
+
+
+def _set_material_volume_step_rate(material, value=VOLUME_MATERIAL_STEP_RATE):
+    cycles_settings = getattr(material, "cycles", None) if material is not None else None
+    if cycles_settings is None or not hasattr(cycles_settings, "volume_step_rate"):
+        return False
+    try:
+        if abs(float(cycles_settings.volume_step_rate) - float(value)) <= 1e-12:
+            return False
+        cycles_settings.volume_step_rate = float(value)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed setting material volume step rate", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed setting material volume step rate", exc_info=True)
+    return False
 
 CLOUDS_REFERENCE_BLEND_PATH = os.path.abspath(
     os.getenv(
@@ -2205,6 +2222,7 @@ def _cloud_material_group_node(material):
 def _ensure_global_cloud_material_template():
     material = bpy.data.materials.get(GLOBAL_CLOUD_MATERIAL_NAME)
     if material is not None:
+        _set_material_volume_step_rate(material)
         return material
     try:
         _append_from_reference(
@@ -2215,7 +2233,9 @@ def _ensure_global_cloud_material_template():
         logger.debug("Planetka clouds: failed appending Global Clouds material template", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka clouds: failed appending Global Clouds material template", exc_info=True)
-    return bpy.data.materials.get(GLOBAL_CLOUD_MATERIAL_NAME)
+    material = bpy.data.materials.get(GLOBAL_CLOUD_MATERIAL_NAME)
+    _set_material_volume_step_rate(material)
+    return material
 
 
 def _copy_global_cloud_material_input_defaults(material, source_material=None):
@@ -2262,6 +2282,7 @@ def _local_cloud_material_input_default(socket_name, fallback):
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka clouds: failed appending Local Clouds material template", exc_info=True)
         source_material = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
+    _set_material_volume_step_rate(source_material)
     return _cloud_material_input_default(source_material, socket_name, fallback)
 
 
@@ -3143,6 +3164,36 @@ def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True, quality_mo
         logger.debug("Planetka clouds: failed storing VDB cloud variant", exc_info=True)
     return True
 
+
+def _clear_vdb_cloud_loaded_file_state(obj):
+    if obj is None:
+        return
+    try:
+        setattr(obj, VDB_CLOUD_OBJ_FILE_PROP, "")
+        obj[VDB_CLOUD_LOADED_FILE_PROP] = ""
+        obj[VDB_CLOUD_D_LEVEL_PROP] = 0
+        data = getattr(obj, "data", None)
+        if data is not None and hasattr(data, "filepath"):
+            data.filepath = ""
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed clearing loaded VDB file state", exc_info=True)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka clouds: failed clearing loaded VDB file state", exc_info=True)
+    for prop_name in (
+        VDB_CLOUD_FINAL_FILE_PROP,
+        VDB_CLOUD_BALANCED_FILE_PROP,
+        VDB_CLOUD_PREVIEW_FILE_PROP,
+        VDB_CLOUD_FINAL_D_LEVEL_PROP,
+        VDB_CLOUD_BALANCED_D_LEVEL_PROP,
+        VDB_CLOUD_PREVIEW_D_LEVEL_PROP,
+        VDB_CLOUD_PROJECTED_PIXELS_PROP,
+    ):
+        try:
+            del obj[prop_name]
+        except (KeyError, AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+
+
 def _apply_prepared_vdb_cloud_file(obj, preview=False, scene=None, allow_prepare_missing=True, quality_mode=None):
     if not _is_vdb_cloud_object(obj):
         return False
@@ -3641,7 +3692,7 @@ def _vdb_file_label(obj):
     if not path:
         source = str(obj.get(VDB_CLOUD_OBJ_SOURCE_FILE_PROP, "") or "") if obj is not None else ""
         if source:
-            return os.path.basename(source)
+            return f"{os.path.basename(source)} (not loaded)"
     if not path:
         return "No VDB file assigned"
     return os.path.basename(bpy.path.abspath(path))
@@ -3720,6 +3771,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         if template_mat is None:
             self.report({'ERROR'}, f"Material '{LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME}' not found.")
             return {'CANCELLED'}
+        _set_material_volume_step_rate(template_mat)
         _ensure_local_cloud_material_uses_cloud_material(template_mat)
 
         new_name = _next_local_cloud_name()
@@ -3750,6 +3802,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         new_mat.name = _local_cloud_material_name_for_object(new_obj.name)
         _clear_drivers_on_id_data(new_mat)
         _clear_drivers_on_node_tree(getattr(new_mat, "node_tree", None))
+        _set_material_volume_step_rate(new_mat)
         _ensure_local_cloud_material_uses_cloud_material(new_mat)
         _copy_global_cloud_material_input_defaults(new_mat, source_material=template_mat)
 
@@ -4042,12 +4095,11 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             setattr(new_obj, VDB_CLOUD_PROP_BASE_RADIUS, float(base_radius))
             setattr(new_obj, VDB_CLOUD_OBJ_FILE_PROP, "")
             new_obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = str(selected)
-            new_obj[VDB_CLOUD_LOADED_FILE_PROP] = ""
-            new_obj[VDB_CLOUD_D_LEVEL_PROP] = 0
             new_obj[VDB_CLOUD_SCALE_CALIBRATED_PROP] = True
         finally:
             _end_cloud_update_suspend()
 
+        _clear_vdb_cloud_loaded_file_state(new_obj)
         _apply_vdb_cloud_object(new_obj, scene=scene)
 
         try:
@@ -4055,24 +4107,13 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _sync_cloud_collection_visibility(scene, props)
 
-        if not _apply_prepared_vdb_cloud_file(
-            new_obj,
-            scene=scene,
-            allow_prepare_missing=True,
-            quality_mode="PREVIEW",
-        ):
-            logger.warning(
-                "Planetka clouds: VDB cloud could not be loaded for %s.",
-                str(selected),
-            )
-
         try:
             context.view_layer.objects.active = new_obj
             new_obj.select_set(True)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-CLOUDL-014", "Failed selecting newly created VDB cloud object")
 
-        self.report({'INFO'}, f"Added VDB cloud: {new_obj.name}")
+        self.report({'INFO'}, f"Added VDB cloud placeholder: {new_obj.name}. Use Resolve Planetka to download it.")
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -4132,6 +4173,65 @@ class PLANETKA_OT_ResetVDBCloudToCameraView(bpy.types.Operator):
 
         _apply_vdb_cloud_object(obj, scene=getattr(context, "scene", None))
         self.report({'INFO'}, f"{obj.name}: moved to camera target")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_ReplaceVDBCloud(bpy.types.Operator):
+    bl_idname = "planetka.replace_vdb_cloud"
+    bl_label = "Replace VDB Cloud"
+    bl_description = "Replace this VDB cloud with the currently selected VDB preset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    object_name: StringProperty(
+        name="Cloud Object",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    def _resolve_target(self, context):
+        if self.object_name:
+            obj = bpy.data.objects.get(self.object_name)
+            if _is_vdb_cloud_object(obj):
+                return obj
+        active = getattr(getattr(context, "view_layer", None), "objects", None)
+        active_obj = getattr(active, "active", None) if active else None
+        if _is_vdb_cloud_object(active_obj):
+            return active_obj
+        return None
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        props = getattr(scene, "planetka", None) if scene else None
+        if props is None:
+            self.report({'ERROR'}, "Planetka settings unavailable.")
+            return {'CANCELLED'}
+
+        obj = self._resolve_target(context)
+        if obj is None:
+            self.report({'ERROR'}, "Select a VDB cloud object first.")
+            return {'CANCELLED'}
+
+        selected = str(getattr(props, "vdb_cloud_preset", "") or "")
+        if not selected or selected == "NONE" or not _is_known_remote_vdb_cloud_file(selected):
+            self.report({'ERROR'}, "Select a Planetka Cloud VDB preset first.")
+            return {'CANCELLED'}
+
+        try:
+            obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = os.path.basename(selected)
+            _clear_vdb_cloud_loaded_file_state(obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            self.report({'ERROR'}, f"Failed replacing VDB cloud: {exc}")
+            return {'CANCELLED'}
+
+        _apply_vdb_cloud_object(obj, scene=scene)
+
+        try:
+            context.view_layer.objects.active = obj
+            obj.select_set(True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed selecting replaced VDB cloud", exc_info=True)
+
+        self.report({'INFO'}, f"{obj.name}: VDB source replaced. Use Resolve Planetka to download it.")
         return {'FINISHED'}
 
 

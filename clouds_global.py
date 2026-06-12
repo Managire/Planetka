@@ -199,6 +199,7 @@ def apply_global_cloud_object(obj, scene=None):
             logger.debug("Planetka clouds: failed smoothing global cloud mesh", exc_info=True)
 
     material = _local._resolve_object_material(obj)
+    _local._set_material_volume_step_rate(material)
     _apply_global_cloud_texture(material, scene=scene)
     _refresh_global_cloud_displacement_material(material)
     try:

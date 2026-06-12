@@ -103,6 +103,7 @@ from .clouds_local import (
 from .clouds_vdb import (
     PLANETKA_OT_AddVDBCloud,
     PLANETKA_OT_DeleteVDBCloud,
+    PLANETKA_OT_ReplaceVDBCloud,
     PLANETKA_OT_ResetVDBCloudToCameraView,
 )
 
@@ -112,6 +113,7 @@ _CLOUD_CLASSES = (
     PLANETKA_OT_DeleteLocalCloud,
     PLANETKA_OT_AddVDBCloud,
     PLANETKA_OT_ResetVDBCloudToCameraView,
+    PLANETKA_OT_ReplaceVDBCloud,
     PLANETKA_OT_DeleteVDBCloud,
 )
 

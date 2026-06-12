@@ -1925,6 +1925,9 @@ def _draw_vdb_clouds(layout, context, props):
         cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_ALTITUDE_M, text="Altitude (m)")
 
         row = cloud_box.row(align=True)
+        op = row.operator("planetka.replace_vdb_cloud", text="Replace VDB Cloud", icon="FILE_REFRESH")
+        op.object_name = cloud_obj.name
+        row = cloud_box.row(align=True)
         op = row.operator("planetka.reset_vdb_cloud_to_camera_view", text="Reset to Camera", icon="TRACKING")
         op.object_name = cloud_obj.name
         op = row.operator("planetka.delete_vdb_cloud", text="Delete", icon="TRASH")

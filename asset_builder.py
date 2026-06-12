@@ -9,6 +9,7 @@ from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 logger = logging.getLogger(__name__)
 
+VOLUME_MATERIAL_STEP_RATE = 0.001
 SURFACE_COLLECTION_NAME = "Planetka Earth Surface Collection"
 PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 EARTH_MATERIAL_NAME = "Planetka Earth Material"
@@ -78,6 +79,22 @@ _DETAIL_SOCKET_SCALE = "Procedural Detail Scale"
 _DETAIL_SOCKET_FOREST = "Forest Detail Strength"
 _DETAIL_SOCKET_ROCK = "Rock Detail Strength"
 _DETAIL_SOCKET_ROCK_COLOR = "Rock Color Variation"
+
+
+def _set_material_volume_step_rate(material, value=VOLUME_MATERIAL_STEP_RATE):
+    cycles_settings = getattr(material, "cycles", None) if material is not None else None
+    if cycles_settings is None or not hasattr(cycles_settings, "volume_step_rate"):
+        return False
+    try:
+        if abs(float(cycles_settings.volume_step_rate) - float(value)) <= 1e-12:
+            return False
+        cycles_settings.volume_step_rate = float(value)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: failed setting material volume step rate", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: failed setting material volume step rate", exc_info=True)
+    return False
 _DETAIL_SOCKET_MICRO_DISP = "Micro Displacement Strength"
 
 _SURFACE_DEFAULT_INPUT_SPECS = (
@@ -2732,6 +2749,8 @@ def _normalize_volumetric_atmosphere_data_names(obj=None):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    _set_material_volume_step_rate(material)
 
     node_group = None
     node_tree = getattr(material, "node_tree", None) if material is not None else None
