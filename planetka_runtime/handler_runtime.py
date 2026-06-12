@@ -161,6 +161,17 @@ def _sync_atmosphere_mode_to_render_engine(scene, deps):
     props = getattr(scene, "planetka", None)
     if props is None:
         return
+    earth_obj = deps.get_earth_object()
+    if earth_obj is None:
+        return
+    try:
+        atmosphere_enabled = bool(getattr(props, "atmosphere_enabled", True))
+    except deps.recoverable_exceptions:
+        atmosphere_enabled = True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        atmosphere_enabled = True
+    if not atmosphere_enabled:
+        return
     try:
         enabled = bool(getattr(props, "auto_switch_atmosphere", True))
     except deps.recoverable_exceptions:
@@ -208,7 +219,7 @@ def _sync_atmosphere_mode_to_render_engine(scene, deps):
         try:
             deps.ensure_atmosphere_for_mode(
                 scene=scene,
-                earth_surface=deps.get_earth_object(),
+                earth_surface=earth_obj,
                 mode=desired_mode,
             )
         except deps.recoverable_exceptions:

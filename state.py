@@ -1041,6 +1041,12 @@ def sync_atmosphere_mode_to_render_engine(scene=None):
 def _planetka_load_post(_dummy):
     result = _handler_runtime.load_post(_dummy, _HANDLER_RUNTIME_CTX)
     try:
+        register_atmosphere_render_engine_msgbus()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed re-registering atmosphere render-engine msgbus after file load", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed re-registering atmosphere render-engine msgbus after file load", exc_info=True)
+    try:
         bpy.app.timers.register(_detach_planetka_camera_after_load_timer, first_interval=0.1)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed scheduling Planetka Camera detach after file load", exc_info=True)
@@ -1060,6 +1066,12 @@ def _planetka_load_post(_dummy):
         logger.debug("Planetka: failed sanitizing missing Earth texture images after file load", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
         logger.debug("Planetka: failed sanitizing missing Earth texture images after file load", exc_info=True)
+    try:
+        sync_atmosphere_mode_to_render_engine(getattr(bpy.context, "scene", None))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed syncing atmosphere after file load", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed syncing atmosphere after file load", exc_info=True)
     return result
 
 

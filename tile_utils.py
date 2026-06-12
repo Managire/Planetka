@@ -905,50 +905,16 @@ def _resolution_bias_factor(scene):
 
 
 def _apply_temporal_z_hysteresis(scene, requested_z, distance_value):
-    """Keep z-level stable near threshold using a tiny distance hysteresis band."""
+    """Return the z-level requested by the current camera state.
+
+    Resolve is manual and deterministic. Persisted hysteresis from an older file
+    can otherwise hold a stale coarse z-level forever, leaving the scene blurred
+    even after the user presses Resolve Planetka.
+    """
     try:
-        requested_z = int(requested_z)
+        return int(requested_z)
     except (TypeError, ValueError):
         return requested_z
-
-    if scene is None:
-        return requested_z
-
-    try:
-        previous_z = int(scene.get(LAST_SELECTED_Z_LEVEL_KEY, 0) or 0)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        previous_z = 0
-
-    if previous_z <= 0 or previous_z == requested_z:
-        return requested_z
-
-    try:
-        current_distance = max(0.0, float(distance_value))
-    except (TypeError, ValueError):
-        current_distance = 0.0
-
-    try:
-        switch_distance = max(
-            0.0,
-            float(scene.get(LAST_Z_SWITCH_DISTANCE_KEY, current_distance) or current_distance),
-        )
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        switch_distance = current_distance
-
-    band = float(switch_distance) * float(TEMPORAL_HYSTERESIS_DISTANCE_RATIO)
-
-    # Requested finer tiles (smaller z): require moving a bit closer than the
-    # prior switch threshold.
-    if requested_z < previous_z:
-        if current_distance >= max(0.0, switch_distance - band):
-            return previous_z
-        return requested_z
-
-    # Requested coarser tiles (larger z): require moving a bit farther than the
-    # prior switch threshold.
-    if current_distance <= (switch_distance + band):
-        return previous_z
-    return requested_z
 
 
 def compute_z_value(required_mpp, bias_factor=1.0):

@@ -3340,7 +3340,7 @@ def ensure_atmosphere_for_mode(scene=None, earth_surface=None, mode="VOLUMETRIC"
         active_obj = ensure_static_fake_atmosphere(scene=scene, earth_surface=earth_surface)
         volumetric_obj = ensure_volumetric_atmosphere(scene=scene, earth_surface=earth_surface)
         _set_atmosphere_object_visible(active_obj, True)
-        _set_atmosphere_object_visible(volumetric_obj, True)
+        _set_atmosphere_object_visible(volumetric_obj, False)
         return active_obj
     else:
         active_obj = ensure_volumetric_atmosphere(scene=scene, earth_surface=earth_surface)
