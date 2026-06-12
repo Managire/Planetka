@@ -174,7 +174,7 @@ class PLANETKA_OT_CreateStandaloneFile(bpy.types.Operator):
                     "    name = str(getattr(obj, 'name', '') or '')\n"
                     "    if 'Planetka' in name:\n"
                     "        return True\n"
-                    "    if name in {'Atmosphere - Volumetric', 'Atmosphere - EEVEE supplement'}:\n"
+                    "    if name in {'Planetka Atmosphere - Volumetric', 'Planetka Atmosphere - EEVEE Supplement'}:\n"
                     "        return True\n"
                     "    return False\n"
                     "\n"

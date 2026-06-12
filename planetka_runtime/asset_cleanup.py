@@ -99,25 +99,25 @@ def _remove_collection_if_exists(collection_name):
 def purge_disabled_atmosphere_and_cloud_assets(scene=None):
     _ = scene
     object_names = {
-        "Atmosphere - EEVEE supplement",
-        "Atmosphere - Volumetric",
+        "Planetka Atmosphere - EEVEE Supplement",
+        "Planetka Atmosphere - Volumetric",
         "Planetka Atmosphere",
         "Planetka Atmosphere Fake",
         "Planetka Global Cloud Layer",
         "Planetka Cloud VDB",
     }
     object_prefixes = (
-        "Local Cloud No ",
-        "VDB Cloud No ",
-        "Planetka Local Cloud Cap Mesh",
+        "Planetka Texture-Based Cloud No ",
+        "Planetka VDB Cloud No ",
+        "Planetka Texture-Based Cloud Cap Mesh",
     )
     collection_names = {
-        "Atmosphere",
+        "Planetka Atmosphere",
         "Atmpshere",
-        "Clouds",
-        "Global Clouds",
-        "Local Clouds",
-        "VDB Clouds",
+        "Planetka Clouds",
+        "Planetka Global Clouds",
+        "Planetka Texture-Based Clouds",
+        "Planetka VDB Clouds",
     }
     material_exact = {
         "Planetka Atmosphere EEVEE Supplement Material",

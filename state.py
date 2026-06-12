@@ -148,7 +148,7 @@ _NAVIGATION_SYNC_IDPROP_MAP = (
     ("nav_roll_deg", "planetka_nav_roll_deg"),
     ("nav_focal_length_mm", "planetka_nav_focal_length_mm"),
 )
-SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
+SURFACE_COLLECTION_NAME = "Planetka Earth Surface Collection"
 _MESH_UTILS_MODULE = None
 _SHADER_UTILS_MODULE = None
 _OPERATORS_MODULE = None

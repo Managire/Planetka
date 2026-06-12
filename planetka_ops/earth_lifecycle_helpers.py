@@ -26,7 +26,7 @@ _DEFAULT_SCENE_REMOVED_KEY = "planetka_default_scene_removed"
 _PLANETKA_CREATE_CAMERA_NAME = "Planetka Camera"
 _PLANETKA_RUNTIME_NAME_PREFIX = "Planetka"
 _PLANETKA_STANDALONE_NAME_PREFIX = "PlanetkaStandalone"
-_SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
+_SURFACE_COLLECTION_NAME = "Planetka Earth Surface Collection"
 
 
 def _validate_create_earth_texture_source(base_path):
@@ -330,7 +330,7 @@ def _is_planetka_managed_object(obj):
         name = ""
     if _is_planetka_runtime_name(name):
         return True
-    if name in {"Atmosphere - EEVEE supplement", "Atmosphere - Volumetric"}:
+    if name in {"Planetka Atmosphere - EEVEE Supplement", "Planetka Atmosphere - Volumetric"}:
         return True
     try:
         role_value = str(obj.get("planetka_role", "") or "").strip()

@@ -37,7 +37,9 @@ D_LEVELS_BY_Z = {
     360: [360, 720, 1440],
 }
 
-FRUSTUM_MARGIN = 1.05
+# Resolve samples a slightly wider view than the actual camera frame so edge
+# and oblique-view tiles do not resolve too coarsely from sparse in-frame points.
+FRUSTUM_MARGIN = 1.10
 # Active View intentionally over-scans to reduce edge dropouts when the user
 # orbits in perspective viewport (treat as ~2x wider capture window).
 ACTIVE_VIEW_FRUSTUM_MARGIN = 2.0

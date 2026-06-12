@@ -9,7 +9,7 @@ from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 logger = logging.getLogger(__name__)
 
-SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
+SURFACE_COLLECTION_NAME = "Planetka Earth Surface Collection"
 PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 EARTH_MATERIAL_NAME = "Planetka Earth Material"
 SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
@@ -20,26 +20,26 @@ PREVIEW_TEXTURE_LOADING_GROUP_NAME = "Planetka Preview Textures Loading Group"
 NIGHTDAY_GROUP_NAME = "Planetka NightDay Transition Group"
 SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 PLANETKA_ROOT_OBJECT_NAME = "Planetka Root"
-FAKE_ATMOSPHERE_OBJECT_NAME = "Atmosphere - EEVEE supplement"
+FAKE_ATMOSPHERE_OBJECT_NAME = "Planetka Atmosphere - EEVEE Supplement"
 FAKE_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere EEVEE Supplement Material"
 SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Fake Material"
 FAKE_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere EEVEE Supplement Group"
 SOURCE_FAKE_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Fake Group"
 FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME = "Planetka Fake Atmosphere Textures Group"
 FAKE_ATMOSPHERE_EL_MULTIPLIER_NODE_NAME = "Planetka EEVEE Supplement EL x8"
-FAKE_ATMOSPHERE_COLLECTION_NAME = "Atmosphere"
+FAKE_ATMOSPHERE_COLLECTION_NAME = "Planetka Atmosphere"
 FAKE_ATMOSPHERE_ROLE_KEY = "planetka_role"
 FAKE_ATMOSPHERE_ROLE_VALUE = "eevee_supplement_atmosphere"
-FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere Fake"
+FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere - EEVEE Supplement"
 FAKE_ATMOSPHERE_SCALE_FACTOR = 2.01
-VOLUMETRIC_ATMOSPHERE_OBJECT_NAME = "Atmosphere - Volumetric"
-VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere"
+VOLUMETRIC_ATMOSPHERE_OBJECT_NAME = "Planetka Atmosphere - Volumetric"
+VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere - Volumetric"
 VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Material"
 VOLUMETRIC_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Group"
 VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME = "Earth Size Group"
 VOLUMETRIC_ATMOSPHERE_EARTH_RADIUS_NODE_NAME = "Earth_Radius"
 VOLUMETRIC_ATMOSPHERE_ROLE_VALUE = "atmosphere_volumetric"
-VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR = 2.0
+VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR = 2.0005
 VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_NODE_NAME = "Math.009"
 VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_VALUE = 10.0
 VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_RADIUS = 2.0
@@ -2285,12 +2285,12 @@ def _append_material_library_from_blend(blend_path):
 
 def _remove_unintended_material_library_cloud_objects(existing_object_pointers):
     sample_names = {
-        "Texture-Based Cloud No 001",
-        "VDB Cloud No 001",
+        "Planetka Texture-Based Cloud No 001",
+        "Planetka VDB Cloud No 001",
         "Planetka Cloud VDB",
         "Planetka Global Cloud Layer",
-        "Atmosphere - EEVEE supplement",
-        "Atmosphere - Volumetric",
+        "Planetka Atmosphere - EEVEE Supplement",
+        "Planetka Atmosphere - Volumetric",
         "Planetka Atmosphere Fake",
         "Planetka Atmosphere",
     }

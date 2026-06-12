@@ -27,7 +27,7 @@ def _log_recoverable_once(code, message):
 
 
 SURFACE_CULL_MOD_NAME = "Camera Cull Surface"
-SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
+SURFACE_COLLECTION_NAME = "Planetka Earth Surface Collection"
 EARTH_SURFACE_DEFAULT_RADIUS = 2.0
 EARTH_SURFACE_DEFAULT_SCALE = (1.0, 1.0, 1.0)
 BASE_SPHERE_CACHE_MESH_NAME = "Planetka__BaseSphereMeshCache_v1"

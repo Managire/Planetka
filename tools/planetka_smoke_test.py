@@ -298,7 +298,7 @@ def main():
         _assert(surface.data and len(surface.data.materials) > 0, "Resolved Earth surface has no material assigned.")
         _assert(surface.data.materials[0].name == "Planetka Earth Material", "Resolved Earth material is incorrect.")
         _assert(
-            bpy.data.collections.get("Planetka - Earth Surface Collection") is not None,
+            bpy.data.collections.get("Planetka Earth Surface Collection") is not None,
             "Expected Earth surface collection is missing.",
         )
 

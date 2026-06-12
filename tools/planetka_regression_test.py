@@ -33,7 +33,7 @@ import bpy
 
 
 TAG = "[Planetka Regression Test]"
-SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
+SURFACE_COLLECTION_NAME = "Planetka Earth Surface Collection"
 SURFACE_OBJECT_NAME = "Planetka Earth Surface"
 
 

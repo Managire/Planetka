@@ -107,10 +107,10 @@ REMOTE_VDB_CLOUD_FILES = (
     "cloud005_vox063_90.vdb",
     "cloud005_vox063_120.vdb",
 )
-CLOUDS_ROOT_COLLECTION_NAME = "Clouds"
-GLOBAL_CLOUDS_COLLECTION_NAME = "Global Clouds"
-LOCAL_CLOUDS_COLLECTION_NAME = "Texture-Based Clouds"
-VDB_CLOUDS_COLLECTION_NAME = "VDB Clouds"
+CLOUDS_ROOT_COLLECTION_NAME = "Planetka Clouds"
+GLOBAL_CLOUDS_COLLECTION_NAME = "Planetka Global Clouds"
+LOCAL_CLOUDS_COLLECTION_NAME = "Planetka Texture-Based Clouds"
+VDB_CLOUDS_COLLECTION_NAME = "Planetka VDB Clouds"
 
 GLOBAL_CLOUD_LAYER_NAME = "Planetka Global Cloud Layer"
 GLOBAL_CLOUD_MATERIAL_NAME = "Planetka Global Clouds Shader"
@@ -131,8 +131,8 @@ LOCAL_CLOUD_LAT_NODE_NAMES = ("Target Latitude +90 (deg)", "Target Latitude (deg
 LOCAL_CLOUD_SIZE_NODE_NAMES = ("Local Cloud Size (deg)", "Local Cloud Size")
 LOCAL_CLOUD_ROT_NODE_NAMES = ("Local Cloud Rotation (deg)", "Local Cloud Rotation")
 
-LOCAL_CLOUD_NUMBERED_PREFIX = "Texture-Based Cloud No "
-VDB_CLOUD_NUMBERED_PREFIX = "VDB Cloud No "
+LOCAL_CLOUD_NUMBERED_PREFIX = "Planetka Texture-Based Cloud No "
+VDB_CLOUD_NUMBERED_PREFIX = "Planetka VDB Cloud No "
 LOCAL_CLOUD_CAP_MESH_PREFIX = "Planetka Texture-Based Cloud Cap Mesh"
 
 CLOUD_ROLE_KEY = "planetka_cloud_role"
@@ -4117,7 +4117,7 @@ class PLANETKA_OT_DeleteVDBCloud(bpy.types.Operator):
 
 
 class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
-    bl_label = "Texture-Based Clouds"
+    bl_label = "Planetka Texture-Based Clouds"
     bl_idname = "PLANETKA_PT_local_clouds"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"

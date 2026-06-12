@@ -161,7 +161,8 @@ def _test_texture_quality_tile_levels(base_module: str) -> dict:
 
     Full keeps the tile list generated for the view. Balanced requests the same
     tiles at doubled d-levels. Preview requests the same tiles at four-times
-    d-levels, clamped to the nearest available dataset level.
+    d-levels. Missing exact d-levels clamp to the nearest sharper dataset level,
+    never a coarser level.
     """
 
     render_prep = __import__(f"{base_module}.render_prep", fromlist=["dummy"])
@@ -177,8 +178,8 @@ def _test_texture_quality_tile_levels(base_module: str) -> dict:
     _assert("x000_y000_z001_d002" in full, f"Full must keep optimal d-levels: {full}")
     _assert("x000_y000_z001_d004" in balanced, f"Balanced must double d-levels: {balanced}")
     _assert("x000_y000_z001_d008" in preview, f"Preview must quadruple d-levels: {preview}")
-    _assert("x010_y010_z001_d030" in balanced, f"Balanced must clamp to next available doubled d-level: {balanced}")
-    _assert("x010_y010_z001_d060" in preview, f"Preview must clamp to next available quadrupled d-level: {preview}")
+    _assert("x010_y010_z001_d015" in balanced, f"Balanced must clamp to nearest sharper doubled d-level: {balanced}")
+    _assert("x010_y010_z001_d030" in preview, f"Preview must clamp to nearest sharper quadrupled d-level: {preview}")
     _assert("x020_y020_z180_d180" in full, f"Full z180 must stay d180: {full}")
     _assert("x020_y020_z180_d360" in balanced, f"Balanced z180 must be d360: {balanced}")
     _assert("x020_y020_z180_d720" in preview, f"Preview z180 must be d720: {preview}")

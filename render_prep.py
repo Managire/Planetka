@@ -251,7 +251,10 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
     """Transform full-quality source tiles to the selected Quality Level.
 
     This is the only resolve-stage function allowed to alter S2 D-levels.
-    Z-levels are preserved. D-levels only move coarser, never sharper.
+    Z-levels are preserved. When the exact target d-level is unavailable,
+    choose the nearest sharper available file. Quality-level conversion must
+    never load lower quality than requested; only shader tile-budget merging may
+    force coarser files.
     """
     tile_utils = _get_tile_utils()
     if tile_utils is None:
@@ -286,13 +289,11 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
         source_d = 1440 if int(d) == 0 else int(d)
         target_d = int(source_d) * int(factor)
         allowed = sorted({int(value) for value in d_levels_by_z.get(int(z), [int(z)])})
-        replacement = None
-        for candidate in allowed:
-            if int(candidate) >= int(target_d):
-                replacement = int(candidate)
-                break
-        if replacement is None:
-            replacement = int(max(allowed)) if allowed else int(target_d)
+        sharper_or_equal = [int(candidate) for candidate in allowed if int(candidate) <= int(target_d)]
+        if sharper_or_equal:
+            replacement = int(max(sharper_or_equal))
+        else:
+            replacement = int(min(allowed)) if allowed else int(target_d)
         adjusted.append(format_tile(int(x), int(y), int(z), int(replacement)))
     return list(sort_tiles(adjusted))
 

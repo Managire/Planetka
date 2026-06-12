@@ -1553,6 +1553,7 @@ _ATMOSPHERE_SOCKET_LABELS = {
 _ATMOSPHERE_SOCKET_TOOLTIPS = {
     "Height (km)": "Height of the atmosphere shell above Earth in kilometres. Higher values make the glow extend farther from the horizon.",
     "Density Coefficient": "Multiplier for overall volume density. Higher values make the atmosphere thicker, brighter and more opaque.",
+    "Falloff Coefficient": "Controls how quickly density fades with altitude. Higher values concentrate haze near the surface; lower values spread it upward.",
     "Falloff Exponent": "Controls how quickly density fades with altitude. Higher values concentrate haze near the surface; lower values spread it upward.",
     "Scattering Color - Main": "Primary color of scattered light through the upper atmosphere.",
     "Anisotropy - Main": "Directionality of main scattering. Positive values push light forward for stronger rim and horizon glow; lower values look more even.",
@@ -1569,7 +1570,7 @@ _ATMOSPHERE_SOCKET_TOOLTIPS = {
 
 def _iter_atmosphere_nodes(mode="VOLUMETRIC"):
     mode_token = str(mode or "VOLUMETRIC").strip().upper()
-    object_name = "Atmosphere - Volumetric"
+    object_name = "Planetka Atmosphere - Volumetric"
     group_name = "Planetka Atmosphere Group"
     try:
         from .asset_builder import (
@@ -1580,7 +1581,7 @@ def _iter_atmosphere_nodes(mode="VOLUMETRIC"):
         )
 
         if mode_token == "EEVEE":
-            object_name = str(FAKE_ATMOSPHERE_OBJECT_NAME or "Atmosphere - EEVEE supplement")
+            object_name = str(FAKE_ATMOSPHERE_OBJECT_NAME or "Planetka Atmosphere - EEVEE Supplement")
             group_name = str(FAKE_ATMOSPHERE_GROUP_NAME or "Planetka Atmosphere EEVEE Supplement Group")
         else:
             object_name = str(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME or object_name)
@@ -1655,8 +1656,13 @@ def _draw_atmosphere_socket(container, socket, label=None):
 
 def _draw_volumetric_atmosphere_node(layout, node):
     sockets = _socket_map(node)
-    for socket_name in ("Height (km)", "Density Coefficient", "Falloff Exponent"):
+    for socket_name in ("Height (km)", "Density Coefficient"):
         _draw_atmosphere_socket(layout, sockets.get(socket_name))
+    _draw_atmosphere_socket(
+        layout,
+        sockets.get("Falloff Coefficient") or sockets.get("Falloff Exponent"),
+        label="Falloff Coefficient",
+    )
 
     main_box = layout.box()
     main_box.label(text="Main Settings")
