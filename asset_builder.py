@@ -36,6 +36,8 @@ VOLUMETRIC_ATMOSPHERE_OBJECT_NAME = "Atmosphere - Volumetric"
 VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere"
 VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Material"
 VOLUMETRIC_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Group"
+VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME = "Earth Size Group"
+VOLUMETRIC_ATMOSPHERE_EARTH_RADIUS_NODE_NAME = "Earth_Radius"
 VOLUMETRIC_ATMOSPHERE_ROLE_VALUE = "atmosphere_volumetric"
 VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR = 2.0
 VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_NODE_NAME = "Math.009"
@@ -808,6 +810,121 @@ def sync_volumetric_atmosphere_density_for_radius(scene=None, earth_radius_bu=No
         if abs(current - float(value)) <= 1e-9:
             return bool(driver_changed)
         density_node.inputs[1].default_value = float(value)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return bool(driver_changed)
+
+
+def _find_volumetric_atmosphere_earth_radius_value_node():
+    node_group = bpy.data.node_groups.get(VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME)
+    if node_group is None:
+        return None, None
+    nodes = getattr(node_group, "nodes", None)
+    if nodes is None:
+        return node_group, None
+    node = nodes.get(VOLUMETRIC_ATMOSPHERE_EARTH_RADIUS_NODE_NAME)
+    if node is not None:
+        return node_group, node
+    for candidate in tuple(nodes):
+        name = str(getattr(candidate, "name", "") or "")
+        label = str(getattr(candidate, "label", "") or "")
+        if name == VOLUMETRIC_ATMOSPHERE_EARTH_RADIUS_NODE_NAME or label == VOLUMETRIC_ATMOSPHERE_EARTH_RADIUS_NODE_NAME:
+            return node_group, candidate
+    return node_group, None
+
+
+def _ensure_volumetric_atmosphere_earth_radius_driver(scene):
+    scene = scene or getattr(bpy.context, "scene", None)
+    node_group, radius_node = _find_volumetric_atmosphere_earth_radius_value_node()
+    if scene is None or node_group is None or radius_node is None:
+        return False
+    outputs = getattr(radius_node, "outputs", None)
+    if outputs is None or len(outputs) == 0 or not hasattr(outputs[0], "default_value"):
+        return False
+
+    changed = False
+    try:
+        socket = outputs[0]
+        fcurve = socket.driver_add("default_value")
+        driver = getattr(fcurve, "driver", None)
+        if driver is None:
+            return False
+
+        if str(getattr(driver, "type", "") or "") != "SCRIPTED":
+            driver.type = "SCRIPTED"
+            changed = True
+        if str(getattr(driver, "expression", "") or "") != "earth_radius":
+            driver.expression = "earth_radius"
+            changed = True
+
+        variables = list(getattr(driver, "variables", ()))
+        radius_var = None
+        for variable in variables:
+            if str(getattr(variable, "name", "") or "") == "earth_radius" and radius_var is None:
+                radius_var = variable
+                continue
+            driver.variables.remove(variable)
+            changed = True
+        if radius_var is None:
+            radius_var = driver.variables.new()
+            radius_var.name = "earth_radius"
+            changed = True
+        if str(getattr(radius_var, "type", "") or "") != "SINGLE_PROP":
+            radius_var.type = "SINGLE_PROP"
+            changed = True
+
+        targets = getattr(radius_var, "targets", ())
+        if not targets:
+            return bool(changed)
+        target = targets[0]
+        if str(getattr(target, "id_type", "") or "") != "SCENE":
+            target.id_type = "SCENE"
+            changed = True
+        if getattr(target, "id", None) is not scene:
+            target.id = scene
+            changed = True
+        if str(getattr(target, "data_path", "") or "") != "planetka.earth_radius_bu":
+            target.data_path = "planetka.earth_radius_bu"
+            changed = True
+
+        socket.default_value = _scene_earth_radius_bu(scene)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return bool(changed)
+
+
+def sync_volumetric_atmosphere_earth_size_for_radius(scene=None, earth_radius_bu=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    _node_group, radius_node = _find_volumetric_atmosphere_earth_radius_value_node()
+    if radius_node is None:
+        return False
+    outputs = getattr(radius_node, "outputs", None)
+    if outputs is None or len(outputs) == 0 or not hasattr(outputs[0], "default_value"):
+        return False
+
+    driver_changed = _ensure_volumetric_atmosphere_earth_radius_driver(scene)
+    try:
+        animation_data = getattr(_node_group, "animation_data", None)
+        drivers = getattr(animation_data, "drivers", None) if animation_data is not None else None
+        driver_data_path = f'nodes["{VOLUMETRIC_ATMOSPHERE_EARTH_RADIUS_NODE_NAME}"].outputs[0].default_value'
+        if any(str(getattr(fcurve, "data_path", "") or "") == driver_data_path for fcurve in tuple(drivers or ())):
+            return bool(driver_changed)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    try:
+        radius = max(1e-6, float(earth_radius_bu if earth_radius_bu is not None else _scene_earth_radius_bu(scene)))
+        current = float(outputs[0].default_value)
+        if abs(current - radius) <= 1e-9:
+            return bool(driver_changed)
+        outputs[0].default_value = radius
         return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
@@ -2646,6 +2763,29 @@ def _normalize_volumetric_atmosphere_data_names(obj=None):
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
+    earth_size_group = bpy.data.node_groups.get(VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME)
+    if earth_size_group is None:
+        for candidate in tuple(bpy.data.node_groups):
+            candidate_name = str(getattr(candidate, "name", "") or "")
+            if candidate_name.startswith(f"{VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME}."):
+                earth_size_group = candidate
+                break
+    if earth_size_group is not None and str(getattr(earth_size_group, "name", "")) != VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME:
+        existing = bpy.data.node_groups.get(VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME)
+        if existing is not None and existing is not earth_size_group:
+            try:
+                bpy.data.node_groups.remove(existing, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        try:
+            earth_size_group.name = VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
     if (
         obj is not None
         and material is not None
@@ -2677,6 +2817,18 @@ def _normalize_volumetric_atmosphere_data_names(obj=None):
     for duplicate in list(bpy.data.node_groups):
         name = str(getattr(duplicate, "name", "") or "")
         if duplicate is node_group or not name.startswith(f"{VOLUMETRIC_ATMOSPHERE_GROUP_NAME}."):
+            continue
+        try:
+            if int(getattr(duplicate, "users", 0) or 0) <= 0:
+                bpy.data.node_groups.remove(duplicate, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    for duplicate in list(bpy.data.node_groups):
+        name = str(getattr(duplicate, "name", "") or "")
+        if duplicate is earth_size_group or not name.startswith(f"{VOLUMETRIC_ATMOSPHERE_EARTH_SIZE_GROUP_NAME}."):
             continue
         try:
             if int(getattr(duplicate, "users", 0) or 0) <= 0:
@@ -3218,6 +3370,7 @@ def sync_atmosphere_scale_for_radius(scene=None, earth_radius_bu=None):
     root = ensure_planetka_root(scene) if scene is not None else None
     changed = False
     changed |= sync_volumetric_atmosphere_density_for_radius(scene=scene, earth_radius_bu=earth_radius_bu)
+    changed |= sync_volumetric_atmosphere_earth_size_for_radius(scene=scene, earth_radius_bu=earth_radius_bu)
     changed |= _sync_atmosphere_object_transform(
         _find_fake_atmosphere_object(),
         root,
@@ -3300,6 +3453,7 @@ def ensure_volumetric_atmosphere(scene=None, earth_surface=None):
     _normalize_volumetric_atmosphere_data_names(atmosphere_obj)
     _configure_volumetric_atmosphere_object(atmosphere_obj)
     sync_volumetric_atmosphere_density_for_radius(scene=scene)
+    sync_volumetric_atmosphere_earth_size_for_radius(scene=scene)
 
     atmosphere_collection = _ensure_fake_atmosphere_collection(scene)
     target_collections = [atmosphere_collection] if atmosphere_collection is not None else []
