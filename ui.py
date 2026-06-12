@@ -1870,6 +1870,20 @@ def _draw_vdb_clouds(layout, context, props):
     if not bool(getattr(props, "enable_vdb_clouds", False)):
         return
 
+    settings_box = box.box()
+    settings_box.label(text="Settings", icon="SHADING_RENDERED")
+    settings_box.prop(props, "vdb_cloud_shader_color")
+    settings_box.prop(props, "vdb_cloud_shader_density_coefficient")
+    settings_box.prop(props, "vdb_cloud_shader_density_gamma")
+    settings_box.prop(props, "vdb_cloud_shader_density_falloff")
+    settings_box.prop(props, "vdb_cloud_shader_anisotropy_blending")
+    settings_box.prop(props, "vdb_cloud_shader_anisotropy_1")
+    settings_box.prop(props, "vdb_cloud_shader_anisotropic_falloff_1")
+    settings_box.prop(props, "vdb_cloud_shader_anisotropy_2")
+    settings_box.prop(props, "vdb_cloud_shader_anisotropic_falloff_2")
+    settings_box.prop(props, "vdb_cloud_shader_absorption_color")
+    settings_box.prop(props, "vdb_cloud_shader_absorption_amount")
+
     picker_box = box.box()
     picker_box.label(text="Planetka Cloud VDB Presets", icon="VOLUME_DATA")
     picker_box.template_icon_view(props, "vdb_cloud_preset", show_labels=True, scale=5.0, scale_popup=6.0)
@@ -1909,7 +1923,6 @@ def _draw_vdb_clouds(layout, context, props):
         cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_LONGITUDE, text="Longitude")
         cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_ROTATION_DEG, text="Rotation")
         cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_ALTITUDE_M, text="Altitude (m)")
-        cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_DENSITY, text="Density")
 
         row = cloud_box.row(align=True)
         op = row.operator("planetka.reset_vdb_cloud_to_camera_view", text="Reset to Camera", icon="TRACKING")
