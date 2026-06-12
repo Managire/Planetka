@@ -730,6 +730,12 @@ def _reset_navigation_camera_control_runtime_state():
     _navigation_runtime.reset_navigation_camera_control_runtime_state(_NAVIGATION_RUNTIME_CTX)
 
 
+def force_restore_navigation_adaptive_state():
+    if _NAVIGATION_RUNTIME_CTX is None:
+        return False
+    return _navigation_runtime.force_restore_navigation_adaptive_state(_NAVIGATION_RUNTIME_CTX)
+
+
 def _scene_key(scene):
     return _resolve_state._scene_key(scene)
 

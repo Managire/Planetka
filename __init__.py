@@ -48,6 +48,7 @@ from .state import (
     _planetka_load_post,
     _sync_logging_from_scenes,
     clear_atmosphere_render_engine_msgbus,
+    force_restore_navigation_adaptive_state,
     mark_render_job_progress,
     mark_render_job_started,
     recover_post_render_state,
@@ -434,6 +435,10 @@ def register():
 
 
 def unregister():
+    try:
+        force_restore_navigation_adaptive_state()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed restoring navigation adaptive subdivision during unregister", exc_info=True)
     try:
         _unregister_keymaps()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:

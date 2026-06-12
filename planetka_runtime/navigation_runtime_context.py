@@ -35,6 +35,8 @@ class NavigationRuntimeState:
     nav_camera_control_last_signature: dict = field(default_factory=dict)
     nav_camera_control_syncing: bool = False
     nav_camera_control_sync_suspend_count: int = 0
+    navigation_adaptive_restore_pending: bool = False
+    navigation_adaptive_restore_states: dict = field(default_factory=dict)
     navigation_shot_update_pending: bool = False
     navigation_shot_update_reentrant: bool = False
     navigation_shot_suspend_count: int = 0

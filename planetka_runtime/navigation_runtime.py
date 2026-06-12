@@ -4,6 +4,8 @@ import time
 from mathutils import Vector
 
 _NAVIGATION_RUNTIME_CTX = None
+_NAVIGATION_ADAPTIVE_RESTORE_DELAY_SECONDS = 0.35
+_ADAPTIVE_SUBDIVISION_MODIFIER_NAME = "Adaptive Subdivision"
 
 
 def _require_ctx():
@@ -128,6 +130,107 @@ def request_next_navigation_apply_behavior(
             scene[deps.nav_sync_active_view_once_key] = bool(sync_active_view_when_not_camera)
         except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
             runtime_logger.debug("Planetka: failed storing one-shot nav sync-active-view override", exc_info=True)
+
+
+def _surface_adaptive_subdivision_modifier(ctx):
+    deps = ctx.deps
+    try:
+        earth = deps.get_earth_object()
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed reading Earth object for navigation adaptive subdivision suspend", exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed reading Earth object for navigation adaptive subdivision suspend", exc_info=True)
+        return None
+    if earth is None:
+        return None
+    modifiers = getattr(earth, "modifiers", None)
+    if modifiers is None:
+        return None
+    try:
+        modifier = modifiers.get(_ADAPTIVE_SUBDIVISION_MODIFIER_NAME)
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed reading Earth adaptive subdivision modifier", exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed reading Earth adaptive subdivision modifier", exc_info=True)
+        return None
+    if modifier is None or not hasattr(modifier, "show_viewport"):
+        return None
+    return modifier
+
+
+def _navigation_adaptive_restore_timer(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    elapsed = time.monotonic() - float(state.navigation_user_edit_last_touch or 0.0)
+    if elapsed < float(_NAVIGATION_ADAPTIVE_RESTORE_DELAY_SECONDS):
+        return max(0.05, float(_NAVIGATION_ADAPTIVE_RESTORE_DELAY_SECONDS) - float(elapsed))
+    force_restore_navigation_adaptive_state(ctx)
+    return None
+
+
+def suspend_surface_adaptive_subdivision_for_navigation(runtime=None, scene=None):
+    del scene
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    state.navigation_user_edit_last_touch = time.monotonic()
+
+    modifier = _surface_adaptive_subdivision_modifier(ctx)
+    if modifier is None:
+        return False
+
+    key = str(getattr(modifier, "name", _ADAPTIVE_SUBDIVISION_MODIFIER_NAME) or _ADAPTIVE_SUBDIVISION_MODIFIER_NAME)
+    try:
+        if key not in state.navigation_adaptive_restore_states:
+            state.navigation_adaptive_restore_states[key] = bool(getattr(modifier, "show_viewport", True))
+        modifier.show_viewport = False
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed suspending Earth adaptive subdivision while navigating", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed suspending Earth adaptive subdivision while navigating", exc_info=True)
+        return False
+
+    if not bool(state.navigation_adaptive_restore_pending):
+        state.navigation_adaptive_restore_pending = True
+        try:
+            deps.bpy.app.timers.register(lambda: _navigation_adaptive_restore_timer(ctx), first_interval=float(_NAVIGATION_ADAPTIVE_RESTORE_DELAY_SECONDS))
+        except deps.recoverable_exceptions:
+            state.navigation_adaptive_restore_pending = False
+            deps.logger.debug("Planetka: failed scheduling adaptive subdivision restore timer", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            state.navigation_adaptive_restore_pending = False
+            deps.logger.debug("Planetka: failed scheduling adaptive subdivision restore timer", exc_info=True)
+    return True
+
+
+def force_restore_navigation_adaptive_state(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    modifier = _surface_adaptive_subdivision_modifier(ctx)
+    restore_states = dict(state.navigation_adaptive_restore_states or {})
+    state.navigation_adaptive_restore_states.clear()
+    state.navigation_adaptive_restore_pending = False
+    if modifier is None or not restore_states:
+        return False
+    key = str(getattr(modifier, "name", _ADAPTIVE_SUBDIVISION_MODIFIER_NAME) or _ADAPTIVE_SUBDIVISION_MODIFIER_NAME)
+    target_value = restore_states.get(key)
+    if target_value is None and len(restore_states) == 1:
+        target_value = next(iter(restore_states.values()))
+    if target_value is None:
+        return False
+    try:
+        modifier.show_viewport = bool(target_value)
+        return True
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed restoring Earth adaptive subdivision after navigation", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed restoring Earth adaptive subdivision after navigation", exc_info=True)
+    return False
 
 
 def suspend_navigation_shot_updates(runtime=None):
@@ -373,6 +476,7 @@ def update_navigation_shot(
     scene = getattr(context, "scene", None) if context else None
     if scene:
         state.navigation_user_edit_last_touch = time.monotonic()
+        suspend_surface_adaptive_subdivision_for_navigation(ctx, scene=scene)
         sync_navigation_idprops(scene)
     if apply_shot():
         state.navigation_shot_update_pending = False
@@ -413,6 +517,7 @@ def update_navigation_focal_length(
         return
 
     state.navigation_user_edit_last_touch = time.monotonic()
+    suspend_surface_adaptive_subdivision_for_navigation(ctx, scene=scene)
     sync_navigation_idprops(scene)
 
     camera = getattr(scene, "camera", None)
@@ -429,6 +534,7 @@ def update_navigation_focal_length(
 
 def reset_navigation_shot_runtime_state(runtime=None):
     ctx = _coerce_ctx(runtime)
+    force_restore_navigation_adaptive_state(ctx)
     state = ctx.state
     state.navigation_shot_update_pending = False
     state.navigation_shot_update_reentrant = False
