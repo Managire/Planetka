@@ -347,6 +347,84 @@ def _set_sampling_pattern(cycles):
             pass
 
 
+def _iter_material_image_nodes(material_name):
+    material = bpy.data.materials.get(material_name)
+    node_tree = getattr(material, 'node_tree', None) if material is not None else None
+    if node_tree is None:
+        return []
+    seen = set()
+    found = []
+
+    def walk(tree):
+        if tree is None:
+            return
+        try:
+            ptr = int(tree.as_pointer())
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            ptr = id(tree)
+        if ptr in seen:
+            return
+        seen.add(ptr)
+        for node in tuple(getattr(tree, 'nodes', ())):
+            if str(getattr(node, 'bl_idname', '')) == 'ShaderNodeTexImage':
+                found.append(node)
+            child = getattr(node, 'node_tree', None)
+            if child is not None:
+                walk(child)
+
+    walk(node_tree)
+    return found
+
+
+def _count_real_surface_s2_images():
+    count = 0
+    for node in _iter_material_image_nodes('Planetka Earth Material'):
+        image = getattr(node, 'image', None)
+        image_name = str(getattr(image, 'name', '') or '') if image is not None else ''
+        path = str(getattr(image, 'filepath', '') or getattr(image, 'filepath_raw', '') or '') if image is not None else ''
+        basename = os.path.basename(bpy.path.abspath(path)) if path else ''
+        token = image_name or basename
+        if token.startswith('S2_') and '_x000_y000_z360_d000' not in token:
+            count += 1
+    return count
+
+
+def _resolve_planetka_surface_for_export():
+    before_count = _count_real_surface_s2_images()
+    try:
+        props = getattr(bpy.context.scene, 'planetka', None)
+        quality = str(getattr(props, 'texture_quality_mode', '') or '').strip()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        quality = ''
+    kwargs = dict(
+        scope_mode='CAMERA',
+        skip_render_compatibility=True,
+        defer_download=False,
+        capture_download_progress=False,
+        tiles_override_json='',
+    )
+    if quality:
+        kwargs['texture_quality_mode_override'] = quality
+    resolve_error = None
+    result = None
+    try:
+        result = bpy.ops.planetka.load_textures(**kwargs)
+    except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
+        resolve_error = exc
+    after_count = _count_real_surface_s2_images()
+    if resolve_error is not None and after_count <= 0:
+        raise RuntimeError(f'Resolve Planetka failed before Render Street export: {{resolve_error}}')
+    if result is not None and 'FINISHED' not in result and after_count <= 0:
+        raise RuntimeError(f'Resolve Planetka did not finish before Render Street export: {{result}}')
+    if after_count <= 0:
+        raise RuntimeError(
+            'Render Street export aborted: Planetka Earth Material still has no real surface texture tiles after Resolve.'
+        )
+    if resolve_error is not None:
+        print(f'Planetka Render Street export: Resolve reported a post-check warning but surface textures are assigned: {{resolve_error}}')
+    print(f'Planetka Render Street export: surface textures ready (before={{before_count}}, after={{after_count}}).')
+
+
 def _prepare_render_street_settings():
     if addon_utils is not None:
         try:
@@ -543,6 +621,7 @@ def _run(path):
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
     _prepare_render_street_settings()
+    _resolve_planetka_surface_for_export()
     _bake_planetka_dependent_drivers()
     _detach_planetka_identity()
     try:
