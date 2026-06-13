@@ -13,6 +13,8 @@ from ..state import (
     ensure_preview_object,
     logger,
     mark_navigation_camera_control_signature,
+    resume_navigation_shot_updates,
+    suspend_navigation_shot_updates,
 )
 from .earth_lifecycle_helpers import _ensure_close_clip_limits, detach_planetka_camera_from_root
 
@@ -1335,21 +1337,22 @@ def _apply_navigation_shot(
     else:
         altitude_prop_changed = abs(float(altitude_km) - float(current_altitude_km)) > 1e-4
 
-    tilt_only_change = (
-        tilt_changed
+    orientation_only_change = (
+        (heading_changed or tilt_changed or roll_changed)
         and not lon_changed
         and not lat_changed
         and not altitude_prop_changed
-        and not heading_changed
-        and not roll_changed
     )
 
-    if tilt_only_change:
-        anchor_distance = float((current_camera_position - anchor_world).length)
-        if anchor_distance <= 1e-9:
-            anchor_distance = _anchor_distance_from_altitude_and_tilt(earth_radius_bu, altitude_bu, tilt_rad)
-    else:
-        anchor_distance = _anchor_distance_from_altitude_and_tilt(earth_radius_bu, altitude_bu, tilt_rad)
+    effective_altitude_bu = current_altitude_bu if orientation_only_change else altitude_bu
+    if orientation_only_change and abs(float(current_altitude_km) - float(altitude_km)) > 1e-3:
+        suspend_navigation_shot_updates()
+        try:
+            props.nav_altitude_km = float(max(0.0, current_altitude_km))
+            altitude_km = float(max(0.0, current_altitude_km))
+        finally:
+            resume_navigation_shot_updates()
+    anchor_distance = _anchor_distance_from_altitude_and_tilt(earth_radius_bu, effective_altitude_bu, tilt_rad)
 
     camera_position = anchor_world + (offset_direction * anchor_distance)
     # Keep the UI altitude value under direct user control while dragging.
