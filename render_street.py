@@ -376,6 +376,7 @@ def _prepare_render_street_settings():
             ('seed', 8),
             ('use_animated_seed', True),
             ('volume_biased', False),
+            ('tile_size', 10000),
         ):
             try:
                 setattr(cycles, attr, value)
