@@ -1651,6 +1651,25 @@ def _ensure_cloud_parented_to_root(obj, scene=None):
     return root
 
 
+def _cloud_effective_parent_scale(obj):
+    if obj is None or getattr(obj, "parent", None) is None:
+        return 1.0
+    try:
+        parent_scale = obj.parent.scale
+        inverse_scale = obj.matrix_parent_inverse.to_scale()
+        return max(
+            abs(float(parent_scale.x) * float(inverse_scale.x)),
+            abs(float(parent_scale.y) * float(inverse_scale.y)),
+            abs(float(parent_scale.z) * float(inverse_scale.z)),
+            1e-9,
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed reading effective parent scale", exc_info=True)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka clouds: failed reading effective parent scale", exc_info=True)
+    return 1.0
+
+
 def _is_cloud_cull_modifier(modifier):
     if modifier is None:
         return False
@@ -2916,7 +2935,8 @@ def _apply_local_cloud_object(obj, scene=None):
 
     earth = get_earth_object()
     earth_radius = max(1e-6, float(_earth_radius_blender_units(earth)))
-    radius = earth_radius * max(0.001, (1.0 + (altitude_m / 6371000.0)))
+    altitude_bu = earth_radius * (altitude_m / 6371000.0)
+    radius = max(1e-6, earth_radius + altitude_bu) / _cloud_effective_parent_scale(obj)
 
     lon_rad = math.radians(lon)
     lat_rad = math.radians(lat)

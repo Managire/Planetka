@@ -43,6 +43,7 @@ from .operators import (
     PLANETKA_OT_UseCurrentViewNavigation,
 )
 from .properties import PlanetkaAnimationWaypoint, PlanetkaProperties
+from .render_street import PLANETKA_OT_RenderStreetUpload
 from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
     _planetka_load_post,
@@ -75,6 +76,7 @@ from .ui import (
     PLANETKA_PT_NewEarthPanel,
     PLANETKA_PT_NewEarthPanelCollapsed,
     PLANETKA_PT_NewEarthPanelFailure,
+    PLANETKA_PT_RenderStreetPanel,
     PLANETKA_PT_SunlightPanel,
     PLANETKA_PT_SettingsPanel,
 )
@@ -136,6 +138,7 @@ classes = (
     PLANETKA_OT_ResetSurfaceGradingSection,
     PLANETKA_OT_AutoAdjustClipping,
     PLANETKA_OT_CreateStandaloneFile,
+    PLANETKA_OT_RenderStreetUpload,
     PLANETKA_OT_SetTextureQuality,
     PLANETKA_OT_ResolvePlanetka,
     PLANETKA_OT_UseCurrentViewNavigation,
@@ -174,6 +177,7 @@ classes = (
     PLANETKA_PT_EarthSettingsPanel,
     PLANETKA_PT_EarthSettingsPanelCollapsed,
     PLANETKA_PT_AnimationPanel,
+    PLANETKA_PT_RenderStreetPanel,
     PLANETKA_PT_SettingsPanel,
     PLANETKA_PT_LinksPanel,
     PLANETKA_PT_LinksPanelCollapsed,

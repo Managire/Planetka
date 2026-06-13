@@ -874,6 +874,52 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         description="Automatically apply recommended Camera and viewport clipping values during Create Earth and Earth Radius changes",
     )
 
+    render_street_frames: IntProperty(
+        name="Frames",
+        default=24,
+        min=1,
+        description="Number of animation frames to render on Render Street for noise averaging",
+    )
+
+    render_street_time_limit_minutes: FloatProperty(
+        name="Time Limit",
+        default=14.0,
+        min=0.0,
+        precision=2,
+        description="Render Street per-frame time limit in minutes for the exported file",
+    )
+
+    render_street_username: StringProperty(
+        name="Username",
+        default="",
+        description="Render Street username used for this upload unless Save log-in is enabled",
+    )
+
+    render_street_password: StringProperty(
+        name="Password",
+        default="",
+        subtype='PASSWORD',
+        description="Render Street password used for this upload unless Save log-in is enabled",
+    )
+
+    render_street_save_login: BoolProperty(
+        name="Save log-in",
+        default=False,
+        description="Save Render Street username and password in Planetka preferences",
+    )
+
+    render_street_launch_job: BoolProperty(
+        name="Launch job after upload",
+        default=True,
+        description="Automatically create a Render Street render job after the file upload finishes",
+    )
+
+    render_street_status: StringProperty(
+        name="Render Street Status",
+        default="",
+        options={'HIDDEN'},
+    )
+
     nav_longitude_deg: FloatProperty(
         name="Longitude",
         default=0.0,

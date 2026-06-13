@@ -25,6 +25,7 @@ operator_utils.py
 operators.py
 properties.py
 r2_source.py
+render_street.py
 render_prep.py
 sanity_utils.py
 shader_utils.py

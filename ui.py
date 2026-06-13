@@ -2041,7 +2041,7 @@ class PLANETKA_PT_NewEarthPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel
 class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "General Settings"
     bl_idname = "PLANETKA_PT_settings"
-    bl_order = 9007
+    bl_order = 9008
 
     @classmethod
     def poll(cls, context):
@@ -2164,7 +2164,7 @@ class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.
 class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Links"
     bl_idname = "PLANETKA_PT_links"
-    bl_order = 9008
+    bl_order = 9009
     bl_options = set()
 
     @classmethod
@@ -2192,7 +2192,7 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Links"
     bl_idname = "PLANETKA_PT_links_collapsed"
-    bl_order = 9008
+    bl_order = 9009
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
@@ -2542,6 +2542,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
         else:
             render_button_row.enabled = bool(earth_workflow_enabled)
+            prefs = get_prefs()
             try:
                 frame_count = max(1, int(getattr(props, "anim_frame_end", 250)) - int(getattr(props, "anim_frame_start", 1)) + 1)
             except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -2551,3 +2552,57 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 text=animation_render_button_label(frame_count, prefs),
                 icon="RENDER_ANIMATION",
             )
+
+
+class PLANETKA_PT_RenderStreetPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Render Street"
+    bl_idname = "PLANETKA_PT_render_street"
+    bl_order = 9007
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        _ = context
+        return _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        scene = getattr(context, "scene", None)
+        props = getattr(scene, "planetka", None) if scene else None
+        if props is None:
+            layout.label(text="Planetka settings unavailable.", icon="ERROR")
+            return
+        prefs = get_prefs()
+        if prefs is not None and bool(getattr(prefs, "render_street_save_login", False)):
+            try:
+                if not str(getattr(props, "render_street_username", "") or "").strip():
+                    props.render_street_username = str(getattr(prefs, "render_street_username", "") or "")
+                if not str(getattr(props, "render_street_password", "") or ""):
+                    props.render_street_password = str(getattr(prefs, "render_street_password", "") or "")
+                props.render_street_save_login = True
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka Render Street: failed loading saved login into UI", exc_info=True)
+
+        export_box = layout.box()
+        export_box.label(text="Render Setup", icon="RENDER_ANIMATION")
+        export_box.prop(props, "render_street_frames", text="Frames")
+        export_box.prop(props, "render_street_time_limit_minutes", text="Time Limit (min)")
+        export_box.prop(props, "render_street_launch_job", text="Launch job after upload")
+
+        account_box = layout.box()
+        account_box.label(text="Render Street Account", icon="LOCKED")
+        account_box.prop(props, "render_street_username", text="Username")
+        account_box.prop(props, "render_street_password", text="Password")
+        account_box.prop(props, "render_street_save_login", text="Save log-in")
+
+        status = str(getattr(props, "render_street_status", "") or "").strip()
+        if status:
+            layout.label(text=status, icon="INFO")
+
+        upload_row = layout.row(align=True)
+        upload_row.scale_y = 1.25
+        upload_row.operator("planetka.render_street_upload", text="Upload", icon="EXPORT")

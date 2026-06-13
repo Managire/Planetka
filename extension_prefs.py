@@ -34,6 +34,9 @@ FALLBACK_OPTIMIZE_CYCLES_DICING_RATE_VIEWPORT_KEY = "planetka_optimize_cycles_di
 FALLBACK_OPTIMIZE_CYCLES_OFFSCREEN_SCALE_KEY = "planetka_optimize_cycles_offscreen_scale"
 FALLBACK_OPTIMIZE_CYCLES_MAX_SUBDIVISIONS_KEY = "planetka_optimize_cycles_max_subdivisions"
 FALLBACK_OPTIMIZE_PERSISTENT_DATA_KEY = "planetka_optimize_persistent_data"
+FALLBACK_RENDER_STREET_USERNAME_KEY = "planetka_render_street_username"
+FALLBACK_RENDER_STREET_PASSWORD_KEY = "planetka_render_street_password"
+FALLBACK_RENDER_STREET_SAVE_LOGIN_KEY = "planetka_render_street_save_login"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
 logger = logging.getLogger(__name__)
@@ -177,6 +180,22 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         name="Persistent Data",
         description="Enable persistent data for final renders",
         default=True,
+    )
+    render_street_username: StringProperty(
+        name="Render Street Username",
+        default="",
+        options={'HIDDEN'},
+    )
+    render_street_password: StringProperty(
+        name="Render Street Password",
+        default="",
+        subtype='PASSWORD',
+        options={'HIDDEN'},
+    )
+    render_street_save_login: BoolProperty(
+        name="Save Render Street Login",
+        default=False,
+        options={'HIDDEN'},
     )
 
     # File format preference
@@ -405,6 +424,18 @@ def get_prefs():
         optimize_persistent_data = property(
             lambda self: self._get_bool(FALLBACK_OPTIMIZE_PERSISTENT_DATA_KEY, True),
             lambda self, value: self._set_bool(FALLBACK_OPTIMIZE_PERSISTENT_DATA_KEY, value),
+        )
+        render_street_username = property(
+            lambda self: self._get_value(FALLBACK_RENDER_STREET_USERNAME_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_RENDER_STREET_USERNAME_KEY, value),
+        )
+        render_street_password = property(
+            lambda self: self._get_value(FALLBACK_RENDER_STREET_PASSWORD_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_RENDER_STREET_PASSWORD_KEY, value),
+        )
+        render_street_save_login = property(
+            lambda self: self._get_bool(FALLBACK_RENDER_STREET_SAVE_LOGIN_KEY, False),
+            lambda self, value: self._set_bool(FALLBACK_RENDER_STREET_SAVE_LOGIN_KEY, value),
         )
 
     def _addon_pref_by_name(addons, key):
