@@ -133,11 +133,20 @@ GLOBAL_CLOUD_LAYER_NAME = "Planetka Global Cloud Layer"
 GLOBAL_CLOUD_MATERIAL_NAME = "Planetka Global Clouds Shader"
 GLOBAL_CLOUD_IMAGE_NODE_NAME = "Global Clouds Texture"
 GLOBAL_CLOUD_RELATIVE_SCALE = 1.00157
-LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME = "Planetka Local Clouds Shader"
+LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME_EEVEE = "Planetka Texture-Based Cloud Shader - EEVEE"
+LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME_CYCLES = "Planetka Texture-Based Cloud Shader - Cycles"
+LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME = LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME_EEVEE
 VDB_CLOUD_TEMPLATE_OBJECT_NAME = "Planetka Cloud VDB"
 VDB_CLOUD_MATERIAL_TEMPLATE_NAME = "Planetka VDB Cloud Shader"
 
 CLOUD_MATERIAL_GROUP_NAME = "Planetka Cloud Material"
+CLOUD_MATERIAL_GROUP_NAME_EEVEE = "Planetka Cloud Material - EEVEE"
+CLOUD_MATERIAL_GROUP_NAME_CYCLES = "Planetka Cloud Material - Cycles"
+CLOUD_MATERIAL_GROUP_NAMES = (
+    CLOUD_MATERIAL_GROUP_NAME,
+    CLOUD_MATERIAL_GROUP_NAME_EEVEE,
+    CLOUD_MATERIAL_GROUP_NAME_CYCLES,
+)
 GLOBAL_CLOUD_SHADER_GROUP_NAME = "Planetka Global Clouds Shader Group"
 CLOUD_PREVIEW_SWITCH_GROUP_NAME = "Cloud Preview Switch"
 LOCAL_CLOUD_PREVIEW_VALUE_NODE_NAME = "Preview_On_Off"
@@ -169,6 +178,7 @@ LOCAL_CLOUD_PROP_CLOUD_COLOR = "planetka_local_cloud_color"
 LOCAL_CLOUD_PROP_DENSITY = "planetka_local_cloud_density"
 LOCAL_CLOUD_PROP_DENSITY_GAMMA = "planetka_local_cloud_density_gamma"
 LOCAL_CLOUD_PROP_CONTRAST = "planetka_local_cloud_contrast"
+LOCAL_CLOUD_PROP_BRIGHTNESS = "planetka_local_cloud_brightness"
 LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY = "planetka_local_cloud_horizon_transparency"
 LOCAL_CLOUD_PROP_SUBSURFACE_SCALE = "planetka_local_cloud_subsurface_scale"
 LOCAL_CLOUD_PROP_IOR = "planetka_local_cloud_ior"
@@ -989,7 +999,9 @@ def _remote_local_cloud_adaptive_texture_variant(file_name, obj, scene=None, d_l
     dimensions = _remote_local_cloud_source_dimensions(safe_name)
     if dimensions is None:
         return {}
-    max_size = _effective_local_cloud_gpu_texture_max_size()
+    props = getattr(scene, "planetka", None) if scene else None
+    enforce_gpu_limit = bool(getattr(props, "enforce_texture_cloud_gpu_limit", False)) if props else False
+    max_size = _effective_local_cloud_gpu_texture_max_size() if enforce_gpu_limit else max(1, int(max(dimensions)))
     projected_pixels = _estimate_local_cloud_projected_pixels(obj, scene, dimensions)
     selection = _select_local_cloud_adaptive_resolution(
         dimensions,
@@ -2050,7 +2062,34 @@ def _is_named_blender_id(name, base_name):
 
 
 def _is_suffixed_cloud_material_group_name(name):
-    return _is_named_blender_id(name, CLOUD_MATERIAL_GROUP_NAME)
+    return any(_is_named_blender_id(name, base_name) for base_name in CLOUD_MATERIAL_GROUP_NAMES)
+
+
+def _is_cloud_material_group_name(name):
+    text = str(name or "")
+    return any(text == base_name or _is_named_blender_id(text, base_name) for base_name in CLOUD_MATERIAL_GROUP_NAMES)
+
+
+def _texture_cloud_engine_for_scene(scene=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    engine = str(getattr(getattr(scene, "render", None), "engine", "") or "")
+    return "CYCLES" if engine == "CYCLES" else "EEVEE"
+
+
+def _local_cloud_material_template_name_for_scene(scene=None):
+    return (
+        LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME_CYCLES
+        if _texture_cloud_engine_for_scene(scene) == "CYCLES"
+        else LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME_EEVEE
+    )
+
+
+def _local_cloud_material_group_name_for_scene(scene=None):
+    return (
+        CLOUD_MATERIAL_GROUP_NAME_CYCLES
+        if _texture_cloud_engine_for_scene(scene) == "CYCLES"
+        else CLOUD_MATERIAL_GROUP_NAME_EEVEE
+    )
 
 
 def _canonicalize_cloud_material_group(group):
@@ -2133,6 +2172,26 @@ def _ensure_planetka_cloud_material_group():
     return None
 
 
+def _ensure_local_cloud_material_template(scene=None):
+    template_name = _local_cloud_material_template_name_for_scene(scene)
+    material = bpy.data.materials.get(template_name)
+    if material is None:
+        try:
+            _append_from_reference(
+                material_names=(template_name,),
+                blend_path=LOCAL_CLOUD_REFERENCE_BLEND_PATH,
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed appending texture-based cloud material template", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka clouds: failed appending texture-based cloud material template", exc_info=True)
+        material = bpy.data.materials.get(template_name)
+    if material is not None:
+        _set_material_volume_step_rate(material)
+        _ensure_local_cloud_material_uses_cloud_material(material, scene=scene)
+    return material
+
+
 def _remove_socket_links(node_tree, socket):
     if node_tree is None or socket is None:
         return
@@ -2157,11 +2216,14 @@ def _link_sockets(node_tree, from_socket, to_socket):
     return False
 
 
-def _ensure_local_cloud_material_uses_cloud_material(material):
+def _ensure_local_cloud_material_uses_cloud_material(material, scene=None):
     node_tree = getattr(material, "node_tree", None) if material is not None else None
     if node_tree is None:
         return False
-    cloud_group = _ensure_planetka_cloud_material_group()
+    props = getattr(scene, "planetka", None) if scene else None
+    auto_switch = bool(getattr(props, "auto_switch_cloud_shaders", True)) if props is not None else True
+    preferred_group_name = _local_cloud_material_group_name_for_scene(scene) if auto_switch else CLOUD_MATERIAL_GROUP_NAME
+    cloud_group = bpy.data.node_groups.get(preferred_group_name) or _ensure_planetka_cloud_material_group()
     if cloud_group is None:
         return False
 
@@ -2172,30 +2234,27 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
         if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
             continue
         child_name = str(getattr(getattr(node, "node_tree", None), "name", "") or "")
-        if child_name == CLOUD_MATERIAL_GROUP_NAME and group_node is None:
+        if _is_cloud_material_group_name(child_name) and group_node is None:
             group_node = node
-        elif child_name == CLOUD_MATERIAL_GROUP_NAME:
-            duplicate_cloud_nodes.append(node)
-        elif _is_suffixed_cloud_material_group_name(child_name) and group_node is None:
-            group_node = node
-            values = _socket_default_values(group_node)
-            try:
-                group_node.node_tree = cloud_group
-                group_node.name = CLOUD_MATERIAL_GROUP_NAME
-                group_node.label = CLOUD_MATERIAL_GROUP_NAME
-                _restore_socket_default_values(group_node, values)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka clouds: failed canonicalizing suffixed local cloud shader group node", exc_info=True)
-                return False
-        elif _is_suffixed_cloud_material_group_name(child_name):
+            if auto_switch and child_name != preferred_group_name and bpy.data.node_groups.get(preferred_group_name) is not None:
+                values = _socket_default_values(group_node)
+                try:
+                    group_node.node_tree = bpy.data.node_groups.get(preferred_group_name)
+                    group_node.name = preferred_group_name
+                    group_node.label = preferred_group_name
+                    _restore_socket_default_values(group_node, values)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka clouds: failed assigning engine-specific local cloud shader group", exc_info=True)
+                    return False
+        elif _is_cloud_material_group_name(child_name):
             duplicate_cloud_nodes.append(node)
 
     if group_node is None:
         try:
             group_node = nodes.new("ShaderNodeGroup")
             group_node.node_tree = cloud_group
-            group_node.name = CLOUD_MATERIAL_GROUP_NAME
-            group_node.label = CLOUD_MATERIAL_GROUP_NAME
+            group_node.name = preferred_group_name
+            group_node.label = preferred_group_name
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka clouds: failed creating Planetka Cloud Material group node", exc_info=True)
             return False
@@ -2233,7 +2292,7 @@ def _cloud_material_group_node(material):
     for node in tuple(getattr(node_tree, "nodes", ())):
         if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
             continue
-        if str(getattr(getattr(node, "node_tree", None), "name", "") or "") == CLOUD_MATERIAL_GROUP_NAME:
+        if _is_cloud_material_group_name(str(getattr(getattr(node, "node_tree", None), "name", "") or "")):
             return node
     return None
 
@@ -2288,20 +2347,8 @@ def _global_cloud_material_input_default(socket_name, fallback):
     return _cloud_material_input_default(_ensure_global_cloud_material_template(), socket_name, fallback)
 
 
-def _local_cloud_material_input_default(socket_name, fallback):
-    source_material = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
-    if source_material is None:
-        try:
-            _append_from_reference(
-                material_names=(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME,),
-                blend_path=LOCAL_CLOUD_REFERENCE_BLEND_PATH,
-            )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed appending Local Clouds material template", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka clouds: failed appending Local Clouds material template", exc_info=True)
-        source_material = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
-    _set_material_volume_step_rate(source_material)
+def _local_cloud_material_input_default(socket_name, fallback, scene=None):
+    source_material = _ensure_local_cloud_material_template(scene=scene)
     return _cloud_material_input_default(source_material, socket_name, fallback)
 
 
@@ -2325,6 +2372,97 @@ def _resolve_object_material(obj):
     if materials:
         return materials[0]
     return None
+
+
+def _assign_material_to_object(obj, material):
+    data = getattr(obj, "data", None)
+    materials = getattr(data, "materials", None) if data is not None else None
+    if materials is None or material is None:
+        return False
+    try:
+        if len(materials) == 0:
+            materials.append(material)
+        else:
+            materials[0] = material
+        obj.active_material = material
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed assigning object material", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed assigning object material", exc_info=True)
+    return False
+
+
+def _ensure_local_cloud_material_for_render_engine(obj, scene=None):
+    if not _is_local_cloud_object(obj):
+        return _resolve_object_material(obj)
+    scene = scene or getattr(bpy.context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    if props is not None and not bool(getattr(props, "auto_switch_cloud_shaders", True)):
+        material = _resolve_object_material(obj)
+        if material is not None:
+            _set_material_volume_step_rate(material)
+        return material
+
+    desired_engine = _texture_cloud_engine_for_scene(scene)
+    material = _resolve_object_material(obj)
+    if material is not None and str(material.get("planetka_texture_cloud_shader_engine", "") or "") == desired_engine:
+        _set_material_volume_step_rate(material)
+        _ensure_local_cloud_material_uses_cloud_material(material, scene=scene)
+        return material
+
+    image = None
+    if material is not None:
+        image_node = _find_image_texture_node(material)
+        image = getattr(image_node, "image", None) if image_node is not None else None
+
+    template_mat = _ensure_local_cloud_material_template(scene=scene)
+    if template_mat is None:
+        return material
+
+    try:
+        new_mat = template_mat.copy()
+        desired_material_name = _local_cloud_material_name_for_object(getattr(obj, "name", ""))
+        new_mat.name = f"{desired_material_name} Swap"
+        new_mat["planetka_texture_cloud_shader_engine"] = desired_engine
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed copying texture-based cloud material template", exc_info=True)
+        return material
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed copying texture-based cloud material template", exc_info=True)
+        return material
+
+    _clear_drivers_on_id_data(new_mat)
+    _clear_drivers_on_node_tree(getattr(new_mat, "node_tree", None))
+    _set_material_volume_step_rate(new_mat)
+    _ensure_local_cloud_material_uses_cloud_material(new_mat, scene=scene)
+
+    image_node = _find_image_texture_node(new_mat)
+    if image_node is not None and image is not None:
+        try:
+            image_node.image = image
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed preserving cloud material image assignment", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka clouds: failed preserving cloud material image assignment", exc_info=True)
+
+    if _assign_material_to_object(obj, new_mat):
+        if material is not None and material != new_mat:
+            try:
+                if int(getattr(material, "users", 0) or 0) == 0:
+                    bpy.data.materials.remove(material)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed removing replaced cloud material", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka clouds: failed removing replaced cloud material", exc_info=True)
+        try:
+            new_mat.name = desired_material_name
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed restoring cloud material name", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka clouds: failed restoring cloud material name", exc_info=True)
+        return new_mat
+    return material
 
 
 def _set_local_cloud_texture_by_filename(obj, filename):
@@ -2473,11 +2611,34 @@ def _iter_group_nodes_recursive(node_tree, group_name, visited=None):
             continue
         child_name = str(getattr(child_tree, "name", ""))
         node_name = str(getattr(node, "name", ""))
-        matches_group = node_name == group_name or child_name == group_name
+        matches_group = (
+            node_name == group_name
+            or child_name == group_name
+            or _is_named_blender_id(node_name, group_name)
+            or _is_named_blender_id(child_name, group_name)
+        )
         if matches_group:
             found.append(node)
         found.extend(_iter_group_nodes_recursive(child_tree, group_name, visited=visited))
     return found
+
+
+def _iter_cloud_material_group_nodes_recursive(node_tree):
+    found = []
+    for group_name in CLOUD_MATERIAL_GROUP_NAMES:
+        found.extend(_iter_group_nodes_recursive(node_tree, group_name))
+    seen = set()
+    unique = []
+    for node in found:
+        try:
+            key = int(node.as_pointer())
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            key = id(node)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(node)
+    return unique
 
 
 def _set_group_input_if_present(group_node, input_names, value):
@@ -2864,7 +3025,7 @@ def _ensure_vdb_cloud_template(scene=None):
     return source_obj
 
 
-def _apply_local_cloud_material_controls(obj, material, final_look=False):
+def _apply_local_cloud_material_controls(obj, material, final_look=False, scene=None):
     if material is None or getattr(material, "node_tree", None) is None:
         return
     node_tree = getattr(material, "node_tree", None)
@@ -2872,19 +3033,22 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
         return
 
     rot = float(getattr(obj, LOCAL_CLOUD_PROP_ROTATION_DEG, 0.0))
-    density_default = float(_local_cloud_material_input_default("Density", 1.0))
-    gamma_default = float(_local_cloud_material_input_default("Density Gamma", 1.0))
-    contrast_default = float(_local_cloud_material_input_default("Contrast", 0.5))
-    horizon_default = float(_local_cloud_material_input_default("Clouds on Horizon Transparency", 1.0))
-    subsurface_default = float(_local_cloud_material_input_default("Subsurface Scattering Scale Coefficient", 1.0))
-    ior_default = float(_local_cloud_material_input_default("IOR", 1.33))
-    roughness_default = float(_local_cloud_material_input_default("Roughness", 0.8))
-    anisotropy_default = float(_local_cloud_material_input_default("Anisotropy", LOCAL_CLOUD_ANISOTROPY_DEFAULT))
-    displacement_default = float(_local_cloud_material_input_default("Displacement (Bump) Scale Coefficient", LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT))
-    color_default = _local_cloud_material_input_default("Cloud Color", (1.0, 1.0, 1.0, 1.0))
+    scene = scene or getattr(bpy.context, "scene", None)
+    density_default = float(_local_cloud_material_input_default("Density", 1.0, scene=scene))
+    gamma_default = float(_local_cloud_material_input_default("Density Gamma", 1.0, scene=scene))
+    contrast_default = float(_local_cloud_material_input_default("Contrast", 0.5, scene=scene))
+    brightness_default = float(_local_cloud_material_input_default("Brightness", 1.0, scene=scene))
+    horizon_default = float(_local_cloud_material_input_default("Clouds on Horizon Transparency", 1.0, scene=scene))
+    subsurface_default = float(_local_cloud_material_input_default("Subsurface Scattering Scale Coefficient", 1.0, scene=scene))
+    ior_default = float(_local_cloud_material_input_default("IOR", 1.33, scene=scene))
+    roughness_default = float(_local_cloud_material_input_default("Roughness", 0.8, scene=scene))
+    anisotropy_default = float(_local_cloud_material_input_default("Anisotropy", LOCAL_CLOUD_ANISOTROPY_DEFAULT, scene=scene))
+    displacement_default = float(_local_cloud_material_input_default("Displacement (Bump) Scale Coefficient", LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT, scene=scene))
+    color_default = _local_cloud_material_input_default("Cloud Color", (1.0, 1.0, 1.0, 1.0), scene=scene)
     density = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY, density_default)))
     gamma = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, gamma_default)))
     contrast = float(getattr(obj, LOCAL_CLOUD_PROP_CONTRAST, contrast_default))
+    brightness = float(getattr(obj, LOCAL_CLOUD_PROP_BRIGHTNESS, brightness_default))
     horizon = float(getattr(obj, LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, horizon_default))
     subsurface = float(getattr(obj, LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, subsurface_default))
     ior = float(getattr(obj, LOCAL_CLOUD_PROP_IOR, ior_default))
@@ -2892,7 +3056,7 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
     anisotropy = float(getattr(obj, LOCAL_CLOUD_PROP_ANISOTROPY, anisotropy_default))
     displacement = float(getattr(obj, LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE, displacement_default))
     cloud_color = getattr(obj, LOCAL_CLOUD_PROP_CLOUD_COLOR, color_default)
-    _ensure_local_cloud_material_uses_cloud_material(material)
+    _ensure_local_cloud_material_uses_cloud_material(material, scene=scene)
     _configure_local_cloud_material_for_cap(material)
 
     rotate_node = node_tree.nodes.get("Local Cloud UV Rotate")
@@ -2905,11 +3069,12 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
     preview_value = 1.0
     _set_named_value_nodes_recursive(node_tree, (LOCAL_CLOUD_PREVIEW_VALUE_NODE_NAME,), preview_value)
 
-    for shader_node in _iter_group_nodes_recursive(node_tree, CLOUD_MATERIAL_GROUP_NAME):
+    for shader_node in _iter_cloud_material_group_nodes_recursive(node_tree):
         _set_group_input_if_present(shader_node, ("Cloud Color",), cloud_color)
         _set_group_input_if_present(shader_node, ("Density", "Cloud Density"), density)
         _set_group_input_if_present(shader_node, ("Density Gamma",), gamma)
         _set_group_input_if_present(shader_node, ("Contrast",), contrast)
+        _set_group_input_if_present(shader_node, ("Brightness",), brightness)
         _set_group_input_if_present(shader_node, ("Clouds on Horizon Transparency",), horizon)
         _set_group_input_if_present(shader_node, ("Subsurface Scattering Scale Coefficient",), subsurface)
         _set_group_input_if_present(shader_node, ("IOR",), ior)
@@ -2969,8 +3134,8 @@ def _apply_local_cloud_object(obj, scene=None):
     material_final_look = True
     _set_cloud_subdivision_viewport_state(obj, True)
 
-    material = _resolve_object_material(obj)
-    _apply_local_cloud_material_controls(obj, material, final_look=material_final_look)
+    material = _ensure_local_cloud_material_for_render_engine(obj, scene=scene)
+    _apply_local_cloud_material_controls(obj, material, final_look=material_final_look, scene=scene)
 
 
 def optimize_texture_based_clouds_for_camera(scene=None, quality_mode=None):
@@ -2985,6 +3150,7 @@ def optimize_texture_based_clouds_for_camera(scene=None, quality_mode=None):
     _begin_cloud_update_suspend()
     try:
         for obj in list(_iter_local_cloud_objects()):
+            _apply_local_cloud_object(obj, scene=scene)
             if (
                 _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True, quality_mode=quality_mode)
                 and _apply_prepared_local_cloud_texture(
@@ -3720,14 +3886,15 @@ def _vdb_file_label(obj):
 
 def _local_cloud_file_label(obj):
     path = ""
+    if obj is not None:
+        path = str(obj.get(LOCAL_CLOUD_LOADED_TEXTURE_PROP, "") or "")
+        if path:
+            path = bpy.path.abspath(path)
     material = _resolve_object_material(obj)
     image_node = _find_image_texture_node(material)
     image = getattr(image_node, "image", None) if image_node is not None else None
-    path = str(getattr(image, "filepath", "") or "")
-    if path:
-        path = bpy.path.abspath(path)
     if not path:
-        path = str(obj.get(LOCAL_CLOUD_LOADED_TEXTURE_PROP, "") or "") if obj is not None else ""
+        path = str(getattr(image, "filepath", "") or "")
         if path:
             path = bpy.path.abspath(path)
     if not path:
@@ -3777,22 +3944,12 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
 
         _clouds, _global_clouds, local_clouds, _vdb_clouds = _ensure_cloud_collections(scene)
 
-        template_mat = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
+        template_mat = _ensure_local_cloud_material_template(scene=scene)
         if template_mat is None:
-            try:
-                _append_from_reference(
-                    material_names=(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME,),
-                    blend_path=LOCAL_CLOUD_REFERENCE_BLEND_PATH,
-                )
-            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                self.report({'ERROR'}, f"Failed loading texture-based cloud material template: {exc}")
-                return {'CANCELLED'}
-            template_mat = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
-        if template_mat is None:
-            self.report({'ERROR'}, f"Material '{LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME}' not found.")
+            self.report({'ERROR'}, "Texture-based cloud material template not found.")
             return {'CANCELLED'}
         _set_material_volume_step_rate(template_mat)
-        _ensure_local_cloud_material_uses_cloud_material(template_mat)
+        _ensure_local_cloud_material_uses_cloud_material(template_mat, scene=scene)
 
         new_name = _next_local_cloud_name()
         mesh_name = f"{LOCAL_CLOUD_CAP_MESH_PREFIX} {new_name}"
@@ -3822,8 +3979,9 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         new_mat.name = _local_cloud_material_name_for_object(new_obj.name)
         _clear_drivers_on_id_data(new_mat)
         _clear_drivers_on_node_tree(getattr(new_mat, "node_tree", None))
+        new_mat["planetka_texture_cloud_shader_engine"] = _texture_cloud_engine_for_scene(scene)
         _set_material_volume_step_rate(new_mat)
-        _ensure_local_cloud_material_uses_cloud_material(new_mat)
+        _ensure_local_cloud_material_uses_cloud_material(new_mat, scene=scene)
         _copy_global_cloud_material_input_defaults(new_mat, source_material=template_mat)
 
         mesh = getattr(new_obj, "data", None)
@@ -3858,16 +4016,17 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             setattr(new_obj, LOCAL_CLOUD_PROP_SIZE_COEF, float(DEFAULT_LOCAL_CLOUD_SIZE_COEF))
             setattr(new_obj, LOCAL_CLOUD_PROP_ROTATION_DEG, 0.0)
             setattr(new_obj, LOCAL_CLOUD_PROP_THICKNESS_M, 50.0)
-            setattr(new_obj, LOCAL_CLOUD_PROP_CLOUD_COLOR, tuple(_local_cloud_material_input_default("Cloud Color", (1.0, 1.0, 1.0, 1.0))))
-            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY, float(_local_cloud_material_input_default("Density", 1.0)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, float(_local_cloud_material_input_default("Density Gamma", 1.0)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_CONTRAST, float(_local_cloud_material_input_default("Contrast", 0.5)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, float(_local_cloud_material_input_default("Clouds on Horizon Transparency", 1.0)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, float(_local_cloud_material_input_default("Subsurface Scattering Scale Coefficient", 1.0)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_IOR, float(_local_cloud_material_input_default("IOR", 1.33)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_ROUGHNESS, float(_local_cloud_material_input_default("Roughness", 0.8)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_ANISOTROPY, float(_local_cloud_material_input_default("Anisotropy", LOCAL_CLOUD_ANISOTROPY_DEFAULT)))
-            setattr(new_obj, LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE, float(_local_cloud_material_input_default("Displacement (Bump) Scale Coefficient", LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_CLOUD_COLOR, tuple(_local_cloud_material_input_default("Cloud Color", (1.0, 1.0, 1.0, 1.0), scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY, float(_local_cloud_material_input_default("Density", 1.0, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, float(_local_cloud_material_input_default("Density Gamma", 1.0, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_CONTRAST, float(_local_cloud_material_input_default("Contrast", 0.5, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_BRIGHTNESS, float(_local_cloud_material_input_default("Brightness", 1.0, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, float(_local_cloud_material_input_default("Clouds on Horizon Transparency", 1.0, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, float(_local_cloud_material_input_default("Subsurface Scattering Scale Coefficient", 1.0, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_IOR, float(_local_cloud_material_input_default("IOR", 1.33, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_ROUGHNESS, float(_local_cloud_material_input_default("Roughness", 0.8, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_ANISOTROPY, float(_local_cloud_material_input_default("Anisotropy", LOCAL_CLOUD_ANISOTROPY_DEFAULT, scene=scene)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE, float(_local_cloud_material_input_default("Displacement (Bump) Scale Coefficient", LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT, scene=scene)))
             setattr(new_obj, LOCAL_CLOUD_PROP_BASE_SCALE, float(max(1e-6, _earth_radius_blender_units(get_earth_object()))))
             setattr(new_obj, LOCAL_CLOUD_PROP_CAP_HALF_ANGLE_DEG, -1.0)
             setattr(new_obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, selected)
@@ -4404,6 +4563,7 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_DENSITY, text="Density")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, text="Density Gamma")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_CONTRAST, text="Contrast")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_BRIGHTNESS, text="Brightness")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, text="Horizon Transparency")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, text="Subsurface Scale")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_IOR, text="IOR")
@@ -4588,6 +4748,10 @@ def register_object_properties():
             dict(name="Texture-Based Cloud Contrast", default=0.5, min=-100.0, max=100.0, precision=3, update=update_local_cloud_object_prop),
         ),
         (
+            LOCAL_CLOUD_PROP_BRIGHTNESS,
+            dict(name="Texture-Based Cloud Brightness", default=1.0, min=-100.0, max=100.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
             LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY,
             dict(name="Texture-Based Cloud Horizon Transparency", default=1.0, min=0.0, max=100.0, precision=3, update=update_local_cloud_object_prop),
         ),
@@ -4683,6 +4847,7 @@ def unregister_object_properties():
         LOCAL_CLOUD_PROP_DENSITY,
         LOCAL_CLOUD_PROP_DENSITY_GAMMA,
         LOCAL_CLOUD_PROP_CONTRAST,
+        LOCAL_CLOUD_PROP_BRIGHTNESS,
         LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY,
         LOCAL_CLOUD_PROP_SUBSURFACE_SCALE,
         LOCAL_CLOUD_PROP_IOR,

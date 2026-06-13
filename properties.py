@@ -26,6 +26,7 @@ from .state import (
     suspend_navigation_shot_updates,
     update_atmosphere_enabled,
     update_auto_switch_atmosphere,
+    update_auto_switch_cloud_shaders,
     update_debug_logging,
     update_navigation_shot,
     update_navigation_focal_length,
@@ -657,6 +658,16 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_auto_switch_atmosphere,
     )
 
+    auto_switch_cloud_shaders: BoolProperty(
+        name="Automatically switch cloud shaders",
+        default=True,
+        description=(
+            "Automatically switch texture-based cloud materials during Resolve Planetka: "
+            "Cycles uses the Cycles shader, EEVEE uses the EEVEE shader"
+        ),
+        update=update_auto_switch_cloud_shaders,
+    )
+
     surface_brightness: FloatProperty(
         name="Brightness",
         default=1.0,
@@ -866,6 +877,15 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Texture-Based Cloud Texture",
         description="Select a Planetka Cloud texture-based cloud mask",
         items=_local_cloud_texture_items,
+    )
+
+    enforce_texture_cloud_gpu_limit: BoolProperty(
+        name="Metal/GPU 16384px limit",
+        default=False,
+        description=(
+            "Limit texture-based cloud masks to the detected GPU texture-size limit. "
+            "Leave off for Cycles CPU or render-farm exports that can use higher-resolution EXR clouds"
+        ),
     )
 
     auto_adjust_clipping_values: BoolProperty(

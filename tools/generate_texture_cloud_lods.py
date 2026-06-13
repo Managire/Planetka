@@ -8,6 +8,8 @@ import os
 import shutil
 from pathlib import Path
 
+import cv2
+import numpy as np
 import OpenImageIO as oiio
 
 
@@ -42,12 +44,27 @@ def _resize_exr(source_path: Path, target_path: Path, d_level: int) -> None:
     target_width = max(1, int(round(width * scale)))
     target_height = max(1, int(round(height * scale)))
 
-    target_spec = oiio.ImageSpec(target_width, target_height, channels, oiio.HALF)
-    target = oiio.ImageBuf(target_spec)
-    if not oiio.ImageBufAlgo.resize(target, image, "lanczos3"):
-        raise RuntimeError(f"Resize failed for {source_path}: {image.geterror()} {target.geterror()}")
+    pixels = np.asarray(image.get_pixels(oiio.FLOAT), dtype=np.float32)
+    if pixels.size == 0:
+        raise RuntimeError(f"Read failed for {source_path}: {image.geterror()}")
+    if pixels.ndim == 2:
+        pixels = pixels[:, :, np.newaxis]
+    if pixels.shape[1] == target_width and pixels.shape[0] == target_height:
+        resized = pixels
+    else:
+        # Match the Earth surface tile rebuild path: use area/box filtering for
+        # downsampling to avoid Lanczos ringing on mask edges.
+        interpolation = cv2.INTER_AREA if target_width <= width and target_height <= height else cv2.INTER_LINEAR
+        resized = cv2.resize(pixels, (target_width, target_height), interpolation=interpolation)
+        if resized.ndim == 2:
+            resized = resized[:, :, np.newaxis]
+    np.clip(resized, 0.0, 1.0, out=resized)
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_spec = oiio.ImageSpec(target_width, target_height, channels, oiio.HALF)
+    target = oiio.ImageBuf(target_spec)
+    if not target.set_pixels(oiio.ROI(0, target_width, 0, target_height, 0, 1, 0, channels), resized):
+        raise RuntimeError(f"Pixel assignment failed for {target_path}: {target.geterror()}")
     if not target.write(str(target_path)):
         raise RuntimeError(f"Write failed for {target_path}: {target.geterror()}")
 

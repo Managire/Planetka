@@ -94,6 +94,7 @@ _SYNC_IDPROP_MAP = {
     "atmosphere_enabled": "planetka_atmosphere_enabled",
     "atmosphere_mode": "planetka_atmosphere_mode",
     "auto_switch_atmosphere": "planetka_auto_switch_atmosphere",
+    "auto_switch_cloud_shaders": "planetka_auto_switch_cloud_shaders",
     "enable_global_clouds": "planetka_enable_global_clouds",
     "enable_local_clouds": "planetka_enable_local_clouds",
     "enable_vdb_clouds": "planetka_enable_vdb_clouds",
@@ -400,6 +401,12 @@ def update_auto_switch_atmosphere(self, context):
         _sync_idprops_from_props(scene, ("auto_switch_atmosphere",))
         if bool(getattr(self, "auto_switch_atmosphere", True)):
             sync_atmosphere_mode_to_render_engine(scene)
+
+
+def update_auto_switch_cloud_shaders(self, context):
+    scene = getattr(context, "scene", None) if context else None
+    if scene is not None:
+        _sync_idprops_from_props(scene, ("auto_switch_cloud_shaders",))
 
 
 def _on_render_engine_changed():
@@ -1040,7 +1047,6 @@ def _initialize_props_from_imported_planetka(scene):
 
 def sync_atmosphere_mode_to_render_engine(scene=None):
     return _handler_runtime.sync_atmosphere_mode_to_render_engine(scene, _HANDLER_RUNTIME_CTX)
-
 
 
 @persistent

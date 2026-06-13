@@ -1841,6 +1841,7 @@ def _draw_local_clouds(layout, context, props):
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_DENSITY, text="Density")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_DENSITY_GAMMA, text="Density Gamma")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_CONTRAST, text="Contrast")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_BRIGHTNESS, text="Brightness")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, text="Horizon Transparency")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, text="Subsurface Scale")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_IOR, text="IOR")
@@ -2075,6 +2076,21 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 props,
                 "auto_switch_atmosphere",
                 text="Auto-switch atmosphere",
+                toggle=True,
+            )
+
+            cloud_settings_box = layout.box()
+            cloud_settings_box.label(text="Texture-Based Clouds", icon="FORCE_WIND")
+            cloud_settings_box.prop(
+                props,
+                "auto_switch_cloud_shaders",
+                text="Automatically switch cloud shaders",
+                toggle=True,
+            )
+            cloud_settings_box.prop(
+                props,
+                "enforce_texture_cloud_gpu_limit",
+                text="Metal/GPU 16384px limit",
                 toggle=True,
             )
 
