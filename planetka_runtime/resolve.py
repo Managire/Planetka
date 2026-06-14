@@ -15,19 +15,6 @@ def _quality_mode_for_job(deps, job):
         return "PREVIEW"
 
 
-def _scene_last_resolve_quality(scene, deps):
-    if scene is None:
-        return "PREVIEW"
-    try:
-        return deps.normalize_texture_quality_mode(
-            scene.get(_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY, "PREVIEW")
-        )
-    except deps.recoverable_exceptions:
-        return "PREVIEW"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return "PREVIEW"
-
-
 def _require_download_ctx():
     ctx = _RESOLVE_DOWNLOAD_CTX
     if ctx is None:
@@ -60,10 +47,6 @@ def _ctx_arm_resolve_timer(ctx):
         state.download_timer_running = False
         deps.resolve_trace("Pump arm failed with runtime/type/value exception")
         deps.logger.debug("Planetka: failed arming resolve timer", exc_info=True)
-
-
-def _arm_resolve_timer():
-    return _ctx_arm_resolve_timer(_require_download_ctx())
 
 
 def _ctx_start_resolve_download_thread(ctx, job):
@@ -119,8 +102,7 @@ def _ctx_schedule_resolve_download(
 
     scene_id = deps.scene_key(scene)
     prefs = deps.get_prefs()
-    props = getattr(scene, "planetka", None)
-    base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+    props = getattr(scene, "planetka_public", None)
     if prefs is not None:
         try:
             deps.get_authorized_headers(prefs=prefs, allow_refresh=True)
@@ -136,27 +118,9 @@ def _ctx_schedule_resolve_download(
         texture_quality_mode_override=texture_quality_mode_override,
     )
     target_tiles_tuple = tuple(target_tiles or ())
-    try:
-        nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0)) if props is not None else 0.0
-    except deps.recoverable_exceptions:
-        nav_latitude_deg = 0.0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        nav_latitude_deg = 0.0
-    try:
-        nav_longitude_deg = float(getattr(props, "nav_longitude_deg", 0.0)) if props is not None else 0.0
-    except deps.recoverable_exceptions:
-        nav_longitude_deg = 0.0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        nav_longitude_deg = 0.0
-    try:
-        nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0))) if props is not None else 0.0
-    except deps.recoverable_exceptions:
-        nav_altitude_km = 0.0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        nav_altitude_km = 0.0
 
     with state.download_lock:
-        # Manual resolve is authoritative. Any older worker is cancelled by epoch
+        # Manual resolve is authoritative. Any stale worker is cancelled by epoch
         # mismatch and must not apply or store data after this point.
         state.download_epoch = int(state.download_epoch) + 1
         epoch = int(state.download_epoch)
@@ -182,11 +146,7 @@ def _ctx_schedule_resolve_download(
             camera_signature=camera_signature,
             output_signature=output_signature,
             manual_request=manual_request,
-            base_path=base_path,
             texture_quality_mode=texture_quality_mode,
-            nav_latitude_deg=nav_latitude_deg,
-            nav_longitude_deg=nav_longitude_deg,
-            nav_altitude_km=nav_altitude_km,
         )
         state.download_completed = None
         state.download_active_job = new_job
@@ -431,55 +391,6 @@ def _ctx_handle_apply_readonly_failure(ctx, scene, job, manual_request, lock_rea
     return False
 
 
-def _ctx_wait_or_drop_completed_during_guard(ctx, scene, job, manual_request, *, guard_name, user_message):
-    deps = ctx.deps
-    settings = ctx.settings
-    field_prefix = f"apply_{guard_name}_guard"
-    now = time.monotonic()
-    try:
-        guard_since = float(deps.job_field(job, f"{field_prefix}_since", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        guard_since = 0.0
-    if guard_since <= 0.0:
-        guard_since = now
-    try:
-        guard_attempts = int(deps.job_field(job, f"{field_prefix}_attempts", 0) or 0) + 1
-    except (TypeError, ValueError):
-        guard_attempts = 1
-    deps.job_set_field(job, f"{field_prefix}_since", float(guard_since))
-    deps.job_set_field(job, f"{field_prefix}_attempts", int(max(1, guard_attempts)))
-    waited_sec = max(0.0, float(now) - float(guard_since))
-    wait_budget_sec = min(
-        float(settings.download_completed_max_age_sec),
-        max(float(settings.download_scene_wait_sec), 6.0),
-    )
-    if waited_sec < wait_budget_sec:
-        deps.resolve_trace(
-            f"Download finished but {guard_name} guard is active; waiting "
-            f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
-            f"attempts={guard_attempts})"
-        )
-        return False, None, None, None
-
-    deps.resolve_trace(
-        f"Download completion dropped after persistent {guard_name} guard "
-        f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
-        f"attempts={guard_attempts})"
-    )
-    deps.logger.warning(
-        "Planetka: dropping completed resolve payload after %.2fs waiting for %s guard "
-        "(request_id=%s, attempts=%d).",
-        float(waited_sec),
-        str(guard_name),
-        str(deps.job_field(job, "request_id", "")),
-        int(guard_attempts),
-    )
-    deps.job_set_field(job, f"{field_prefix}_since", 0.0)
-    deps.job_set_field(job, f"{field_prefix}_attempts", 0)
-    _ctx_mark_manual_resolve_error(ctx, scene, str(user_message or "Resolve was blocked."))
-    return True, None, None, None
-
-
 def _ctx_mark_resolve_terminal_failure(ctx, scene, scene_id, job, message):
     deps = ctx.deps
     if scene is None:
@@ -491,10 +402,6 @@ def _ctx_mark_resolve_terminal_failure(ctx, scene, scene_id, job, message):
         deps.logger.debug("Planetka: failed storing resolve terminal error on scene", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
         deps.logger.debug("Planetka: failed storing resolve terminal error on scene", exc_info=True)
-
-
-def _mark_resolve_terminal_failure(scene, scene_id, job, message):
-    return _ctx_mark_resolve_terminal_failure(_require_download_ctx(), scene, scene_id, job, message)
 
 
 def _ctx_handle_resolve_download_failure(ctx, job, error_message):
@@ -542,10 +449,6 @@ def _ctx_handle_resolve_download_failure(ctx, job, error_message):
         deps.logger.warning("Planetka resolve download failed: %s", error_message)
 
 
-def _handle_resolve_download_failure(job, error_message):
-    return _ctx_handle_resolve_download_failure(_require_download_ctx(), job, error_message)
-
-
 def _ctx_resolve_completion_epoch_matches(ctx, job):
     deps = ctx.deps
     state = ctx.state
@@ -571,10 +474,6 @@ def _ctx_resolve_handle_cancel_or_failure(ctx, result, job, manual_request):
         return True
 
     return False
-
-
-def _resolve_handle_cancel_or_failure(result, job, manual_request):
-    return _ctx_resolve_handle_cancel_or_failure(_require_download_ctx(), result, job, manual_request)
 
 
 def _ctx_blend_data_write_lock_reason(ctx):
@@ -693,7 +592,7 @@ def _ctx_resolve_prepare_apply_context(ctx, job, manual_request):
             str(deps.job_field(job, "request_id", "")),
         )
 
-    props = getattr(scene, "planetka", None)
+    props = getattr(scene, "planetka_public", None)
     if deps.is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
         _ctx_mark_manual_resolve_error(ctx, scene, "Blocked by animation playback lock.")
         return True, None, None, None
@@ -703,10 +602,6 @@ def _ctx_resolve_prepare_apply_context(ctx, job, manual_request):
         if current_output_signature != deps.job_field(job, "output_signature"):
             deps.logger.warning("Planetka resolve continuing despite output signature change.")
     return True, scene, scene_id, job_target_tiles
-
-
-def _resolve_prepare_apply_context(job, manual_request):
-    return _ctx_resolve_prepare_apply_context(_require_download_ctx(), job, manual_request)
 
 
 def _ctx_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_request, job_target_tiles):
@@ -719,7 +614,6 @@ def _ctx_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_reques
         )
         op_kwargs = {
             "scope_mode": "CAMERA",
-            "skip_render_compatibility": True,
             "defer_download": False,
             "tiles_override_json": json.dumps(list(job_target_tiles)),
             "texture_quality_mode_override": deps.normalize_texture_quality_mode(
@@ -738,7 +632,7 @@ def _ctx_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_reques
                 f"(request_id={deps.job_field(job, 'request_id')})"
             )
             return None
-        op_result = deps.bpy.ops.planetka.load_textures(**op_kwargs)
+        op_result = deps.bpy.ops.planetka_public.load_textures(**op_kwargs)
         if "FINISHED" not in op_result:
             deps.resolve_trace(
                 f"Shader update failed (request_id={deps.job_field(job, 'request_id')} op_result={str(op_result)})"
@@ -815,17 +709,6 @@ def _ctx_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_reques
     return True
 
 
-def _resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, job_target_tiles):
-    return _ctx_resolve_apply_downloaded_tiles(
-        _require_download_ctx(),
-        scene,
-        scene_id,
-        job,
-        manual_request,
-        job_target_tiles,
-    )
-
-
 def _ctx_resolve_summary_total_bytes(ctx, job_target_tiles, job, result):
     deps = ctx.deps
     summary_total_bytes = 0
@@ -836,7 +719,6 @@ def _ctx_resolve_summary_total_bytes(ctx, job_target_tiles, job, result):
                 int(
                     deps.estimate_download_bytes_for_visible_tiles(
                         job_target_tiles,
-                        str(deps.job_field(job, "base_path", "") or ""),
                         texture_quality_mode=deps.normalize_texture_quality_mode(
                             deps.job_field(job, "texture_quality_mode", "PREVIEW")
                         ),
@@ -859,10 +741,6 @@ def _ctx_resolve_summary_total_bytes(ctx, job_target_tiles, job, result):
                 downloaded_bytes = 0
         summary_total_bytes = int(max(0, int(downloaded_bytes)))
     return summary_total_bytes
-
-
-def _resolve_summary_total_bytes(job_target_tiles, job, result):
-    return _ctx_resolve_summary_total_bytes(_require_download_ctx(), job_target_tiles, job, result)
 
 
 def _ctx_finalize_resolve_apply(ctx, scene, scene_id, job, manual_request, job_target_tiles, resolved_at, summary_total_bytes):
@@ -896,19 +774,6 @@ def _ctx_finalize_resolve_apply(ctx, scene, scene_id, job, manual_request, job_t
         )
     deps.resolve_trace(
         f"Shader update finished (request_id={deps.job_field(job, 'request_id')}, tiles={len(job_target_tiles)})"
-    )
-
-
-def _finalize_resolve_apply(scene, scene_id, job, manual_request, job_target_tiles, resolved_at, summary_total_bytes):
-    return _ctx_finalize_resolve_apply(
-        _require_download_ctx(),
-        scene,
-        scene_id,
-        job,
-        manual_request,
-        job_target_tiles,
-        resolved_at,
-        summary_total_bytes,
     )
 
 
@@ -962,10 +827,6 @@ def _ctx_handle_resolve_download_complete(ctx, result):
     return True
 
 
-def _handle_resolve_download_complete(result):
-    return _ctx_handle_resolve_download_complete(_require_download_ctx(), result)
-
-
 def _ctx_resolve_download_worker(ctx, job):
     deps = ctx.deps
     state = ctx.state
@@ -985,30 +846,23 @@ def _ctx_resolve_download_worker(ctx, job):
             f"tiles={len(tuple(deps.job_field(job, 'target_tiles', ())))})"
         )
         streaming_module = deps.get_streaming_utils()
-        prepare_fn = getattr(streaming_module, "prepare_resolve_streaming_for_visible_tiles", None)
-        stage_fn = getattr(streaming_module, "stage_prefetch_payload", None)
-        if not callable(prepare_fn):
+        if streaming_module is None:
             raise RuntimeError("Planetka streaming pipeline is unavailable.")
 
-        prepared_payload = prepare_fn(
+        prepared_payload = streaming_module.prepare_resolve_streaming_for_visible_tiles(
             tuple(deps.job_field(job, "target_tiles", ())),
-            str(deps.job_field(job, "base_path", "") or ""),
             cancel_event=deps.job_field(job, "cancel_event"),
             capture=True,
             texture_quality_mode=deps.normalize_texture_quality_mode(deps.job_field(job, "texture_quality_mode", "PREVIEW")),
-            nav_latitude_deg=deps.job_field(job, "nav_latitude_deg", ""),
-            nav_longitude_deg=deps.job_field(job, "nav_longitude_deg", ""),
-            nav_altitude_km=deps.job_field(job, "nav_altitude_km", ""),
         )
         cancelled = (
             bool(prepared_payload.get("cancelled", False))
             if isinstance(prepared_payload, dict)
             else False
         )
-        if not cancelled and isinstance(prepared_payload, dict) and callable(stage_fn):
-            stage_fn(
+        if not cancelled and isinstance(prepared_payload, dict):
+            streaming_module.stage_prefetch_payload(
                 tuple(deps.job_field(job, "target_tiles", ()) or ()),
-                str(deps.job_field(job, "base_path", "") or ""),
                 prepared_payload,
                 texture_quality_mode=deps.normalize_texture_quality_mode(deps.job_field(job, "texture_quality_mode", "PREVIEW")),
             )
@@ -1024,9 +878,7 @@ def _ctx_resolve_download_worker(ctx, job):
         total_bytes = int(capture.get("total_bytes", 0) or 0) if isinstance(capture, dict) else 0
         try:
             r2_source = deps.get_r2_source()
-            mark_complete = getattr(r2_source, "mark_resolve_download_capture_complete", None)
-            if callable(mark_complete):
-                mark_complete(downloaded_bytes=downloaded_bytes, total_bytes=total_bytes)
+            r2_source.mark_resolve_download_capture_complete(downloaded_bytes=downloaded_bytes, total_bytes=total_bytes)
         except deps.recoverable_exceptions:
             deps.logger.debug("Planetka: failed marking resolve download progress complete", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -1062,10 +914,6 @@ def _ctx_resolve_download_worker(ctx, job):
             )
 
 
-def _resolve_download_worker(job):
-    return _ctx_resolve_download_worker(_require_download_ctx(), job)
-
-
 def _ctx_resume_or_stop_download_pump_after_error(ctx):
     deps = ctx.deps
     state = ctx.state
@@ -1088,9 +936,9 @@ def _ctx_resolve_pump_timer(ctx):
 
     try:
         deps.resolve_trace("Pump tick")
-        if not hasattr(deps.bpy.types.Scene, "planetka"):
+        if not hasattr(deps.bpy.types.Scene, "planetka_public"):
             state.download_timer_running = False
-            deps.resolve_trace("Pump stop: Scene.planetka missing")
+            deps.resolve_trace("Pump stop: Scene.planetka_public missing")
             return None
 
         completed = None

@@ -1,6 +1,7 @@
 name = "planetka-tiles"
 main = "src/tile_worker.js"
-compatibility_date = "2026-03-15"
+compatibility_date = "2026-06-14"
+account_id = "0d8ec517813b687e71cf0d63a4f9893d"
 find_additional_modules = true
 routes = [
   { pattern = "api.planetka.io/tiles/*", zone_name = "planetka.io" }

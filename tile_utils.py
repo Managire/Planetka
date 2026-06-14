@@ -103,7 +103,7 @@ def get_earth_radius_blender_units(earth_obj):
     try:
         stored_local_radius = float(earth_obj.get("planetka_surface_local_radius", 0.0))
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed reading stored Earth local radius metadata", exc_info=True)
+        logger.debug("Planetka: failed reading stored surface extent metadata", exc_info=True)
         stored_local_radius = 0.0
     if stored_local_radius > 1e-9:
         world_scale = earth_obj.matrix_world.to_scale()
@@ -120,7 +120,7 @@ def get_earth_radius_blender_units(earth_obj):
                 max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
                 return float(local_radius) * float(max_scale)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: vertex-based Earth radius inference failed", exc_info=True)
+            logger.debug("Planetka: vertex-based surface extent inference failed", exc_info=True)
 
     scale = earth_obj.matrix_world.to_scale()
     max_scale = max(abs(scale.x), abs(scale.y), abs(scale.z), 1.0)
@@ -912,9 +912,9 @@ def _resolution_bias_factor(scene):
 def _apply_temporal_z_hysteresis(scene, requested_z, distance_value):
     """Return the z-level requested by the current camera state.
 
-    Resolve is manual and deterministic. Persisted hysteresis from an older file
-    can otherwise hold a stale coarse z-level forever, leaving the scene blurred
-    even after the user presses Resolve Planetka.
+    Resolve is manual and deterministic. Persisted hysteresis can otherwise
+    hold a stale coarse z-level forever, leaving the scene blurred even after
+    the user presses Resolve Planetka.
     """
     try:
         return int(requested_z)
@@ -2637,7 +2637,7 @@ def main(scope_mode="AUTO", edge_boost=False):
         camera_altitude = cam_pos_world.length - earth_radius
 
     logger.debug("Camera altitude: %s Blender Units", camera_altitude)
-    logger.debug("Earth radius: %s Blender Units", earth_radius)
+    logger.debug("Surface extent: %s Blender Units", earth_radius)
 
     if camera_altitude < 0:
         try:
@@ -2651,7 +2651,6 @@ def main(scope_mode="AUTO", edge_boost=False):
             scene=scene,
             camera_altitude_bu=float(camera_altitude),
             nearest_visible_distance_bu=None,
-            earth_radius_bu=earth_radius,
         )
         return []
 
@@ -2783,7 +2782,6 @@ def main(scope_mode="AUTO", edge_boost=False):
             scene=scene,
             camera_altitude_bu=float(camera_altitude),
             nearest_visible_distance_bu=None,
-            earth_radius_bu=earth_radius,
         )
         return []
 
@@ -2881,16 +2879,5 @@ def main(scope_mode="AUTO", edge_boost=False):
         scene=scene,
         camera_altitude_bu=float(camera_altitude),
         nearest_visible_distance_bu=None if selected_nearest_distance is None else float(selected_nearest_distance),
-        earth_radius_bu=earth_radius,
     )
     return final_tiles
-
-
-def get_last_tile_budget_trace():
-    return {
-        "input_tiles": list(LAST_TILE_BUDGET_INPUT),
-        "output_tiles": list(LAST_TILE_BUDGET_OUTPUT),
-        "merges": list(LAST_TILE_BUDGET_TRACE),
-        "min_floor": int(MIN_SHADER_TILE_FLOOR),
-        "budget": int(MAX_SHADER_TILE_BUDGET),
-    }

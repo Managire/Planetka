@@ -17,7 +17,7 @@ from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 logger = logging.getLogger(__name__)
 
 
-def create_temp_mesh(tiles, name="Planetka Earth Surface", collection_policy="inherit_old"):
+def create_temp_mesh(tiles, name="Planetka Earth Surface", collection_policy="preserve_surface"):
     return create_temp_mesh_for_all_tiles(
         tiles,
         name=name,
@@ -37,7 +37,6 @@ def replace_tiles(
     tiles,
     material_name="Planetka Earth Material",
     force_remove_unused=False,
-    allow_slot_shrink=True,
     resolved_paths=None,
     resolved_tiles_override=None,
     ocean_tiles_override=None,
@@ -46,7 +45,6 @@ def replace_tiles(
         tiles,
         material_name=material_name,
         force_remove_datablocks=force_remove_unused,
-        allow_slot_shrink=allow_slot_shrink,
         resolved_paths=resolved_paths,
         resolved_tiles_override=resolved_tiles_override,
         ocean_tiles_override=ocean_tiles_override,
@@ -141,7 +139,6 @@ def cleanup_planetka_unused_data():
         if not (
             _is_planetka_runtime_name(name)
             or name.startswith("Earth Surface")
-            or name.startswith("Planetka__ResolvedMeshCache")
         ):
             continue
         try:

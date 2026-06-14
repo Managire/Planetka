@@ -2,7 +2,6 @@ import time
 
 
 _HANDLER_RUNTIME_CTX = None
-ATMOSPHERE_AUTO_SWITCH_ENGINE_KEY = "planetka_atmosphere_auto_switch_engine"
 
 
 def _require_ctx():
@@ -44,9 +43,6 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
     state.render_job_last_progress_at = ended_at
     if bool(cancelled):
         state.render_job_last_cancelled_epoch = int(state.render_job_epoch)
-
-    deps.reset_navigation_shot_runtime_state()
-    deps.reset_navigation_camera_control_runtime_state()
 
 
 def mark_render_job_started(scene=None, ctx=None):
@@ -113,133 +109,3 @@ def render_job_heartbeat(ctx=None):
     }
 
 
-def sync_logging_from_scenes(ctx=None):
-    ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
-    state = ctx.state
-
-    if state.logging_syncing:
-        return
-    state.logging_syncing = True
-    try:
-        enabled = False
-        for scene in deps.iter_scenes():
-            props = getattr(scene, "planetka", None)
-            if props and bool(getattr(props, "debug_logging", False)):
-                enabled = True
-                break
-        deps.set_planetka_logging(enabled)
-    finally:
-        state.logging_syncing = False
-
-
-def initialize_props_from_imported_planetka(scene, ctx=None):
-    ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
-    props = getattr(scene, "planetka", None) if scene else None
-    if not props:
-        return
-
-    deps.sync_idprops_from_props(scene)
-
-
-def _atmosphere_mode_for_render_engine(scene):
-    try:
-        engine = str(getattr(getattr(scene, "render", None), "engine", "") or "").strip().upper()
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        engine = ""
-    if engine == "CYCLES":
-        return engine, "VOLUMETRIC"
-    if engine.startswith("BLENDER_EEVEE"):
-        return engine, "EEVEE"
-    return engine, ""
-
-
-def _sync_atmosphere_mode_to_render_engine(scene, deps):
-    if scene is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    earth_obj = deps.get_earth_object()
-    if earth_obj is None:
-        return
-    try:
-        atmosphere_enabled = bool(getattr(props, "atmosphere_enabled", True))
-    except deps.recoverable_exceptions:
-        atmosphere_enabled = True
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        atmosphere_enabled = True
-    if not atmosphere_enabled:
-        return
-    try:
-        enabled = bool(getattr(props, "auto_switch_atmosphere", True))
-    except deps.recoverable_exceptions:
-        enabled = True
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        enabled = True
-    if not enabled:
-        return
-
-    engine, desired_mode = _atmosphere_mode_for_render_engine(scene)
-    if not desired_mode:
-        return
-
-    try:
-        previous_engine = str(scene.get(ATMOSPHERE_AUTO_SWITCH_ENGINE_KEY, "") or "").strip().upper()
-    except deps.recoverable_exceptions:
-        previous_engine = ""
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        previous_engine = ""
-
-    try:
-        scene[ATMOSPHERE_AUTO_SWITCH_ENGINE_KEY] = engine
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed storing atmosphere auto-switch engine", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        deps.logger.debug("Planetka: failed storing atmosphere auto-switch engine", exc_info=True)
-
-    try:
-        current_mode = str(getattr(props, "atmosphere_mode", "VOLUMETRIC") or "VOLUMETRIC").strip().upper()
-    except deps.recoverable_exceptions:
-        current_mode = "VOLUMETRIC"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        current_mode = "VOLUMETRIC"
-    mode_changed = not (previous_engine == engine and current_mode == desired_mode)
-    if current_mode != desired_mode:
-        try:
-            props.atmosphere_mode = desired_mode
-            deps.sync_idprops_from_props(scene, ("atmosphere_mode", "auto_switch_atmosphere"))
-        except deps.recoverable_exceptions:
-            deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
-
-    if mode_changed or current_mode == desired_mode:
-        try:
-            deps.ensure_atmosphere_for_mode(
-                scene=scene,
-                earth_surface=earth_obj,
-                mode=desired_mode,
-            )
-        except deps.recoverable_exceptions:
-            deps.logger.debug("Planetka: failed ensuring auto-switched atmosphere object", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            deps.logger.debug("Planetka: failed ensuring auto-switched atmosphere object", exc_info=True)
-
-
-def sync_atmosphere_mode_to_render_engine(scene=None, ctx=None):
-    """Sync Planetka atmosphere mode to the active render engine."""
-    ctx = _coerce_ctx(ctx)
-    deps = ctx.deps
-    target_scene = scene
-    if target_scene is None:
-        target_scene = _safe_context_scene(deps)
-    if target_scene is None:
-        return
-    _sync_atmosphere_mode_to_render_engine(target_scene, deps)
-
-
-def load_post(_dummy, ctx=None):
-    ctx = _coerce_ctx(ctx)
-    sync_logging_from_scenes(ctx)

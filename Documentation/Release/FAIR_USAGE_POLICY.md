@@ -2,13 +2,31 @@
 
 Planetka is an online texture-streaming service. This Fair Usage Policy protects service reliability for all users.
 
-## Free And Pro
+## Free, Private, And Pro
 
-Free access is fair-use and best-effort. Pro services may include priority support, guaranteed-service arrangements, offline data packages, private deployments, or studio/pipeline integration where offered by Planetka.
+Planetka is distributed as three separate ZIP files:
+
+- Free: unsigned package, 1000K texture access capped at d004 or coarser, personal use only, community support.
+- Private: signed paid package, full 4000K texture access, personal use only, community support.
+- Pro: signed paid package, full 4000K texture access, Quick Preview and Final Animation Render, commercial licence, direct support.
+
+Free and Private do not include the animation panel. Private has the same add-on functionality as Free, but unlocks full 4000K texture access.
+
+Annual fair usage allowance is measured against the full Planetka hosted dataset:
+
+- Free: 2.5% of the full dataset per year.
+- Private: 5% of the full dataset per year.
+- Pro: 15% of the full dataset per year.
+
+For higher usage allowance, users must contact Planetka.
+
+If an installation reaches its allowance within one day, Planetka may block that installation automatically and notify Planetka support. If an installation reaches its allowance over a longer period, Planetka may notify support without automatically blocking the installation.
 
 ## Fair Use
 
-Normal creative, educational, freelance, studio, client, broadcast, advertising, and production rendering workflows are allowed.
+Free and Private may be used for personal, non-commercial work within the edition allowance.
+
+Pro may be used for commercial rendering workflows, including freelance, client, broadcast, advertising, and production work, within the edition allowance.
 
 Planetka may apply request limits, caching rules, abuse detection, device/session checks, IP-based controls, and temporary throttling to protect service reliability and hosted data.
 

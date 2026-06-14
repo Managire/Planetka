@@ -48,12 +48,6 @@ _R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.5
 _R2_UI_REDRAW_MIN_INTERVAL_SECONDS = 0.5
 _R2_PREFETCH_MAX_WORKERS = 16
 _R2_PREFETCH_ABSOLUTE_MAX_WORKERS = 32
-_BUNDLED_TEXTURE_ROOTS = (
-    ("Resources", "Startup Textures"),
-    ("Resources", "Preview Textures"),
-)
-
-
 @dataclass(frozen=True)
 class _R2Config:
     bucket: str
@@ -65,8 +59,6 @@ class _R2Config:
     cache_root: str
     cache_max_bytes: int
     cache_prune_target_ratio: float
-    prefer_remote: bool
-    allow_local_fallback: bool
 
 
 _CONFIG_LOCK = threading.Lock()
@@ -89,8 +81,6 @@ _CAPTURE_PLANNED_TOTAL_BYTES = 0
 _CAPTURE_STARTED_AT = 0.0
 _LAST_UI_REDRAW_AT = 0.0
 _LAST_CACHE_PRUNE_AT = 0.0
-_LOCAL_SIZE_CACHE = {}
-_LOCAL_SIZE_CACHE_LOCK = threading.Lock()
 _STREAM_HEALTH_OK = None
 _STREAM_HEALTH_CHECKED_AT = 0.0
 _AUTH_CHECK_LOCK = threading.Lock()
@@ -104,9 +94,6 @@ _REQUEST_CONTEXT_RESOLVE_ID = ""
 _REQUEST_CONTEXT_TEXTURE_MODE = ""
 _REQUEST_CONTEXT_CANCEL_EVENT = None
 _REQUEST_CONTEXT_FORCE_CANCEL = False
-_REQUEST_CONTEXT_NAV_LAT = ""
-_REQUEST_CONTEXT_NAV_LON = ""
-_REQUEST_CONTEXT_NAV_ALT_KM = ""
 _REQUEST_CONTEXT_FEATURE = ""
 _REQUEST_CONTEXT_SCENE_ID = ""
 _REQUEST_CONTEXT_ANIMATION_ID = ""
@@ -176,9 +163,6 @@ def _build_config():
         "region": "auto",
         "prefix": _env("PLANETKA_R2_PREFIX") or _R2_DEFAULT_PREFIX,
         "cache_prune_target_ratio": _env("PLANETKA_R2_CACHE_PRUNE_TARGET_RATIO"),
-        # Force remote-only texture loading; local source files are never used by resolver.
-        "prefer_remote": True,
-        "allow_local_fallback": False,
     }
 
     merged = dict(env_cfg)
@@ -196,9 +180,6 @@ def _build_config():
         _R2_DEFAULT_CACHE_PRUNE_TARGET_RATIO,
     )
     cache_prune_target_ratio = min(max(cache_prune_target_ratio, 0.5), 0.99)
-    prefer_remote = bool(merged.get("prefer_remote", True))
-    allow_local_fallback = bool(merged.get("allow_local_fallback", False))
-
     if not endpoint:
         return None
 
@@ -215,8 +196,6 @@ def _build_config():
         cache_root=cache_root,
         cache_max_bytes=cache_max_bytes,
         cache_prune_target_ratio=cache_prune_target_ratio,
-        prefer_remote=prefer_remote,
-        allow_local_fallback=allow_local_fallback,
     )
 
 
@@ -226,48 +205,6 @@ def _get_config():
         if _CONFIG_CACHE is None:
             _CONFIG_CACHE = _build_config()
         return _CONFIG_CACHE
-
-
-def reset_config_cache():
-    global _CONFIG_CACHE
-    global _LAST_CACHE_PRUNE_AT
-    with _CONFIG_LOCK:
-        _CONFIG_CACHE = None
-    with _HEAD_CACHE_LOCK:
-        _HEAD_CACHE.clear()
-    with _HEAD_SIZE_CACHE_LOCK:
-        _HEAD_SIZE_CACHE.clear()
-    with _LOCAL_SIZE_CACHE_LOCK:
-        _LOCAL_SIZE_CACHE.clear()
-    _LAST_CACHE_PRUNE_AT = 0.0
-
-
-def on_cache_settings_updated(force_prune=False):
-    reset_config_cache()
-    if force_prune:
-        cfg = _get_config()
-        _maybe_prune_cache(cfg, force=True)
-
-
-def _looks_like_remote_source(base_path):
-    text = str(base_path or "").strip()
-    if not text:
-        return True
-    lowered = text.lower()
-    if lowered in {"remote", "cloud", "r2", "planetka-remote"}:
-        return True
-    if lowered.startswith(("r2://", "cloud://", "planetka://", "https://", "http://")):
-        return True
-    return False
-
-
-def is_remote_source_configured(base_path=None):
-    if _get_config() is None:
-        return False
-    if base_path is not None and str(base_path).strip():
-        if _looks_like_remote_source(base_path):
-            return True
-    return True
 
 
 def _ensure_remote_authentication(allow_cached_on_network_error=False):
@@ -394,11 +331,6 @@ def end_resolve_download_capture():
         return result
 
 
-def is_download_active():
-    with _METRICS_LOCK:
-        return bool(_ACTIVE_DOWNLOADS > 0 or _CAPTURE_ENABLED)
-
-
 def mark_resolve_download_capture_complete(downloaded_bytes=0, total_bytes=0):
     """Force public resolve progress to a completed transfer state before apply."""
     global _CAPTURE_DOWNLOAD_BYTES
@@ -419,45 +351,6 @@ def mark_resolve_download_capture_complete(downloaded_bytes=0, total_bytes=0):
         _CAPTURE_DOWNLOAD_BYTES = int(complete_total)
         _CAPTURE_TOTAL_BYTES = max(int(_CAPTURE_TOTAL_BYTES), int(complete_total))
         _CAPTURE_PLANNED_TOTAL_BYTES = max(int(_CAPTURE_PLANNED_TOTAL_BYTES), int(complete_total))
-
-
-def verify_remote_stream_health(force=False):
-    global _STREAM_HEALTH_OK
-    global _STREAM_HEALTH_CHECKED_AT
-
-    cfg = _get_config()
-    if cfg is None:
-        return False, "Planetka API endpoint is not configured."
-    if not _STREAM_HEALTH_SENTINEL:
-        return True, ""
-
-    now_ts = time.time()
-    if not force and _STREAM_HEALTH_OK is not None:
-        if (now_ts - float(_STREAM_HEALTH_CHECKED_AT)) <= _STREAM_HEALTH_CACHE_TTL_SECONDS:
-            return bool(_STREAM_HEALTH_OK), ""
-
-    folder, file_name = _STREAM_HEALTH_SENTINEL
-    key = _remote_key(folder, file_name)
-
-    try:
-        ok = bool(_r2_request("HEAD", key))
-    except RuntimeError as exc:
-        _STREAM_HEALTH_OK = False
-        _STREAM_HEALTH_CHECKED_AT = now_ts
-        return False, str(exc)
-
-    _STREAM_HEALTH_OK = ok
-    _STREAM_HEALTH_CHECKED_AT = now_ts
-    if ok:
-        return True, ""
-
-    return (
-        False,
-        (
-            "Planetka tile stream is online but the active data prefix does not contain "
-            "the expected sentinel tile. Ensure Worker R2_PREFIX is set to 'planetka-assets'."
-        ),
-    )
 
 
 def get_download_progress():
@@ -481,41 +374,9 @@ def get_download_progress():
         }
 
 
-def _texture_size_source_root():
-    configured = _env("PLANETKA_TEXTURE_SIZE_SOURCE_DIR")
-    if configured:
-        return configured
-    return ""
-
-
 def remote_tile_asset_exists(folder, file_name):
     """Return True when the tile key exists in Planetka Cloud."""
     return _lookup_remote_texture_size(folder, file_name) is not None
-
-
-def _lookup_local_texture_size(folder, file_name):
-    key = f"{folder}/{file_name}"
-    with _LOCAL_SIZE_CACHE_LOCK:
-        if key in _LOCAL_SIZE_CACHE:
-            cached = _LOCAL_SIZE_CACHE[key]
-            if cached is None:
-                return None
-            return int(cached)
-
-    source_root = _texture_size_source_root()
-    if not source_root:
-        return None
-    candidate = os.path.join(source_root, str(folder or ""), str(file_name or ""))
-    size = None
-    try:
-        if os.path.isfile(candidate):
-            size = int(max(0, os.path.getsize(candidate)))
-    except (OSError, ValueError, TypeError):
-        size = None
-
-    with _LOCAL_SIZE_CACHE_LOCK:
-        _LOCAL_SIZE_CACHE[key] = size
-    return size
 
 
 def _lookup_remote_texture_size(folder, file_name):
@@ -564,9 +425,6 @@ def plan_resolve_downloads(requests, allow_remote_probe=None, update_capture=Tru
         allow_remote_probe = _parse_bool_env("PLANETKA_R2_PLAN_REMOTE_HEAD", default=False)
     allow_remote_probe = bool(allow_remote_probe)
 
-    if not is_remote_source_configured(None):
-        return {"planned_total_bytes": 0, "planned_file_count": 0, "unknown_file_count": 0}
-
     cfg = _get_config()
     if cfg is None:
         return {"planned_total_bytes": 0, "planned_file_count": 0, "unknown_file_count": 0}
@@ -608,18 +466,14 @@ def plan_resolve_downloads(requests, allow_remote_probe=None, update_capture=Tru
         seen.add(dedupe_key)
         planned_files += 1
 
-        local_size = _lookup_local_texture_size(folder, selected_file_name)
-        if local_size is None:
-            if not allow_remote_probe:
-                unknown_files += 1
-                continue
-            remote_size = _lookup_remote_texture_size(folder, selected_file_name)
-            if remote_size is None:
-                unknown_files += 1
-                continue
-            planned_total += int(max(0, remote_size))
+        if not allow_remote_probe:
+            unknown_files += 1
             continue
-        planned_total += int(max(0, local_size))
+        remote_size = _lookup_remote_texture_size(folder, selected_file_name)
+        if remote_size is None:
+            unknown_files += 1
+            continue
+        planned_total += int(max(0, remote_size))
 
     with _METRICS_LOCK:
         if bool(update_capture) and _CAPTURE_ENABLED:
@@ -633,26 +487,16 @@ def plan_resolve_downloads(requests, allow_remote_probe=None, update_capture=Tru
 
 
 def estimate_resolve_download_availability(requests, allow_remote_probe=None):
-    """Estimate total required bytes and bytes already available locally.
+    """Estimate total required bytes and bytes already available in cache.
 
     ``planned_download_bytes`` is the amount that still needs network transfer.
-    ``local_available_bytes`` covers usable files found in the user local source
-    or the Planetka cache. This function must not update active download capture
-    totals; it is used by the UI before a resolve starts.
+    ``local_available_bytes`` covers usable files already in the Planetka cache.
+    This function must not update active download capture totals; it is used by
+    the UI before a resolve starts.
     """
     if allow_remote_probe is None:
         allow_remote_probe = _parse_bool_env("PLANETKA_R2_PLAN_REMOTE_HEAD", default=False)
     allow_remote_probe = bool(allow_remote_probe)
-
-    if not is_remote_source_configured(None):
-        return {
-            "planned_total_bytes": 0,
-            "local_available_bytes": 0,
-            "planned_download_bytes": 0,
-            "planned_file_count": 0,
-            "planned_download_file_count": 0,
-            "unknown_file_count": 0,
-        }
 
     cfg = _get_config()
     if cfg is None:
@@ -700,23 +544,13 @@ def estimate_resolve_download_availability(requests, allow_remote_probe=None):
                 try:
                     selected_size = int(max(0, os.path.getsize(cached_path)))
                 except (OSError, RuntimeError, TypeError, ValueError):
-                    selected_size = texture_asset_size_bytes(
-                        folder,
-                        candidate_file_name,
-                        allow_remote_probe=allow_remote_probe,
-                    )
+                    selected_size = _lookup_remote_texture_size(folder, candidate_file_name) if allow_remote_probe else None
                 selected_available_size = int(max(0, int(selected_size or 0)))
                 break
             _remove_invalid_cache_file(cached_path)
 
             if not selected_file_name:
                 selected_file_name = candidate_file_name
-            known_size = texture_asset_size_bytes(folder, candidate_file_name, allow_remote_probe=allow_remote_probe)
-            if known_size is not None:
-                selected_file_name = candidate_file_name
-                selected_size = int(max(0, int(known_size)))
-                selected_available_size = 0
-                break
             if allow_remote_probe:
                 remote_size = _lookup_remote_texture_size(folder, candidate_file_name)
                 if remote_size is not None:
@@ -755,23 +589,6 @@ def estimate_resolve_download_availability(requests, allow_remote_probe=None):
         "planned_download_file_count": int(max(0, planned_download_files)),
         "unknown_file_count": int(max(0, unknown_files)),
     }
-
-
-def texture_asset_size_bytes(folder, file_name, allow_remote_probe=False):
-    """Return the best known final asset size, regardless of cache/local source."""
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    if not safe_folder or not safe_name:
-        return None
-    if allow_remote_probe:
-        remote_size = _lookup_remote_texture_size(safe_folder, safe_name)
-        if remote_size is not None:
-            return int(max(0, int(remote_size)))
-    local_size = _lookup_local_texture_size(safe_folder, safe_name)
-    if local_size is not None:
-        return int(max(0, int(local_size)))
-    return None
-
 
 def _request_ui_redraw(force=False):
     if threading.current_thread() is not threading.main_thread():
@@ -898,32 +715,15 @@ def _resume_cache_prune():
         _CACHE_PRUNE_SUSPEND_COUNT = max(0, int(_CACHE_PRUNE_SUSPEND_COUNT) - 1)
 
 
-def _aws_sign(key, msg):
-    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
-
-
-def _aws_signing_key(secret_key, date_stamp, region, service):
-    k_date = _aws_sign(("AWS4" + secret_key).encode("utf-8"), date_stamp)
-    k_region = _aws_sign(k_date, region)
-    k_service = _aws_sign(k_region, service)
-    return _aws_sign(k_service, "aws4_request")
-
-
 def set_resolve_request_context(
     resolve_id="",
     texture_quality_mode="",
     cancel_event=None,
-    nav_latitude_deg="",
-    nav_longitude_deg="",
-    nav_altitude_km="",
     feature="",
 ):
     global _REQUEST_CONTEXT_RESOLVE_ID
     global _REQUEST_CONTEXT_TEXTURE_MODE
     global _REQUEST_CONTEXT_CANCEL_EVENT
-    global _REQUEST_CONTEXT_NAV_LAT
-    global _REQUEST_CONTEXT_NAV_LON
-    global _REQUEST_CONTEXT_NAV_ALT_KM
     global _REQUEST_CONTEXT_FEATURE
     global _REQUEST_CONTEXT_TILE_TOKEN
     global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT
@@ -934,18 +734,6 @@ def set_resolve_request_context(
             safe_mode = ""
         _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
         _REQUEST_CONTEXT_CANCEL_EVENT = cancel_event
-        try:
-            _REQUEST_CONTEXT_NAV_LAT = str(float(nav_latitude_deg)).strip()
-        except (TypeError, ValueError):
-            _REQUEST_CONTEXT_NAV_LAT = ""
-        try:
-            _REQUEST_CONTEXT_NAV_LON = str(float(nav_longitude_deg)).strip()
-        except (TypeError, ValueError):
-            _REQUEST_CONTEXT_NAV_LON = ""
-        try:
-            _REQUEST_CONTEXT_NAV_ALT_KM = str(max(0.0, float(nav_altitude_km))).strip()
-        except (TypeError, ValueError):
-            _REQUEST_CONTEXT_NAV_ALT_KM = ""
         safe_feature = str(feature or "").strip().lower()
         _REQUEST_CONTEXT_FEATURE = safe_feature if safe_feature in {"panorama", "final_animation_render"} else ""
         # Tile-session tokens carry selected texture quality for one
@@ -960,23 +748,8 @@ def clear_resolve_request_context():
         "",
         "",
         cancel_event=None,
-        nav_latitude_deg="",
-        nav_longitude_deg="",
-        nav_altitude_km="",
         feature="",
     )
-
-
-def request_global_resolve_cancel():
-    global _REQUEST_CONTEXT_FORCE_CANCEL
-    with _REQUEST_CONTEXT_LOCK:
-        _REQUEST_CONTEXT_FORCE_CANCEL = True
-
-
-def clear_global_resolve_cancel():
-    global _REQUEST_CONTEXT_FORCE_CANCEL
-    with _REQUEST_CONTEXT_LOCK:
-        _REQUEST_CONTEXT_FORCE_CANCEL = False
 
 
 def _invalidate_request_context_tile_token():
@@ -1004,16 +777,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         "quality_mode": safe_quality_mode,
     }
     with _REQUEST_CONTEXT_LOCK:
-        nav_lat = str(_REQUEST_CONTEXT_NAV_LAT or "").strip()
-        nav_lon = str(_REQUEST_CONTEXT_NAV_LON or "").strip()
-        nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
         feature = str(_REQUEST_CONTEXT_FEATURE or "").strip()
-    if nav_lat:
-        payload["nav_latitude_deg"] = nav_lat
-    if nav_lon:
-        payload["nav_longitude_deg"] = nav_lon
-    if nav_alt:
-        payload["nav_altitude_km"] = nav_alt
     if feature:
         payload["feature"] = feature
     payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
@@ -1199,18 +963,12 @@ def resolve_request_context(
     resolve_id="",
     texture_quality_mode="",
     cancel_event=None,
-    nav_latitude_deg="",
-    nav_longitude_deg="",
-    nav_altitude_km="",
     feature="",
 ):
     set_resolve_request_context(
         resolve_id,
         texture_quality_mode=texture_quality_mode,
         cancel_event=cancel_event,
-        nav_latitude_deg=nav_latitude_deg,
-        nav_longitude_deg=nav_longitude_deg,
-        nav_altitude_km=nav_altitude_km,
         feature=feature,
     )
     try:
@@ -1245,19 +1003,10 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
     with _REQUEST_CONTEXT_LOCK:
         resolve_id = str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip()
         quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
-        nav_lat = str(_REQUEST_CONTEXT_NAV_LAT or "").strip()
-        nav_lon = str(_REQUEST_CONTEXT_NAV_LON or "").strip()
-        nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
     if resolve_id:
         headers["X-Planetka-Resolve-Id"] = resolve_id
     if quality_mode in {"full", "balanced", "preview"}:
         headers["X-Planetka-Quality-Mode"] = quality_mode
-    if nav_lat:
-        headers["X-Planetka-Nav-Latitude"] = nav_lat
-    if nav_lon:
-        headers["X-Planetka-Nav-Longitude"] = nav_lon
-    if nav_alt:
-        headers["X-Planetka-Nav-Altitude-Km"] = nav_alt
     tile_token = _get_request_context_tile_token(allow_refresh=allow_refresh)
     if tile_token:
         headers["X-Planetka-Tile-Token"] = tile_token
@@ -1497,107 +1246,6 @@ def _remote_key(folder, file_name):
     return f"{folder}/{file_name}"
 
 
-def download_remote_asset_to_path(
-    folder,
-    file_name,
-    destination_path,
-    cancel_event=None,
-    progress_callback=None,
-    texture_quality_mode="FULL",
-    resolve_id="",
-    track_global_progress=True,
-):
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    target = os.path.abspath(os.path.expanduser(str(destination_path or "")))
-    if not safe_folder or not safe_name or not target:
-        return False
-    safe_resolve_id = str(resolve_id or "").strip()[:128]
-    if not safe_resolve_id:
-        safe_resolve_id = f"asset-download-{int(time.time() * 1000)}"
-    with resolve_request_context(
-        safe_resolve_id,
-        texture_quality_mode=texture_quality_mode,
-        cancel_event=cancel_event,
-    ):
-        return _r2_request(
-            "GET",
-            _remote_key(safe_folder, safe_name),
-            destination_path=target,
-            cancel_event=cancel_event,
-            progress_callback=progress_callback,
-            track_global_progress=track_global_progress,
-        )
-
-
-def _local_candidate_paths(base_path, folder, file_name):
-    base_abs = ""
-    try:
-        base_abs = str(base_path or "")
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        base_abs = ""
-
-    if not base_abs:
-        return []
-
-    return [os.path.join(base_abs, folder, file_name)]
-
-
-def _current_request_texture_mode():
-    with _REQUEST_CONTEXT_LOCK:
-        return str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
-
-
-def _extension_root():
-    try:
-        return os.path.abspath(os.path.dirname(__file__))
-    except (RuntimeError, TypeError, ValueError, OSError):
-        return ""
-
-
-def _bundled_candidate_paths(folder, file_name):
-    root = _extension_root()
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    if not root or not safe_folder or not safe_name:
-        return []
-    return [
-        os.path.join(root, *root_parts, safe_folder, safe_name)
-        for root_parts in _BUNDLED_TEXTURE_ROOTS
-    ]
-
-
-def _find_bundled_texture_file(folder, file_name):
-    for candidate in _bundled_candidate_paths(folder, file_name):
-        if _is_cache_file_usable(candidate):
-            return candidate
-    return ""
-
-
-def find_local_source_asset(folder, file_name):
-    return _find_bundled_texture_file(folder, file_name)
-
-
-def remote_asset_metadata(folder, file_name):
-    cfg = _get_config()
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    if cfg is None or not safe_folder or not safe_name:
-        return {}
-    key = _remote_key(safe_folder, safe_name)
-    try:
-        url, headers = _signed_headers(cfg, method="HEAD", key=key)
-        request = urllib.request.Request(url, method="HEAD", headers=headers)
-        with urllib.request.urlopen(request, timeout=_R2_TIMEOUT_SECONDS) as response:
-            return {
-                "etag": str(response.headers.get("ETag", "") or "").strip(),
-                "size": int(max(0, int(response.headers.get("Content-Length", "0") or 0))),
-            }
-    except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, OSError):
-        logger.debug("Planetka: failed reading remote asset metadata", exc_info=True)
-        return {}
-
-
 def _cached_remote_path(folder, file_name):
     cfg = _get_config()
     if cfg is None:
@@ -1636,45 +1284,8 @@ def get_remote_cache_folder(folder):
     return os.path.join(cfg.cache_root, safe_folder)
 
 
-def resolve_remote_asset(folder, file_name):
-    cfg = _get_config()
-    if cfg is None:
-        return ""
-
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    if not safe_folder or not safe_name:
-        return ""
-
-    cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and _is_cache_file_usable(cached_path):
-        return cached_path
-    _remove_invalid_cache_file(cached_path)
-
-    key = _remote_key(safe_folder, safe_name)
-    if key and cached_path:
-        downloaded = _r2_request("GET", key, destination_path=cached_path)
-        if downloaded and _is_cache_file_usable(cached_path):
-            return cached_path
-    return ""
-
-
-def resolve_texture_file(base_path, folder, prefix, filename, extensions):
+def resolve_cloud_texture_file(folder, prefix, filename, extensions):
     exts = tuple(extensions or (".exr",))
-
-    for ext in exts:
-        file_name = f"{prefix}_{filename}{ext}"
-        bundled_path = _find_bundled_texture_file(folder, file_name)
-        if bundled_path:
-            return bundled_path
-
-    if not is_remote_source_configured(base_path):
-        for ext in exts:
-            file_name = f"{prefix}_{filename}{ext}"
-            for candidate in _local_candidate_paths(base_path, folder, file_name):
-                if _is_cache_file_usable(candidate):
-                    return candidate
-        return ""
 
     cfg = _get_config()
     if cfg is None:
@@ -1699,13 +1310,12 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
     return ""
 
 
-def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
+def prefetch_resolve_downloads(requests, cancel_event=None):
     resolved_count = 0
     missing_count = 0
     error_count = 0
     cancelled = False
     seen = set()
-    resolved_base_path = str(base_path or "")
     tasks = []
     diagnostics_max = _parse_positive_int(_env("PLANETKA_R2_PREFETCH_DIAGNOSTICS_MAX_KEYS"), 24)
     diagnostics_max = max(1, int(diagnostics_max))
@@ -1811,8 +1421,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         if _is_request_cancelled() or (cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set()):
             return {"state": "cancelled", "task": task}
         try:
-            path = resolve_texture_file(
-                base_path=resolved_base_path,
+            path = resolve_cloud_texture_file(
                 folder=task_folder,
                 prefix=task_prefix,
                 filename=task_filename,
@@ -1943,45 +1552,3 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         "cancelled": bool(cancelled),
         "fatal_error": str(fatal_error or ""),
     }
-
-
-def texture_file_exists(base_path, folder, file_name):
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    if not safe_folder or not safe_name:
-        return False
-
-    if not is_remote_source_configured(base_path):
-        for candidate in _local_candidate_paths(base_path, safe_folder, safe_name):
-            if _is_cache_file_usable(candidate):
-                return True
-        if _find_bundled_texture_file(safe_folder, safe_name):
-            return True
-        return False
-
-    cfg = _get_config()
-    if cfg is None:
-        return bool(_find_bundled_texture_file(safe_folder, safe_name))
-
-    if _find_bundled_texture_file(safe_folder, safe_name):
-        return True
-
-    cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and _is_cache_file_usable(cached_path):
-        return True
-    _remove_invalid_cache_file(cached_path)
-
-    key = _remote_key(safe_folder, safe_name)
-    if key:
-        with _HEAD_CACHE_LOCK:
-            if key in _HEAD_CACHE:
-                return bool(_HEAD_CACHE[key])
-        exists = _r2_request("HEAD", key)
-        with _HEAD_CACHE_LOCK:
-            _HEAD_CACHE[key] = bool(exists)
-            if len(_HEAD_CACHE) > _HEAD_CACHE_MAX_ENTRIES:
-                _HEAD_CACHE.popitem(last=False)
-        if exists:
-            return True
-
-    return False

@@ -90,20 +90,3 @@ def sync_idprops_from_props(
             logger.debug("Planetka: failed syncing idprop %s", scene_key, exc_info=True)
 
 
-def sync_navigation_idprops_from_props(
-    scene,
-    props,
-    *,
-    navigation_sync_idprop_map,
-    recoverable_exceptions,
-    logger,
-):
-    if scene is None or props is None:
-        return
-    for prop_name, scene_key in navigation_sync_idprop_map:
-        if not hasattr(props, prop_name):
-            continue
-        try:
-            scene[scene_key] = _coerce_storage_value(getattr(props, prop_name))
-        except recoverable_exceptions:
-            logger.debug("Planetka: failed syncing navigation idprop %s", scene_key, exc_info=True)

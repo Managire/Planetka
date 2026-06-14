@@ -17,7 +17,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminInstallUnblock,
     handleAdminInstallHardBlock,
     handleAdminQaAuthReset,
-    handleAdminBillingPrices,
   } = deps;
 
   switch (path) {
@@ -34,11 +33,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/analytics/data":
       if (request.method === "GET") {
         return await handleAdminAnalyticsData(request, env);
-      }
-      return null;
-    case "/admin/billing/prices":
-      if (request.method === "GET" || request.method === "POST") {
-        return await handleAdminBillingPrices(request, env);
       }
       return null;
     case "/admin/analytics/world-map.jpg":

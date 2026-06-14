@@ -37,8 +37,25 @@ export function createAuthCore(deps) {
     return String(value || "").trim().slice(0, 128);
   }
 
-  async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
+  async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
     const safeQualityMode = deps.normalizeQualityMode(requestedQualityMode);
+    const safeFeature = deps.normalizeTileSessionFeature
+      ? deps.normalizeTileSessionFeature(options && options.feature || "")
+      : "";
+    const installEdition = deps.normalizeRequestedAccessTier
+      ? deps.normalizeRequestedAccessTier(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "")
+      : (() => {
+        const value = String(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "").trim().toLowerCase();
+        if (value === "pro") return "pro";
+        if (value === "private") return "private";
+        return "free";
+      })();
+    if (
+      typeof deps.isTileSessionFeatureAllowedForEdition === "function"
+      && !deps.isTileSessionFeatureAllowedForEdition(installEdition, safeFeature)
+    ) {
+      return { error: deps.json({ ok: false, error: "feature_not_available_for_edition" }, 403, env) };
+    }
     const safeResolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
     const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
     const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -47,9 +64,10 @@ export function createAuthCore(deps) {
       sub: String(auth && ((auth.install && auth.install.id)) || "").trim(),
       email: String(auth && ((auth.install && auth.install.email)) || "").trim(),
       quality_mode: safeQualityMode,
+      feature: safeFeature,
       resolve_id: safeResolveId,
       auth_method: String(auth && auth.authMethod || "").trim(),
-      install_edition: String(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "pro").trim().toLowerCase() === "pro" ? "pro" : "free",
+      install_edition: installEdition,
       device_id: String(auth && auth.deviceId || "").trim(),
       client_ip_scope: String(auth && auth.access && (auth.access.client_ip_scope || auth.access.clientIpScope) || "").trim(),
       exp,
@@ -60,6 +78,7 @@ export function createAuthCore(deps) {
       token: tileToken,
       resolveId: safeResolveId,
       qualityMode: safeQualityMode,
+      feature: safeFeature,
       expiresInSeconds: ttlSeconds,
       expiresAt: new Date(exp * 1000).toISOString(),
       exp,
@@ -111,15 +130,26 @@ export function createAuthCore(deps) {
       return { error: deps.json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
     }
     const qualityMode = deps.normalizeQualityMode(payload && payload.quality_mode || "");
+    const feature = deps.normalizeTileSessionFeature
+      ? deps.normalizeTileSessionFeature(payload && payload.feature || "")
+      : "";
     const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
     const claims = {
       installId,
       userId: installId,
       userEmail: String(payload && payload.email || "").trim(),
       qualityMode,
+      feature,
       resolveId,
       authMethod,
-      installEdition: String(payload && (payload.install_edition || payload.access_tier) || "pro").trim().toLowerCase() === "pro" ? "pro" : "free",
+      installEdition: deps.normalizeRequestedAccessTier
+        ? deps.normalizeRequestedAccessTier(payload && (payload.install_edition || payload.access_tier) || "")
+        : (() => {
+          const value = String(payload && (payload.install_edition || payload.access_tier) || "").trim().toLowerCase();
+          if (value === "pro") return "pro";
+          if (value === "private") return "private";
+          return "free";
+        })(),
       deviceId: deps.normalizeDeviceId(payload && payload.device_id || ""),
     };
     deps.authContextCacheSet(
@@ -141,7 +171,14 @@ export function createAuthCore(deps) {
     const createdAt = deps.nowIso();
     const expiresAt = String(expiresAtOverride || "").trim() || deps.addDaysIso(30);
     const authMethod = String(metadata.auth_method || metadata.authMethod || "").trim();
-    const installEdition = String(metadata.install_edition || metadata.installEdition || "pro").trim().toLowerCase() === "pro" ? "pro" : "free";
+    const installEdition = deps.normalizeRequestedAccessTier
+      ? deps.normalizeRequestedAccessTier(metadata.install_edition || metadata.installEdition || "")
+      : (() => {
+        const value = String(metadata.install_edition || metadata.installEdition || "").trim().toLowerCase();
+        if (value === "pro") return "pro";
+        if (value === "private") return "private";
+        return "free";
+      })();
     const editionSignature = String(metadata.edition_signature || metadata.editionSignature || "").trim().slice(0, 256);
     const deviceId = deps.normalizeDeviceId(metadata.device_id || metadata.deviceId || "");
     const clientIpScope = String(metadata.client_ip_scope || metadata.clientIpScope || "").trim().slice(0, 80);

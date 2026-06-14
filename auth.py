@@ -34,7 +34,6 @@ _CLOUD_CONNECTION_CACHE = {
 }
 _AUTHORIZED_HEADERS_CACHE_LOCK = threading.Lock()
 _AUTHORIZED_HEADERS_CACHE = {}
-_CLOUD_CONNECTION_TTL_SECONDS = 5.0
 _CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection or try again later."
 _OVERLOAD_HTTP_STATUSES = {429, 503, 520, 522, 524, 529}
 _SESSION_LIMIT_OR_ACCESS_TOKENS = (
@@ -285,84 +284,12 @@ def mark_planetka_cloud_offline(reason="", prefs=None):
     _tag_ui_redraw()
 
 
-def _mark_planetka_cloud_http_unavailable(status, detail="", prefs=None):
-    status_code = _coerce_status_code(status)
-    detail_text = str(detail or "").strip()
-    if looks_like_planetka_overload(status_code, detail_text):
-        mark_planetka_cloud_overloaded(prefs=prefs, reason=detail_text or f"http_{status_code}")
-        return CLOUD_OVERLOADED_MESSAGE
-    message = f"Planetka Cloud is unavailable right now (HTTP {status_code})."
-    _CLOUD_CONNECTION_CACHE["checked"] = True
-    _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
-    _CLOUD_CONNECTION_CACHE["online"] = False
-    _CLOUD_CONNECTION_CACHE["message"] = message
-    if prefs is not None and is_authenticated(prefs):
-        _set_cloud_session_status_message(prefs, message)
-    _tag_ui_redraw()
-    return message
-
-
-def get_cloud_connection_status(prefs=None, force=False, timeout=2.0):
-    prefs = prefs or get_prefs()
-    now = time.monotonic()
-    if (
-        not bool(force)
-        and bool(_CLOUD_CONNECTION_CACHE.get("checked", False))
-        and (now - float(_CLOUD_CONNECTION_CACHE.get("timestamp", 0.0) or 0.0)) < _CLOUD_CONNECTION_TTL_SECONDS
-    ):
-        return {
-            "online": bool(_CLOUD_CONNECTION_CACHE.get("online", False)),
-            "message": str(_CLOUD_CONNECTION_CACHE.get("message", "") or ""),
-            "checked": True,
-        }
-
-    url = f"{get_api_base_url().rstrip('/')}/health"
-    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "Planetka-Blender"})
-    try:
-        with urllib.request.urlopen(request, timeout=max(0.5, float(timeout or 2.0))) as response:
-            status = int(getattr(response, "status", 200) or 200)
-            # Read a tiny response body so connection failures surface while
-            # keeping the check cheap for UI redraws.
-            raw = response.read(256)
-            detail = raw.decode("utf-8", errors="replace") if raw else ""
-        if 200 <= status < 500:
-            mark_planetka_cloud_online(prefs)
-            return {"online": True, "message": "", "checked": True}
-        message = _mark_planetka_cloud_http_unavailable(status, detail, prefs=prefs)
-        return {"online": False, "message": message, "checked": True}
-    except urllib.error.HTTPError as exc:
-        status = int(getattr(exc, "code", 0) or 0)
-        try:
-            raw = exc.read(512)
-        except (RuntimeError, ValueError, OSError):
-            raw = b""
-        detail = raw.decode("utf-8", errors="replace") if raw else ""
-        if 200 <= status < 500:
-            mark_planetka_cloud_online(prefs)
-            return {"online": True, "message": "", "checked": True}
-        message = _mark_planetka_cloud_http_unavailable(status, detail, prefs=prefs)
-        return {"online": False, "message": message, "checked": True}
-    except urllib.error.URLError as exc:
-        mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc), prefs=prefs)
-    except (TimeoutError, OSError, RuntimeError, TypeError, ValueError) as exc:
-        mark_planetka_cloud_offline(str(exc), prefs=prefs)
-    return {
-        "online": False,
-        "message": str(_CLOUD_CONNECTION_CACHE.get("message", "") or _CLOUD_CONNECTION_OFFLINE_MESSAGE),
-        "checked": True,
-    }
-
-
 def get_cached_cloud_connection_status():
     return {
         "online": bool(_CLOUD_CONNECTION_CACHE.get("online", False)),
         "message": str(_CLOUD_CONNECTION_CACHE.get("message", "") or ""),
         "checked": bool(_CLOUD_CONNECTION_CACHE.get("checked", False)),
     }
-
-
-def is_planetka_cloud_online(prefs=None, force=False, timeout=2.0):
-    return bool(get_cloud_connection_status(prefs=prefs, force=force, timeout=timeout).get("online", False))
 
 
 def _tag_ui_redraw():
@@ -404,7 +331,7 @@ def clear_cloud_session(prefs=None, state="logged_out", status_message=""):
 
     prefs.cloud_session_access_token = ""
     prefs.cloud_session_refresh_token = ""
-    prefs.cloud_session_edition = _normalize_addon_edition(read_local_addon_edition().get("edition", "pro"))
+    prefs.cloud_session_edition = _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
     prefs.cloud_session_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
@@ -548,7 +475,10 @@ def _read_local_addon_version():
 
 
 def _normalize_addon_edition(value):
-    return "pro" if str(value or "").strip().lower() == "pro" else "free"
+    normalized = str(value or "").strip().lower()
+    if normalized in {"private", "pro"}:
+        return normalized
+    return "free"
 
 
 def addon_edition_label(value=None):
@@ -556,8 +486,12 @@ def addon_edition_label(value=None):
         local_label = str(read_local_addon_edition().get("label", "") or "").strip()
         if local_label:
             return local_label
-    edition = _normalize_addon_edition(value if value is not None else read_local_addon_edition().get("edition", "pro"))
-    return "Pro" if edition == "pro" else "Free"
+    edition = _normalize_addon_edition(value if value is not None else read_local_addon_edition().get("edition", "free"))
+    if edition == "pro":
+        return "Pro"
+    if edition == "private":
+        return "Private"
+    return "Free"
 
 
 def read_local_addon_edition():
@@ -566,8 +500,8 @@ def read_local_addon_edition():
     if isinstance(cached, dict):
         return dict(cached)
     payload = {
-        "edition": "pro",
-        "label": "Pro",
+        "edition": "free",
+        "label": "Free",
         "signature": "",
         "signature_version": 1,
     }
@@ -575,7 +509,7 @@ def read_local_addon_edition():
         marker_path = os.path.join(os.path.dirname(__file__), "Resources", "planetka_edition.json")
         with open(marker_path, "r", encoding="utf-8") as handle:
             raw = json.load(handle) or {}
-        payload["edition"] = _normalize_addon_edition(raw.get("edition", "pro"))
+        payload["edition"] = _normalize_addon_edition(raw.get("edition", "free"))
         payload["label"] = addon_edition_label(payload["edition"])
         payload["signature"] = str(raw.get("signature", "") or "").strip()
         try:
@@ -583,8 +517,8 @@ def read_local_addon_edition():
         except (TypeError, ValueError):
             payload["signature_version"] = 1
     except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        payload["edition"] = "pro"
-        payload["label"] = "Pro"
+        payload["edition"] = "free"
+        payload["label"] = "Free"
     _ADDON_EDITION_CACHE = dict(payload)
     return dict(payload)
 
@@ -594,7 +528,7 @@ def _store_session_edition(prefs, payload):
         payload.get("install_edition")
         or payload.get("edition")
         or payload.get("access_tier")
-        or read_local_addon_edition().get("edition", "pro")
+        or read_local_addon_edition().get("edition", "free")
     )
     try:
         prefs.cloud_session_edition = edition
@@ -609,11 +543,11 @@ def get_session_edition(prefs=None):
         stored_raw = str(getattr(prefs, "cloud_session_edition", "") or "").strip()
         if stored_raw:
             return _normalize_addon_edition(stored_raw)
-    return _normalize_addon_edition(read_local_addon_edition().get("edition", "pro"))
+    return _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
 
 
 def local_addon_edition_code():
-    return _normalize_addon_edition(read_local_addon_edition().get("edition", "pro"))
+    return _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
 
 
 def session_edition_matches_package(prefs=None):
@@ -650,7 +584,7 @@ def connect_anonymous(prefs=None):
             "device_id": device_id,
             "device_name": _build_device_name(),
             "addon_version": _read_local_addon_version(),
-            "install_edition": edition.get("edition", "pro"),
+            "install_edition": edition.get("edition", "free"),
             "edition_signature": edition.get("signature", ""),
             "edition_signature_version": edition.get("signature_version", 1),
         },
@@ -697,7 +631,7 @@ def refresh_cloud_session(prefs=None):
             {
                 "refresh_token": refresh_token,
                 "device_id": device_id,
-                "install_edition": edition.get("edition", "pro"),
+                "install_edition": edition.get("edition", "free"),
                 "edition_signature": edition.get("signature", ""),
                 "edition_signature_version": edition.get("signature_version", 1),
             },

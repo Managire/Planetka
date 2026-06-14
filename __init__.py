@@ -3,193 +3,82 @@ import logging
 import bpy
 from bpy.props import PointerProperty
 
-# Includes data from GeoNames (allCountries) licenced under CC BY 4.0.
-
+from .auth import local_addon_edition_code
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from . import updater as _planetka_updater
-from .animation_tools import (
-    PLANETKA_OT_AnimationClearCameraKeyframes,
-    PLANETKA_OT_AnimationClearPrepared,
-    PLANETKA_OT_AnimationGenerateCameraKeyframes,
-    PLANETKA_OT_AnimationMakeReady,
-    PLANETKA_OT_AnimationPreviewShot,
-    PLANETKA_OT_AnimationRender,
-    PLANETKA_OT_AnimationSaveView,
-    PLANETKA_OT_AnimationStop,
-    PLANETKA_OT_AnimationWaypointAdd,
-    PLANETKA_OT_AnimationWaypointApply,
-    PLANETKA_OT_AnimationWaypointCaptureCurrent,
-    PLANETKA_OT_AnimationWaypointRemove,
-)
 from .extension_prefs import PlanetkaExtensionPreferences
-from .operators import (
-    PLANETKA_OT_AddEarth,
-    PLANETKA_OT_CheckUpdates,
-    PLANETKA_OT_DeleteSavedLocation,
-    PLANETKA_OT_LoadSavedLocation,
-    PLANETKA_OT_NavigationApplyShot,
-    PLANETKA_OT_OptimizeSettings,
-    PLANETKA_OT_OptimizeSettingsPopup,
-    PLANETKA_OT_ResetEarthTransform,
-    PLANETKA_OT_ResetSurfaceGradingSection,
-    PLANETKA_OT_AutoAdjustClipping,
-    PLANETKA_OT_CreateStandaloneFile,
-    PLANETKA_OT_SetTextureQuality,
-    PLANETKA_OT_UpdateNow,
-    PLANETKA_OT_ResolvePlanetka,
-    PLANETKA_OT_NavigationPreset,
-    PLANETKA_OT_SaveLocation,
-    PLANETKA_OT_SunlightPreset,
-    PLANETKA_OT_UseCurrentViewNavigation,
+from .properties import PlanetkaProperties
+from .public_operators import (
+    PLANETKA_OT_PublicCreateEarth,
+    PLANETKA_OT_PublicResolvePlanetka,
+    PLANETKA_OT_PublicSetTextureQuality,
 )
-from .properties import PlanetkaAnimationWaypoint, PlanetkaProperties
-from .render_street import PLANETKA_OT_RenderStreetUpload
+from .public_ui import PLANETKA_PT_PublicAnimationPanel, PLANETKA_PT_PublicMainPanel
+from .public_validation import PLANETKA_OT_PublicSceneHealthCheck
 from .render_prep import PLANETKA_OT_LoadTextures
-from .state import (
-    _planetka_load_post,
-    _sync_logging_from_scenes,
-    clear_atmosphere_render_engine_msgbus,
-    force_restore_navigation_adaptive_state,
-    mark_render_job_progress,
-    mark_render_job_started,
-    recover_post_render_state,
-    register_atmosphere_render_engine_msgbus,
-    stop_resolve,
-)
-from .ui import (
-    PLANETKA_OT_ToggleUiSection,
-    PLANETKA_PT_AnimationStopPanel,
-    PLANETKA_PT_LiveTelemetryPanel,
-    PLANETKA_PT_LiveTelemetryPanelFailure,
-    PLANETKA_PT_LiveTelemetryPanelCollapsed,
-    PLANETKA_PT_LinksPanel,
-    PLANETKA_PT_LinksPanelCollapsed,
-    PLANETKA_PT_AtmospherePanel,
-    PLANETKA_PT_AtmospherePanelCollapsed,
-    PLANETKA_PT_CloudsPanel,
-    PLANETKA_PT_CloudsPanelCollapsed,
-    PLANETKA_PT_AnimationPanel,
-    PLANETKA_PT_EarthSettingsPanel,
-    PLANETKA_PT_EarthSettingsPanelCollapsed,
-    PLANETKA_PT_NavigationPanel,
-    PLANETKA_PT_NavigationPanelCollapsed,
-    PLANETKA_PT_NewEarthPanel,
-    PLANETKA_PT_NewEarthPanelCollapsed,
-    PLANETKA_PT_NewEarthPanelFailure,
-    PLANETKA_PT_RenderStreetPanel,
-    PLANETKA_PT_SunlightPanel,
-    PLANETKA_PT_SettingsPanel,
-)
-from .validation import PLANETKA_OT_ReportBug, PLANETKA_OT_SceneHealthCheck
+from .state import stop_resolve
+
 
 bl_info = {
-    "name": "Planetka Studio",
+    "name": "Planetka",
     "author": "Tomas Griger",
-    "version": (0, 8, 1),
-    "blender": (3, 6, 0),
-    "location": "View3D > Sidebar > Planetka Studio",
-    "description": "Personal studio build of the Planetka Earth visualisation system",
+    "version": (1, 0, 0),
+    "blender": (4, 5, 0),
+    "location": "View3D > Sidebar > Planetka",
+    "description": "DIY Earth texture streaming for Blender",
     "category": "3D View",
 }
 
+
 logger = logging.getLogger(__name__)
+_PRO_EDITION = local_addon_edition_code() == "pro"
+mark_render_job_progress = None
+mark_render_job_started = None
+recover_post_render_state = None
 
 
-from .clouds_local import (
-    PLANETKA_OT_AddLocalCloud,
-    PLANETKA_OT_DeleteLocalCloud,
-    PLANETKA_OT_ResetLocalCloudToCameraView,
-    register_object_properties as register_cloud_object_properties,
-    unregister_object_properties as unregister_cloud_object_properties,
-)
-from .clouds_vdb import (
-    PLANETKA_OT_AddVDBCloud,
-    PLANETKA_OT_DeleteVDBCloud,
-    PLANETKA_OT_ReplaceVDBCloud,
-    PLANETKA_OT_ResetVDBCloudToCameraView,
-)
-
-_CLOUD_CLASSES = (
-    PLANETKA_OT_AddLocalCloud,
-    PLANETKA_OT_ResetLocalCloudToCameraView,
-    PLANETKA_OT_DeleteLocalCloud,
-    PLANETKA_OT_AddVDBCloud,
-    PLANETKA_OT_ResetVDBCloudToCameraView,
-    PLANETKA_OT_ReplaceVDBCloud,
-    PLANETKA_OT_DeleteVDBCloud,
-)
-
-
-classes = (
+base_classes = (
     PlanetkaExtensionPreferences,
-    PlanetkaAnimationWaypoint,
     PlanetkaProperties,
-    PLANETKA_OT_AnimationPreviewShot,
-    PLANETKA_OT_CheckUpdates,
-    PLANETKA_OT_UpdateNow,
-    PLANETKA_OT_OptimizeSettings,
-    PLANETKA_OT_OptimizeSettingsPopup,
-    PLANETKA_OT_AddEarth,
-    PLANETKA_OT_SaveLocation,
-    PLANETKA_OT_LoadSavedLocation,
-    PLANETKA_OT_DeleteSavedLocation,
-    PLANETKA_OT_NavigationApplyShot,
-    PLANETKA_OT_ResetEarthTransform,
-    PLANETKA_OT_ResetSurfaceGradingSection,
-    PLANETKA_OT_AutoAdjustClipping,
-    PLANETKA_OT_CreateStandaloneFile,
-    PLANETKA_OT_RenderStreetUpload,
-    PLANETKA_OT_SetTextureQuality,
-    PLANETKA_OT_ResolvePlanetka,
-    PLANETKA_OT_UseCurrentViewNavigation,
-    PLANETKA_OT_NavigationPreset,
-    PLANETKA_OT_SunlightPreset,
-    *_CLOUD_CLASSES,
-    PLANETKA_OT_AnimationClearCameraKeyframes,
-    PLANETKA_OT_AnimationGenerateCameraKeyframes,
-    PLANETKA_OT_AnimationSaveView,
-    PLANETKA_OT_AnimationWaypointAdd,
-    PLANETKA_OT_AnimationWaypointRemove,
-    PLANETKA_OT_AnimationWaypointCaptureCurrent,
-    PLANETKA_OT_AnimationWaypointApply,
-    PLANETKA_OT_AnimationRender,
-    PLANETKA_OT_AnimationStop,
-    PLANETKA_OT_AnimationMakeReady,
-    PLANETKA_OT_AnimationClearPrepared,
+    PLANETKA_OT_PublicSetTextureQuality,
+    PLANETKA_OT_PublicCreateEarth,
+    PLANETKA_OT_PublicResolvePlanetka,
     PLANETKA_OT_LoadTextures,
-    PLANETKA_OT_SceneHealthCheck,
-    PLANETKA_OT_ReportBug,
-    PLANETKA_OT_ToggleUiSection,
-    PLANETKA_PT_AnimationStopPanel,
-    PLANETKA_PT_NewEarthPanel,
-    PLANETKA_PT_NewEarthPanelFailure,
-    PLANETKA_PT_NewEarthPanelCollapsed,
-    PLANETKA_PT_NavigationPanelCollapsed,
-    PLANETKA_PT_LiveTelemetryPanelCollapsed,
-    PLANETKA_PT_LiveTelemetryPanelFailure,
-    PLANETKA_PT_LiveTelemetryPanel,
-    PLANETKA_PT_NavigationPanel,
-    PLANETKA_PT_AtmospherePanel,
-    PLANETKA_PT_AtmospherePanelCollapsed,
-    PLANETKA_PT_CloudsPanel,
-    PLANETKA_PT_CloudsPanelCollapsed,
-    PLANETKA_PT_SunlightPanel,
-    PLANETKA_PT_EarthSettingsPanel,
-    PLANETKA_PT_EarthSettingsPanelCollapsed,
-    PLANETKA_PT_AnimationPanel,
-    PLANETKA_PT_RenderStreetPanel,
-    PLANETKA_PT_SettingsPanel,
-    PLANETKA_PT_LinksPanel,
-    PLANETKA_PT_LinksPanelCollapsed,
+    PLANETKA_OT_PublicSceneHealthCheck,
+    PLANETKA_PT_PublicMainPanel,
 )
-_addon_keymaps = []
+
+pro_classes = ()
+if _PRO_EDITION:
+    from .animation_tools import (
+        PLANETKA_OT_AnimationClearPrepared,
+        PLANETKA_OT_AnimationMakeReady,
+        PLANETKA_OT_AnimationPreviewShot,
+        PLANETKA_OT_AnimationRender,
+        PLANETKA_OT_AnimationStop,
+    )
+    from .state import (
+        mark_render_job_progress,
+        mark_render_job_started,
+        recover_post_render_state,
+    )
+
+    pro_classes = (
+        PLANETKA_OT_AnimationPreviewShot,
+        PLANETKA_OT_AnimationMakeReady,
+        PLANETKA_OT_AnimationClearPrepared,
+        PLANETKA_OT_AnimationRender,
+        PLANETKA_OT_AnimationStop,
+        PLANETKA_PT_PublicAnimationPanel,
+    )
+
+classes = base_classes + pro_classes
+
 
 def _safe_register_class(cls):
     try:
         bpy.utils.register_class(cls)
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-        message = str(exc)
-        if "already registered as a subclass" in message:
+        if "already registered as a subclass" in str(exc):
             _safe_unregister_class(cls)
             bpy.utils.register_class(cls)
             return
@@ -198,9 +87,7 @@ def _safe_register_class(cls):
 
 def _is_readonly_state_error(exc):
     message = str(exc or "").strip().lower()
-    if not message:
-        return False
-    return any(
+    return bool(message) and any(
         token in message
         for token in (
             "readonly state",
@@ -218,59 +105,56 @@ def _safe_unregister_class(cls):
         bpy.utils.unregister_class(cls)
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         message = str(exc)
-        if (
-            "missing bl_rna" in message
-            or "not registered" in message
-            or _is_readonly_state_error(exc)
-        ):
-            logger.debug(
-                "Planetka: ignored unregister_class issue for %s during lifecycle cleanup",
-                str(getattr(cls, "__name__", cls)),
-                exc_info=True,
-            )
+        if "missing bl_rna" in message or "not registered" in message or _is_readonly_state_error(exc):
             return
         raise
 
 
-def _remove_load_post_handler():
-    handlers = bpy.app.handlers.load_post
-    for handler in list(handlers):
-        if handler is _planetka_load_post or getattr(handler, "__name__", "") == "_planetka_load_post":
-            handlers.remove(handler)
-
-
-def _remove_depsgraph_post_handler():
-    handlers = bpy.app.handlers.depsgraph_update_post
-    for handler in list(handlers):
-        if getattr(handler, "__name__", "") == "_planetka_depsgraph_update_post":
-            handlers.remove(handler)
-
-
-def _planetka_render_complete(scene):
-    recover_post_render_state(scene, cancelled=False)
-
-
-def _planetka_render_cancel(scene):
-    recover_post_render_state(scene, cancelled=True)
-
-
 def _planetka_render_pre(scene):
-    try:
-        from .clouds_local import sanitize_texture_based_cloud_image_assignments
-        sanitize_texture_based_cloud_image_assignments(scene=scene)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed sanitizing texture-based clouds before render", exc_info=True)
-    mark_render_job_started(scene)
+    if _PRO_EDITION:
+        mark_render_job_started(scene)
 
 
 def _planetka_render_post(scene, *args):
     del args
-    mark_render_job_progress(scene, frame_written=False)
+    if _PRO_EDITION:
+        mark_render_job_progress(scene, frame_written=False)
 
 
 def _planetka_render_write(scene, *args):
     del args
-    mark_render_job_progress(scene, frame_written=True)
+    if _PRO_EDITION:
+        mark_render_job_progress(scene, frame_written=True)
+
+
+def _planetka_render_complete(scene):
+    if _PRO_EDITION:
+        recover_post_render_state(scene, cancelled=False)
+
+
+def _planetka_render_cancel(scene):
+    if _PRO_EDITION:
+        recover_post_render_state(scene, cancelled=True)
+
+
+def _planetka_shutdown_cleanup(*_args):
+    try:
+        stop_resolve()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed stopping resolve during shutdown", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed stopping resolve during shutdown", exc_info=True)
+    try:
+        if _PRO_EDITION:
+            recover_post_render_state(None, cancelled=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed clearing render state during shutdown", exc_info=True)
+
+
+def _remove_handler(handler_list, fn):
+    for handler in list(handler_list):
+        if handler is fn or getattr(handler, "__name__", "") == getattr(fn, "__name__", ""):
+            handler_list.remove(handler)
 
 
 def _remove_render_handlers():
@@ -283,226 +167,69 @@ def _remove_render_handlers():
     render_write_handlers = getattr(bpy.app.handlers, "render_write", None)
     if render_write_handlers is not None:
         handler_lists.append(render_write_handlers)
-
     for handler_list in handler_lists:
-        for handler in list(handler_list):
-            if handler is _planetka_render_pre or getattr(handler, "__name__", "") == "_planetka_render_pre":
-                handler_list.remove(handler)
-                continue
-            if handler is _planetka_render_post or getattr(handler, "__name__", "") == "_planetka_render_post":
-                handler_list.remove(handler)
-                continue
-            if handler is _planetka_render_write or getattr(handler, "__name__", "") == "_planetka_render_write":
-                handler_list.remove(handler)
-                continue
-            if handler is _planetka_render_complete or getattr(handler, "__name__", "") == "_planetka_render_complete":
-                handler_list.remove(handler)
-                continue
-            if handler is _planetka_render_cancel or getattr(handler, "__name__", "") == "_planetka_render_cancel":
-                handler_list.remove(handler)
-
-
-def _planetka_shutdown_cleanup(*_args):
-    try:
-        stop_resolve()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed stopping resolve pipeline during shutdown", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed stopping resolve pipeline during shutdown", exc_info=True)
-    try:
-        recover_post_render_state(None, cancelled=True)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed clearing render state during shutdown", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing render state during shutdown", exc_info=True)
+        for fn in (
+            _planetka_render_pre,
+            _planetka_render_post,
+            _planetka_render_write,
+            _planetka_render_complete,
+            _planetka_render_cancel,
+        ):
+            _remove_handler(handler_list, fn)
 
 
 def _remove_quit_pre_handler():
     handlers = getattr(bpy.app.handlers, "quit_pre", None)
-    if handlers is None:
-        return
-    for handler in list(handlers):
-        if handler is _planetka_shutdown_cleanup or getattr(handler, "__name__", "") == "_planetka_shutdown_cleanup":
-            handlers.remove(handler)
-
-
-def _register_keymaps():
-    try:
-        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed accessing window manager while registering keymaps", exc_info=True)
-        return
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed accessing window manager while registering keymaps", exc_info=True)
-        return
-    keyconfigs = getattr(wm, "keyconfigs", None) if wm else None
-    addon_keyconfig = getattr(keyconfigs, "addon", None) if keyconfigs else None
-    if addon_keyconfig is None:
-        return
-    keymap = addon_keyconfig.keymaps.new(name="3D View", space_type='VIEW_3D')
-    for key_type in ("NUMPAD_0", "ZERO"):
-        keymap_item = keymap.keymap_items.new(
-            "planetka.navigation_use_current_view",
-            type=key_type,
-            value='PRESS',
-            alt=True,
-            oskey=True,
-        )
-        _addon_keymaps.append((keymap, keymap_item))
-
-
-def _unregister_keymaps():
-    for keymap, keymap_item in list(_addon_keymaps):
-        try:
-            keymap.keymap_items.remove(keymap_item)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed removing addon keymap item during unregister", exc_info=True)
-    _addon_keymaps.clear()
-
-
-def _tag_view3d_ui_redraw():
-    context = getattr(bpy, "context", None)
-    wm = getattr(context, "window_manager", None) if context else None
-    if wm is None:
-        return None
-
-    for window in getattr(wm, "windows", ()):
-        screen = getattr(window, "screen", None)
-        if screen is None:
-            continue
-        for area in getattr(screen, "areas", ()):
-            if str(getattr(area, "type", "")) != "VIEW_3D":
-                continue
-            try:
-                area.tag_redraw()
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed tagging VIEW_3D area for redraw during register", exc_info=True)
-                continue
-    return None
-
-
-def _detach_planetka_camera_after_register():
-    try:
-        from .planetka_ops.earth_lifecycle_helpers import detach_planetka_camera_from_root
-        detach_planetka_camera_from_root(scene=getattr(bpy.context, "scene", None))
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed detaching Planetka Camera during register", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
-        logger.debug("Planetka: failed detaching Planetka Camera during register", exc_info=True)
-    return None
+    if handlers is not None:
+        _remove_handler(handlers, _planetka_shutdown_cleanup)
 
 
 def register():
-    try:
-        _planetka_updater.apply_pending_update_on_import()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed applying pending update during register", exc_info=True)
-    register_cloud_object_properties()
     for cls in classes:
         _safe_unregister_class(cls)
         _safe_register_class(cls)
-    if not hasattr(bpy.types.Scene, "planetka"):
-        bpy.types.Scene.planetka = PointerProperty(type=PlanetkaProperties)
+    if not hasattr(bpy.types.Scene, "planetka_public"):
+        bpy.types.Scene.planetka_public = PointerProperty(type=PlanetkaProperties)
     try:
         from .auth import _ensure_cloud_install_id
         _ensure_cloud_install_id()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed initializing anonymous install id during register", exc_info=True)
+        logger.debug("Planetka: failed initializing install id", exc_info=True)
 
-    _sync_logging_from_scenes()
-    register_atmosphere_render_engine_msgbus()
-    _remove_load_post_handler()
-    _remove_depsgraph_post_handler()
-    bpy.app.handlers.load_post.append(_planetka_load_post)
-    _remove_render_handlers()
-    bpy.app.handlers.render_pre.append(_planetka_render_pre)
-    bpy.app.handlers.render_post.append(_planetka_render_post)
-    render_write_handlers = getattr(bpy.app.handlers, "render_write", None)
-    if render_write_handlers is not None:
-        render_write_handlers.append(_planetka_render_write)
-    bpy.app.handlers.render_complete.append(_planetka_render_complete)
-    bpy.app.handlers.render_cancel.append(_planetka_render_cancel)
-    _remove_quit_pre_handler()
-    quit_pre_handlers = getattr(bpy.app.handlers, "quit_pre", None)
-    if quit_pre_handlers is not None:
-        quit_pre_handlers.append(_planetka_shutdown_cleanup)
-    try:
-        bpy.app.timers.register(_detach_planetka_camera_after_register, first_interval=0.1)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed scheduling Planetka Camera detach during register", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed scheduling Planetka Camera detach during register", exc_info=True)
-    _unregister_keymaps()
-    _register_keymaps()
-    try:
-        bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed scheduling initial UI redraw timer during register", exc_info=True)
+    if _PRO_EDITION:
+        _remove_render_handlers()
+        bpy.app.handlers.render_pre.append(_planetka_render_pre)
+        bpy.app.handlers.render_post.append(_planetka_render_post)
+        render_write_handlers = getattr(bpy.app.handlers, "render_write", None)
+        if render_write_handlers is not None:
+            render_write_handlers.append(_planetka_render_write)
+        bpy.app.handlers.render_complete.append(_planetka_render_complete)
+        bpy.app.handlers.render_cancel.append(_planetka_render_cancel)
+        _remove_quit_pre_handler()
+        quit_pre_handlers = getattr(bpy.app.handlers, "quit_pre", None)
+        if quit_pre_handlers is not None:
+            quit_pre_handlers.append(_planetka_shutdown_cleanup)
 
 
 def unregister():
     try:
-        force_restore_navigation_adaptive_state()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed restoring navigation adaptive subdivision during unregister", exc_info=True)
-    try:
-        _unregister_keymaps()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed unregistering keymaps during unregister", exc_info=True)
-    try:
-        _remove_load_post_handler()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing load_post handler during unregister", exc_info=True)
-    try:
-        _remove_depsgraph_post_handler()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing depsgraph_update_post handler during unregister", exc_info=True)
-    try:
-        _remove_render_handlers()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing render handlers during unregister", exc_info=True)
-    try:
-        _remove_quit_pre_handler()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing quit_pre handler during unregister", exc_info=True)
-    try:
-        clear_atmosphere_render_engine_msgbus()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed clearing atmosphere render-engine msgbus during unregister", exc_info=True)
-    try:
         stop_resolve()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed stopping resolve download pipeline during unregister", exc_info=True)
-    if hasattr(bpy.types.Scene, "planetka"):
+        logger.debug("Planetka: failed stopping resolve during unregister", exc_info=True)
+    _remove_render_handlers()
+    _remove_quit_pre_handler()
+    if hasattr(bpy.types.Scene, "planetka_public"):
         try:
-            del bpy.types.Scene.planetka
+            del bpy.types.Scene.planetka_public
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             if not _is_readonly_state_error(exc):
                 raise
-            logger.debug(
-                "Planetka: ignored read-only state while deleting Scene.planetka during unregister",
-                exc_info=True,
-            )
     for cls in reversed(classes):
         try:
             _safe_unregister_class(cls)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             if not _is_readonly_state_error(exc):
                 raise
-            logger.debug(
-                "Planetka: ignored read-only state while unregistering %s during unregister",
-                str(getattr(cls, "__name__", cls)),
-                exc_info=True,
-            )
-    try:
-        unregister_cloud_object_properties()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-        if not _is_readonly_state_error(exc):
-            raise
-        logger.debug(
-            "Planetka: ignored read-only state while unregistering cloud object properties",
-            exc_info=True,
-        )
 
 
 if __name__ == "__main__":

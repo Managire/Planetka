@@ -8,9 +8,7 @@ This module executes the Earth resolve flow:
 5) write diagnostics/telemetry
 """
 
-import importlib
 import json
-import math
 import os
 import time
 import re
@@ -23,26 +21,22 @@ from .auth import (
     ensure_authenticated_session,
     get_authorized_headers,
     is_authenticated,
+    local_addon_edition_code,
 )
-from .asset_builder import (
-    _ensure_surface_elevation_radius_driver,
-    ensure_earth_surface_parent,
-    sync_surface_elevation_scale_for_radius,
-)
+from .asset_builder import ensure_earth_surface_parent
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
-from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
+from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
-    is_remote_source_configured,
     remote_tile_asset_exists,
     retain_recent_resolve_cache,
 )
-from .sanity_utils import _normalize_texture_source_path, validate_known_good_texture_source
 from .streaming_utils import (
     consume_staged_prefetch_payload,
     prepare_resolve_streaming_for_visible_tiles,
 )
+from . import tile_utils
 from .state import (
     _clear_camera_inside_earth_warning,
     _estimate_download_bytes_for_visible_tiles,
@@ -60,12 +54,10 @@ from .state import (
     start_resolve_download,
     remove_object_and_unused_mesh,
     replace_tiles,
-    sync_atmosphere_mode_to_render_engine,
     _store_resolve_summary,
 )
 
 
-_TILE_UTILS_MODULE = None
 FORCE_EMPTY_RESOLVE_ONCE_KEY = "planetka_force_empty_resolve_once"
 LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 LAST_PANORAMA_MODE_KEY = "planetka_last_panorama_mode"
@@ -98,7 +90,6 @@ class ResolvePrepareContextResult:
     scene: object = None
     props: object = None
     prefs: object = None
-    normalized: str = ""
     manual_summary_requested: bool = False
     force_empty_once: bool = False
     earth_surface: object = None
@@ -114,9 +105,6 @@ class ResolveTileSelectionResult:
     tiles: list = field(default_factory=list)
     full_source_tiles: list = field(default_factory=list)
     texture_quality_mode: str = "PREVIEW"
-    nav_latitude_deg: float = 0.0
-    nav_longitude_deg: float = 0.0
-    nav_altitude_km: float = 0.0
     phase_tile_select_ms: float = 0.0
     ui_reports: list = field(default_factory=list)
 
@@ -165,8 +153,8 @@ class ResolveBuildResult:
     response: object = None
     new_obj: object = None
     shader_result: dict = field(default_factory=dict)
-    old_surface_viewport_hidden: bool = False
-    old_surface_render_hidden: bool = False
+    previous_surface_viewport_hidden: bool = False
+    previous_surface_render_hidden: bool = False
     phase_mesh_ms: float = 0.0
     phase_shader_ms: float = 0.0
     target_surface_name: str = "Planetka Earth Surface"
@@ -179,9 +167,6 @@ class ResolveFinalizeResult:
     phase_post_delete_ms: float = 0.0
     phase_post_mark_ms: float = 0.0
     phase_post_preview_ms: float = 0.0
-    phase_cloud_optimize_ms: float = 0.0
-    cloud_optimize_optimized: int = 0
-    cloud_optimize_failed: int = 0
     missing_node_images: int = 0
 
 
@@ -198,55 +183,6 @@ def _normalize_texture_quality_mode(value):
     return "PREVIEW"
 
 
-def _optimize_enabled_clouds_for_resolve(scene, props, texture_quality_mode="PREVIEW"):
-    """Update cloud LODs as part of the resolve path, not as a separate UI action."""
-    if scene is None or props is None:
-        return 0, 0, 0.0
-    local_enabled = bool(getattr(props, "enable_local_clouds", False))
-    vdb_enabled = bool(getattr(props, "enable_vdb_clouds", False))
-    if not local_enabled and not vdb_enabled:
-        return 0, 0, 0.0
-
-    phase_start = time.perf_counter()
-    optimized = 0
-    failed = 0
-    try:
-        from . import clouds_local as cloud_runtime
-        if local_enabled:
-            local_optimized, local_failed = cloud_runtime.optimize_texture_based_clouds_for_camera(
-                scene=scene,
-                quality_mode=texture_quality_mode,
-            )
-            optimized += int(local_optimized or 0)
-            failed += int(local_failed or 0)
-        if vdb_enabled:
-            vdb_optimized, vdb_failed = cloud_runtime.optimize_vdb_clouds_for_camera(
-                scene=scene,
-                quality_mode=texture_quality_mode,
-            )
-            optimized += int(vdb_optimized or 0)
-            failed += int(vdb_failed or 0)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed optimizing clouds after resolve", exc_info=True)
-        failed += 1
-    except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed optimizing clouds after resolve", exc_info=True)
-        failed += 1
-
-    return int(optimized), int(failed), (time.perf_counter() - phase_start) * 1000.0
-
-
-def _get_tile_utils():
-    global _TILE_UTILS_MODULE
-    if _TILE_UTILS_MODULE is None:
-        module_name = f"{__package__}.tile_utils" if __package__ else "tile_utils"
-        try:
-            _TILE_UTILS_MODULE = importlib.import_module(module_name)
-        except ImportError:
-            _TILE_UTILS_MODULE = False
-    return _TILE_UTILS_MODULE or None
-
-
 def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
     """Transform full-quality source tiles to the selected Quality Level.
 
@@ -256,16 +192,7 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
     never load lower quality than requested; only shader tile-budget merging may
     force coarser files.
     """
-    tile_utils = _get_tile_utils()
-    if tile_utils is None:
-        return [str(tile).strip() for tile in (tiles or ()) if str(tile or "").strip()]
-
-    sort_tiles = getattr(tile_utils, "_sort_tiles_for_apply", None)
-    parse_tile = getattr(tile_utils, "parse_tile", None)
-    format_tile = getattr(tile_utils, "format_tile", None)
     d_levels_by_z = getattr(tile_utils, "D_LEVELS_BY_Z", {})
-    if not callable(sort_tiles) or not callable(parse_tile) or not callable(format_tile):
-        return [str(tile).strip() for tile in (tiles or ()) if str(tile or "").strip()]
 
     mode = _normalize_texture_quality_mode(texture_quality_mode)
     factor = 1
@@ -273,15 +200,41 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
         factor = 2
     elif mode == "PREVIEW":
         factor = 4
+    def _cap_for_public_edition(tile_list):
+        try:
+            edition = local_addon_edition_code()
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            edition = "pro"
+        if edition != "free":
+            return list(tile_utils._sort_tiles_for_apply(tile_list or ()))
+        capped = []
+        for raw_tile in tile_list or ():
+            tile_text = str(raw_tile or "").strip()
+            parsed = tile_utils.parse_tile(tile_text)
+            if not parsed:
+                if tile_text:
+                    capped.append(tile_text)
+                continue
+            x, y, z, d = parsed
+            d_value = int(d)
+            if d_value not in {1, 2}:
+                capped.append(tile_text)
+                continue
+            allowed = sorted({int(value) for value in d_levels_by_z.get(int(z), [int(z)])})
+            coarser_or_equal = [int(candidate) for candidate in allowed if int(candidate) not in {1, 2}]
+            replacement = int(min(coarser_or_equal)) if coarser_or_equal else int(max(allowed or [4]))
+            capped.append(tile_utils.format_tile(int(x), int(y), int(z), int(replacement)))
+        return list(tile_utils._sort_tiles_for_apply(capped))
+
     if factor == 1:
-        return list(sort_tiles(tiles or ()))
+        return _cap_for_public_edition(tiles or ())
 
     adjusted = []
     for tile in (tiles or ()):
         tile_text = str(tile or "").strip()
         if not tile_text:
             continue
-        parsed = parse_tile(tile_text)
+        parsed = tile_utils.parse_tile(tile_text)
         if not parsed:
             adjusted.append(tile_text)
             continue
@@ -294,25 +247,8 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
             replacement = int(max(sharper_or_equal))
         else:
             replacement = int(min(allowed)) if allowed else int(target_d)
-        adjusted.append(format_tile(int(x), int(y), int(z), int(replacement)))
-    return list(sort_tiles(adjusted))
-
-
-def _validate_texture_source(base_path):
-    normalized = _normalize_texture_source_path(base_path)
-    if not is_remote_source_configured(normalized):
-        details = validate_known_good_texture_source(normalized)
-        normalized = str(details.get("normalized_path", "") or normalized)
-        issues = list(details.get("issues", ()) or ())
-        for level, _code, message in issues:
-            if str(level).upper() == "ERROR":
-                return "", str(message or "Unsupported local texture source is invalid.")
-        return normalized, ""
-
-    # Remote resolves validate access while fetching the exact requested assets.
-    # A sentinel HEAD request here blocks every resolve and can refresh
-    # auth on the UI/operator path before the background worker even starts.
-    return normalized, ""
+        adjusted.append(tile_utils.format_tile(int(x), int(y), int(z), int(replacement)))
+    return _cap_for_public_edition(adjusted)
 
 
 def _tile_d_value(tile):
@@ -393,41 +329,12 @@ def _show_popup_lines(context, title, icon, lines):
         logger.debug("Planetka: failed showing popup warning", exc_info=True)
 
 
-def _wrap_popup_text_lines(text, width=86):
-    raw = str(text or "").strip()
-    if not raw:
-        return ()
-    tokens = raw.split()
-    if not tokens:
-        return ()
-    lines = []
-    current = []
-    current_len = 0
-    for token in tokens:
-        token_len = len(token)
-        sep = 1 if current else 0
-        if current and (current_len + sep + token_len) > int(max(20, int(width))):
-            lines.append(" ".join(current))
-            current = [token]
-            current_len = token_len
-        else:
-            if current:
-                current_len += 1 + token_len
-                current.append(token)
-            else:
-                current = [token]
-                current_len = token_len
-    if current:
-        lines.append(" ".join(current))
-    return tuple(lines)
-
-
 def _set_resolve_failure_notice(scene, message):
     if scene is None:
         return
     safe_message = (
         str(message or "").strip()
-        or "Resolve failed. Please click Resolve Planetka Studio"
+        or "Resolve failed. Please click Resolve Planetka"
     )
     try:
         scene[RESOLVE_FAILURE_FLAG_KEY] = True
@@ -560,32 +467,6 @@ def _set_object_hidden_state(obj, viewport_hidden=None, render_hidden=None):
         logger.debug("Planetka: failed setting object render hidden state", exc_info=True)
 
 
-def _earth_radius_blender_units(earth_obj):
-    if earth_obj is None:
-        return 2.0
-    try:
-        stored_local_radius = float(earth_obj.get("planetka_surface_local_radius", 0.0))
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        stored_local_radius = 0.0
-    try:
-        world_scale = earth_obj.matrix_world.to_scale()
-        max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        max_scale = 1.0
-    if stored_local_radius > 1e-9:
-        return float(stored_local_radius) * float(max_scale)
-    mesh_data = getattr(earth_obj, "data", None)
-    vertices = getattr(mesh_data, "vertices", None)
-    if vertices:
-        try:
-            local_radius = max(float(v.co.length) for v in vertices)
-            if local_radius > 1e-9:
-                return float(local_radius) * float(max_scale)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            pass
-    return max(float(max_scale), 1.0)
-
-
 def _validate_resolve_scene_integrity(earth_surface):
     if earth_surface is None:
         return "Resolve requires an existing Earth surface object."
@@ -693,15 +574,15 @@ def _prefetch_missing_details_indicate_access_failure(details):
 
 
 class PLANETKA_OT_LoadTextures(bpy.types.Operator):
-    """Main deterministic data resolver used by Studio, Create Earth, and animation.
+    """Main deterministic data resolver used by Resolve Planetka, Create Earth, and animation.
 
     Blender data-block edits must happen on the main thread, while downloads can
     run in the resolve runtime. Keep this operator as the single place that
     converts camera state + Quality Level into surface tiles and cloud assets.
     """
 
-    bl_idname = "planetka.load_textures"
-    bl_label = "Resolve Planetka Studio Data"
+    bl_idname = "planetka_public.load_textures"
+    bl_label = "Resolve Earth"
     bl_description = "Resolve visible Earth tiles and rebuild the Planetka surface mesh/material assignment"
 
     scope_mode: EnumProperty(
@@ -711,12 +592,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             ("CAMERA", "Camera", ""),
         ),
         default="AUTO",
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
-
-    skip_render_compatibility: BoolProperty(
-        name="Skip Render Compatibility",
-        default=False,
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
@@ -826,45 +701,24 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ui_reports=ui_reports,
             )
 
-        normalized = _normalize_texture_source_path(getattr(prefs, "texture_base_path", ""))
-        normalized, issue = _validate_texture_source(normalized)
-        if issue:
+        try:
+            if not is_authenticated(prefs):
+                ensure_authenticated_session(prefs)
+            # Download workers cannot read Blender preferences off-thread.
+            # Prime the authorized-header snapshot on the main thread before
+            # any parallel tile/cloud fetch starts.
+            get_authorized_headers(prefs=prefs, allow_refresh=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
             return ResolvePrepareContextResult(
                 response=fail(
                     self,
-                    issue,
-                    code=ErrorCode.RESOLVE_PATH_INVALID,
+                    "Planetka session could not be started. Check your connection and try again.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
+                    exc=exc,
                 ),
                 ui_reports=ui_reports,
             )
-        if is_remote_source_configured(normalized):
-            try:
-                if not is_authenticated(prefs):
-                    ensure_authenticated_session(prefs)
-                # Download workers cannot read Blender preferences off-thread.
-                # Prime the authorized-header snapshot on the main thread before
-                # any parallel tile/cloud fetch starts.
-                get_authorized_headers(prefs=prefs, allow_refresh=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-                return ResolvePrepareContextResult(
-                    response=fail(
-                        self,
-                        "Planetka session could not be started. Check your connection and try again.",
-                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                        logger=logger,
-                        exc=exc,
-                    ),
-                    ui_reports=ui_reports,
-                )
-        prefs.texture_base_path = normalized
-
-        try:
-            sync_atmosphere_mode_to_render_engine(scene)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed syncing atmosphere mode during resolve", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed syncing atmosphere mode during resolve", exc_info=True)
 
         try:
             force_empty_once = bool(scene.get(FORCE_EMPTY_RESOLVE_ONCE_KEY, False))
@@ -919,62 +773,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
         target_surface_name = str(getattr(earth_surface, "name", "") or "Planetka Earth Surface")
 
-        # Apply requested Earth Radius on resolve as a safe fallback in case the UI
-        # setter was invoked in a context where direct mesh update could not run.
-        try:
-            desired_radius = float(getattr(props, "earth_radius_bu", 2.0))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            desired_radius = 2.0
-        if not math.isfinite(desired_radius):
-            desired_radius = 2.0
-        desired_radius = max(1e-6, float(desired_radius))
-        try:
-            current_radius = float(_earth_radius_blender_units(earth_surface))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            current_radius = desired_radius
-        if math.isfinite(current_radius) and abs(current_radius - desired_radius) > 1e-6:
-            try:
-                operators_module = importlib.import_module(f"{__package__}.operators" if __package__ else "operators")
-                set_radius_fn = getattr(operators_module, "_set_planetka_earth_radius_bu", None)
-                if callable(set_radius_fn):
-                    set_radius_fn(scene, desired_radius)
-            except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed applying deferred Earth Radius during resolve", exc_info=True)
-        try:
-            earth_radius_bu = _earth_radius_blender_units(earth_surface)
-            driver_bound = _ensure_surface_elevation_radius_driver(scene)
-            if driver_bound:
-                logger.debug(
-                    "Planetka: bound elevation-radius displacement driver during resolve migration.",
-                )
-            scale_value, scale_changed = sync_surface_elevation_scale_for_radius(earth_radius_bu)
-            if scale_changed:
-                logger.debug(
-                    "Planetka: synchronized elevation displacement scale for Earth radius %.6f (scale=%.9f).",
-                    float(earth_radius_bu),
-                    float(scale_value),
-                )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed syncing elevation displacement scale from Earth radius", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed syncing elevation displacement scale from Earth radius", exc_info=True)
-
-        tile_utils = _get_tile_utils()
-        if tile_utils is None:
-            return ResolvePrepareContextResult(
-                response=fail(
-                    self,
-                    "Resolve failed because tile utilities are unavailable.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                ),
-                ui_reports=ui_reports,
-            )
-
         scope_mode = str(getattr(self, "scope_mode", "AUTO") or "AUTO")
         altitude_info = _resolve_scope_altitude_info(scene, scope_mode=scope_mode)
         if bool(altitude_info.get("inside_earth", False)):
-            _set_camera_inside_earth_warning(scene, altitude_info.get("altitude_km"))
+            _set_camera_inside_earth_warning(scene)
             return ResolvePrepareContextResult(response={'CANCELLED'}, ui_reports=ui_reports)
         _clear_camera_inside_earth_warning(scene)
 
@@ -983,7 +785,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             scene=scene,
             props=props,
             prefs=prefs,
-            normalized=normalized,
             manual_summary_requested=bool(manual_summary_requested),
             force_empty_once=bool(force_empty_once),
             earth_surface=earth_surface,
@@ -1006,18 +807,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 )
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
-        try:
-            nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            nav_latitude_deg = 0.0
-        try:
-            nav_longitude_deg = float(getattr(props, "nav_longitude_deg", 0.0))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            nav_longitude_deg = 0.0
-        try:
-            nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0)))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            nav_altitude_km = 0.0
 
         phase_start = time.perf_counter()
         if tiles_override is not None:
@@ -1047,7 +836,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     scene=scene,
                     camera_altitude_bu=None,
                     nearest_visible_distance_bu=None,
-                    earth_radius_bu=None,
                 )
                 logger.debug("Planetka tile resolve runtime failure: %s", exc, exc_info=True)
                 tiles = []
@@ -1059,9 +847,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             tiles=list(tiles or ()),
             full_source_tiles=list(full_source_tiles or ()),
             texture_quality_mode=texture_quality_mode,
-            nav_latitude_deg=nav_latitude_deg,
-            nav_longitude_deg=nav_longitude_deg,
-            nav_altitude_km=nav_altitude_km,
             phase_tile_select_ms=(time.perf_counter() - phase_start) * 1000.0,
             ui_reports=ui_reports,
         )
@@ -1074,7 +859,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         tiles,
         full_source_tiles,
         texture_quality_mode,
-        normalized,
     ):
         ui_reports = []
         try:
@@ -1149,11 +933,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         self,
         scene,
         tiles,
-        normalized,
         texture_quality_mode,
-        nav_latitude_deg,
-        nav_longitude_deg,
-        nav_altitude_km,
         capture_download_progress=True,
         feature="",
         ):
@@ -1162,11 +942,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         try:
             stream_payload = self._get_stream_payload(
                 tiles=tiles,
-                normalized=normalized,
                 texture_quality_mode=texture_quality_mode,
-                nav_latitude_deg=nav_latitude_deg,
-                nav_longitude_deg=nav_longitude_deg,
-                nav_altitude_km=nav_altitude_km,
                 feature=feature,
                 capture_download_progress=bool(capture_download_progress),
             )
@@ -1213,39 +989,26 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         self,
         *,
         tiles,
-        normalized,
         texture_quality_mode,
-        nav_latitude_deg,
-        nav_longitude_deg,
-        nav_altitude_km,
         capture_download_progress=True,
         feature="",
         ):
         stream_payload = consume_staged_prefetch_payload(
             tiles,
-            normalized,
             texture_quality_mode=texture_quality_mode,
         )
         if not isinstance(stream_payload, dict):
             return prepare_resolve_streaming_for_visible_tiles(
                 tiles,
-                normalized,
                 texture_quality_mode=texture_quality_mode,
                 capture=bool(capture_download_progress),
-                nav_latitude_deg=nav_latitude_deg,
-                nav_longitude_deg=nav_longitude_deg,
-                nav_altitude_km=nav_altitude_km,
                 feature=feature,
             )
         if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
             return prepare_resolve_streaming_for_visible_tiles(
                 tiles,
-                normalized,
                 capture=bool(capture_download_progress),
                 texture_quality_mode=texture_quality_mode,
-                nav_latitude_deg=nav_latitude_deg,
-                nav_longitude_deg=nav_longitude_deg,
-                nav_altitude_km=nav_altitude_km,
                 feature=feature,
             )
         return stream_payload
@@ -1411,14 +1174,14 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         ui_reports = []
         ensure_planetka_temp_collection()
         new_obj = None
-        old_surface_viewport_hidden = bool(getattr(earth_surface, "hide_viewport", False))
-        old_surface_render_hidden = bool(getattr(earth_surface, "hide_render", False))
+        previous_surface_viewport_hidden = bool(getattr(earth_surface, "hide_viewport", False))
+        previous_surface_render_hidden = bool(getattr(earth_surface, "hide_render", False))
         try:
             phase_start = time.perf_counter()
             new_obj = create_temp_mesh(
                 tiles,
                 name="Planetka Earth Surface (New)",
-                collection_policy="inherit_old",
+                collection_policy="preserve_surface",
             )
             if not new_obj:
                 raise RuntimeError("Failed to create new Earth surface mesh")
@@ -1468,8 +1231,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             response=None,
             new_obj=new_obj,
             shader_result=dict(shader_result or {}),
-            old_surface_viewport_hidden=bool(old_surface_viewport_hidden),
-            old_surface_render_hidden=bool(old_surface_render_hidden),
+            previous_surface_viewport_hidden=bool(previous_surface_viewport_hidden),
+            previous_surface_render_hidden=bool(previous_surface_render_hidden),
             phase_mesh_ms=float(phase_mesh_ms or 0.0),
             phase_shader_ms=float(phase_shader_ms or 0.0),
             target_surface_name=str(target_surface_name or "Planetka Earth Surface"),
@@ -1482,8 +1245,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         props,
         new_obj,
         target_surface_name,
-        old_surface_viewport_hidden,
-        old_surface_render_hidden,
+        previous_surface_viewport_hidden,
+        previous_surface_render_hidden,
         resolved_paths,
         force_empty_once,
         tiles,
@@ -1499,20 +1262,20 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
-        # Reveal the new surface first, then remove old surfaces to avoid blank-frame flashes.
+        # Reveal the new surface first, then remove replaced surfaces to avoid blank-frame flashes.
         _set_object_hidden_state(
             new_obj,
-            viewport_hidden=old_surface_viewport_hidden,
-            render_hidden=old_surface_render_hidden,
+            viewport_hidden=previous_surface_viewport_hidden,
+            render_hidden=previous_surface_render_hidden,
         )
         phase_post_mark_ms = (time.perf_counter() - phase_start) * 1000.0
 
         phase_start = time.perf_counter()
         delete_temp_meshes(keep_obj=new_obj)
         phase_post_delete_ms = (time.perf_counter() - phase_start) * 1000.0
-        # Final naming pass after old surfaces are deleted.
+        # Final naming pass after replaced surfaces are deleted.
         # This removes Blender suffixes such as ".001" that can appear when the
-        # first rename happens before temporary/old surfaces are removed.
+        # first rename happens before temporary/replaced surfaces are removed.
         try:
             new_obj.name = "Planetka Earth Surface"
         except (AttributeError, RuntimeError, TypeError, ValueError):
@@ -1550,22 +1313,11 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
             phase_post_preview_ms = (time.perf_counter() - phase_start) * 1000.0
 
-        cloud_optimized, cloud_failed, phase_cloud_optimize_ms = _optimize_enabled_clouds_for_resolve(
-            scene,
-            props,
-            texture_quality_mode=texture_quality_mode,
-        )
-        if int(cloud_failed) > 0:
-            ui_reports.append(self._ui_report("WARNING", "One or more clouds could not be optimized for this camera view."))
-
         return ResolveFinalizeResult(
-            phase_post_ms=phase_post_delete_ms + phase_post_mark_ms + phase_post_preview_ms + phase_cloud_optimize_ms,
+            phase_post_ms=phase_post_delete_ms + phase_post_mark_ms + phase_post_preview_ms,
             phase_post_delete_ms=phase_post_delete_ms,
             phase_post_mark_ms=phase_post_mark_ms,
             phase_post_preview_ms=phase_post_preview_ms,
-            phase_cloud_optimize_ms=phase_cloud_optimize_ms,
-            cloud_optimize_optimized=int(cloud_optimized),
-            cloud_optimize_failed=int(cloud_failed),
             missing_node_images=_count_missing_tile_loading_images(material_name="Planetka Earth Material"),
         )
 
@@ -1573,7 +1325,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         self,
         scene,
         tiles,
-        normalized,
         texture_quality_mode,
         resolve_total_ms,
         downloaded_bytes,
@@ -1585,7 +1336,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     int(
                         _estimate_download_bytes_for_visible_tiles(
                             tiles,
-                            normalized,
                             texture_quality_mode=texture_quality_mode,
                         )
                         or 0
@@ -1624,7 +1374,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         scene = prepare_ctx.scene
         props = prepare_ctx.props
         prefs = prepare_ctx.prefs
-        normalized = str(prepare_ctx.normalized or "")
         manual_summary_requested = bool(prepare_ctx.manual_summary_requested)
         force_empty_once = bool(prepare_ctx.force_empty_once)
         earth_surface = prepare_ctx.earth_surface
@@ -1639,9 +1388,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         tiles = list(select_ctx.tiles or ())
         full_source_tiles = list(select_ctx.full_source_tiles or ())
         texture_quality_mode = str(select_ctx.texture_quality_mode or "PREVIEW")
-        nav_latitude_deg = float(select_ctx.nav_latitude_deg or 0.0)
-        nav_longitude_deg = float(select_ctx.nav_longitude_deg or 0.0)
-        nav_altitude_km = float(select_ctx.nav_altitude_km or 0.0)
         phase_tile_select_ms = float(select_ctx.phase_tile_select_ms or 0.0)
 
 
@@ -1652,7 +1398,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             tiles,
             full_source_tiles,
             texture_quality_mode,
-            normalized,
         )
         self._flush_ui_reports(getattr(early_result, "ui_reports", ()))
         if getattr(early_result, "response", None) is not None:
@@ -1665,11 +1410,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         stream_ctx = self._phase_prepare_streaming(
             scene,
             tiles,
-            normalized,
             texture_quality_mode,
-            nav_latitude_deg,
-            nav_longitude_deg,
-            nav_altitude_km,
             capture_download_progress=bool(getattr(self, "capture_download_progress", True)),
             feature=streaming_feature,
         )
@@ -1697,8 +1438,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return build_ctx.response
         new_obj = build_ctx.new_obj
         shader_result = dict(build_ctx.shader_result or {})
-        old_surface_viewport_hidden = bool(build_ctx.old_surface_viewport_hidden)
-        old_surface_render_hidden = bool(build_ctx.old_surface_render_hidden)
+        previous_surface_viewport_hidden = bool(build_ctx.previous_surface_viewport_hidden)
+        previous_surface_render_hidden = bool(build_ctx.previous_surface_render_hidden)
         phase_mesh_ms = float(build_ctx.phase_mesh_ms or 0.0)
         phase_shader_ms = float(build_ctx.phase_shader_ms or 0.0)
         target_surface_name = str(build_ctx.target_surface_name or target_surface_name)
@@ -1708,8 +1449,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             props=props,
             new_obj=new_obj,
             target_surface_name=target_surface_name,
-            old_surface_viewport_hidden=old_surface_viewport_hidden,
-            old_surface_render_hidden=old_surface_render_hidden,
+            previous_surface_viewport_hidden=previous_surface_viewport_hidden,
+            previous_surface_render_hidden=previous_surface_render_hidden,
             resolved_paths=resolved_paths,
             force_empty_once=force_empty_once,
             tiles=tiles,
@@ -1720,7 +1461,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_post_delete_ms = float(finalize_ctx.phase_post_delete_ms or 0.0)
         phase_post_mark_ms = float(finalize_ctx.phase_post_mark_ms or 0.0)
         phase_post_preview_ms = float(finalize_ctx.phase_post_preview_ms or 0.0)
-        phase_cloud_optimize_ms = float(finalize_ctx.phase_cloud_optimize_ms or 0.0)
         missing_node_images = int(finalize_ctx.missing_node_images or 0)
 
         if not (force_empty_once and len(tiles) == 0):
@@ -1762,16 +1502,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 downloaded_thread_ms = float(download_capture.get("download_thread_ms", 0.0) or 0.0)
             except (TypeError, ValueError):
                 downloaded_thread_ms = 0.0
-        if isinstance(shader_result, dict):
-            # Backward-compatible fallback if shader path provides explicit download stats.
-            try:
-                downloaded_bytes = max(downloaded_bytes, int(shader_result.get("r2_download_bytes", 0) or 0))
-            except (TypeError, ValueError):
-                pass
-            try:
-                downloaded_ms = max(downloaded_ms, float(shader_result.get("r2_download_ms", 0.0) or 0.0))
-            except (TypeError, ValueError):
-                pass
         downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
         try:
             required_mpp = scene.get(LAST_REQUIRED_MPP_KEY)
@@ -1794,9 +1524,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "post_delete_ms": phase_post_delete_ms,
                 "post_mark_ms": phase_post_mark_ms,
                 "post_preview_ms": phase_post_preview_ms,
-                "cloud_optimize_ms": phase_cloud_optimize_ms,
-                "cloud_optimize_optimized": int(finalize_ctx.cloud_optimize_optimized or 0),
-                "cloud_optimize_failed": int(finalize_ctx.cloud_optimize_failed or 0),
                 "unaccounted_ms": phase_unaccounted_ms,
                 "required_mpp_m": required_mpp,
                 "resolution_safety": resolution_safety,
@@ -1811,7 +1538,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             self._store_manual_resolve_summary(
                 scene=scene,
                 tiles=tiles,
-                normalized=normalized,
                 texture_quality_mode=texture_quality_mode,
                 resolve_total_ms=resolve_total_ms,
                 downloaded_bytes=downloaded_bytes,
@@ -1861,7 +1587,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "failed storing integrity resolve error on scene",
             )
             _set_resolve_failure_notice(scene, integrity_message)
-            user_message = "Resolve failed. Please click Resolve Planetka Studio"
+            user_message = "Resolve failed. Please click Resolve Planetka"
             self._flush_ui_reports(ui_reports)
             return fail(
                 self,
@@ -1889,36 +1615,4 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         mark_resolve_clean_after_resolve(scene)
 
         self._flush_ui_reports(ui_reports)
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_CleanupUnusedData(bpy.types.Operator):
-    bl_idname = "planetka.cleanup_unused_data"
-    bl_label = "Cleanup Unused Planetka Studio Data"
-    bl_description = "Remove stale Planetka Studio objects and unused meshes, images, materials, and node groups"
-
-    def execute(self, context):
-        try:
-            counts = cleanup_planetka_unused_data()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Cleanup failed: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka cleanup failed",
-            )
-
-        self.report(
-            {'INFO'},
-            (
-                "Cleanup complete: "
-                f"{counts.get('objects', 0)} objects, "
-                f"{counts.get('meshes', 0)} meshes, "
-                f"{counts.get('images', 0)} images, "
-                f"{counts.get('materials', 0)} materials, "
-                f"{counts.get('node_groups', 0)} node groups removed."
-            ),
-        )
         return {'FINISHED'}

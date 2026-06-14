@@ -16,10 +16,12 @@ import {
   defaultSignupAccessStatus,
   isBlockedStatus,
   isQualityModeAllowedForAccess,
+  isTileSessionFeatureAllowedForEdition,
   normalizeAccessStatus,
   normalizeQualityMode,
   normalizeRequestedAccessTier,
   normalizeRequestedAccessStatus,
+  normalizeTileSessionFeature,
   parseCsvEmailSet,
   qualityModeNotAllowedMessage,
   resolveAccessStatus,
@@ -85,10 +87,6 @@ import {
   handleAdminInstallHardBlock as handleAdminInstallHardBlockRoute,
   handleAdminInstallUnblock as handleAdminInstallUnblockRoute,
 } from "./worker/admin_user_handlers.js";
-import {
-  handleAdminBillingPrices as handleAdminBillingPricesRoute,
-  readAdminBillingSettings,
-} from "./worker/billing_handlers.js";
 import {
   runScheduledMaintenanceJobs,
 } from "./worker/maintenance_jobs.js";
@@ -435,21 +433,33 @@ function timingSafeHexEquals(left, right) {
 }
 
 async function resolveVerifiedInstallEdition(body = {}, env = {}) {
-  const requested = normalizeRequestedAccessTier(body.install_edition || body.edition || body.access_tier || defaultSignupAccessTier(env));
-  if (requested !== "pro") {
+  const requestedRaw = String(body.install_edition || body.edition || body.access_tier || defaultSignupAccessTier(env)).trim().toLowerCase();
+  if (requestedRaw === "studio" || requestedRaw === "planetka_studio") {
+    return "pro";
+  }
+  const requested = normalizeRequestedAccessTier(requestedRaw);
+  if (requested === "free") {
     return "free";
   }
   const secret = String(env.PLANETKA_EDITION_SIGNING_SECRET || "").trim();
   if (!secret) {
-    return "pro";
+    return "free";
   }
   const signature = String(body.edition_signature || body.package_signature || "").trim().toLowerCase();
-  if (!signature) {
-    return "pro";
+  if (!/^[a-f0-9]{64}$/.test(signature)) {
+    return "free";
   }
   const version = String(body.edition_signature_version || body.signature_version || "1").trim() || "1";
-  const expected = await hmacSha256Hex(secret, `planetka-edition:v${version}:pro`);
-  return timingSafeHexEquals(signature, expected) ? "pro" : "free";
+  const exactSignature = String(
+    requested === "private"
+      ? env.PLANETKA_PRIVATE_SIGNATURE_V1 || ""
+      : env.PLANETKA_PRO_SIGNATURE_V1 || "",
+  ).trim().toLowerCase();
+  if (version === "1" && exactSignature && timingSafeHexEquals(signature, exactSignature)) {
+    return requested;
+  }
+  const expected = await hmacSha256Hex(secret, `planetka-edition:v${version}:${requested}`);
+  return timingSafeHexEquals(signature, expected) ? requested : "free";
 }
 
 async function maybePruneRateLimits(db, nowSeconds) {
@@ -777,7 +787,7 @@ async function ensureRefreshSessionColumns(db) {
         revoked_at TEXT,
         created_at TEXT NOT NULL,
         auth_method TEXT,
-        install_edition TEXT NOT NULL DEFAULT 'pro',
+        install_edition TEXT NOT NULL DEFAULT 'free',
         edition_signature TEXT,
         device_id TEXT,
         addon_version TEXT
@@ -789,7 +799,7 @@ async function ensureRefreshSessionColumns(db) {
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
   for (const statement of [
     !names.has("auth_method") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN auth_method TEXT` : "",
-    !names.has("install_edition") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN install_edition TEXT NOT NULL DEFAULT 'pro'` : "",
+    !names.has("install_edition") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN install_edition TEXT NOT NULL DEFAULT 'free'` : "",
     !names.has("edition_signature") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN edition_signature TEXT` : "",
     !names.has("device_id") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN device_id TEXT` : "",
     !names.has("client_ip_scope") ? `ALTER TABLE cloud_session_refresh_tokens ADD COLUMN client_ip_scope TEXT` : "",
@@ -1186,7 +1196,9 @@ const authCoreDeps = {
   signJwt,
   verifyJwt,
   normalizeQualityMode,
+  normalizeTileSessionFeature,
   isQualityModeAllowedForAccess,
+  isTileSessionFeatureAllowedForEdition,
   qualityModeNotAllowedMessage,
   json,
   authContextCacheGet,
@@ -1281,7 +1293,7 @@ async function handleAddonReleaseDownload(request, env, path) {
     return json({ ok: false, error: "release_storage_unavailable" }, 503, env);
   }
   const fileName = decodeURIComponent(String(path || "").replace(/^\/addon\/releases\//, "")).trim();
-  if (!/^Planetka_update_\d+\.\d+\.\d+\.zip$/.test(fileName)) {
+  if (!/^(?:Planetka_update_\d+\.\d+\.\d+|Planetka_\d+\.\d+\.\d+_(?:free|private|pro|public))\.zip$/.test(fileName)) {
     return notFound(env);
   }
   const key = `releases/${fileName}`;
@@ -1646,7 +1658,6 @@ const ADMIN_ANALYTICS_DEPS = {
   dbRun,
   requireDb,
   BYTES_PER_GB: 1024 * 1024 * 1024,
-  readAdminBillingSettings,
 };
 
 const WORKER_OVERLOAD_MONITOR_DEPS = {
@@ -1785,7 +1796,6 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminInstallHardBlock: (request, env) => handleAdminInstallHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminInstallUnblock: (request, env) => handleAdminInstallUnblockRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminBillingPrices: (request, env) => handleAdminBillingPricesRoute(request, env, ADMIN_ANALYTICS_DEPS),
 };
 
 function analyticsWorkerHealth(env) {

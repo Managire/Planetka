@@ -40,6 +40,148 @@ function firstNonEmpty(...values) {
   return "";
 }
 
+function normalizeQuotaEdition(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "pro") return "pro";
+  if (normalized === "private") return "private";
+  return "free";
+}
+
+function quotaFractionForEdition(edition) {
+  const normalized = normalizeQuotaEdition(edition);
+  if (normalized === "pro") return 0.15;
+  if (normalized === "private") return 0.05;
+  return 0.025;
+}
+
+function startOfUtcDayUnix(unixSeconds) {
+  const date = new Date(Math.max(0, Number(unixSeconds || 0)) * 1000);
+  return Math.floor(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) / 1000);
+}
+
+function startOfUtcYearUnix(unixSeconds) {
+  const date = new Date(Math.max(0, Number(unixSeconds || 0)) * 1000);
+  return Math.floor(Date.UTC(date.getUTCFullYear(), 0, 1) / 1000);
+}
+
+function isoDateFromUnix(unixSeconds) {
+  return new Date(Math.max(0, Number(unixSeconds || 0)) * 1000).toISOString().slice(0, 10);
+}
+
+async function ensureUsageLimitAlertsTable(db, deps) {
+  await deps.dbRun(
+    db,
+    `CREATE TABLE IF NOT EXISTS usage_limit_alerts (
+      key TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      install_id TEXT NOT NULL,
+      install_email TEXT,
+      install_edition TEXT NOT NULL,
+      alert_kind TEXT NOT NULL,
+      period_start_unix INTEGER NOT NULL,
+      used_bytes INTEGER NOT NULL,
+      limit_bytes INTEGER NOT NULL,
+      blocked INTEGER NOT NULL DEFAULT 0
+    )`,
+  );
+}
+
+async function sendUsageLimitAlert(env, payload = {}) {
+  const webhookUrl = String(env.PLANETKA_USAGE_ALERT_WEBHOOK_URL || "").trim();
+  if (!webhookUrl) return false;
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({
+        type: "planetka_usage_limit",
+        ...payload,
+      }),
+    });
+    return response.ok;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function maybeRecordUsageLimitAlert(env, deps, options = {}) {
+  const db = options.db;
+  if (!db) return;
+  const fullDatabaseBytes = deps.clampNonNegativeInt(env.PLANETKA_FULL_DATABASE_BYTES || 0);
+  if (fullDatabaseBytes <= 0) return;
+  const installId = String(options.installId || "").trim();
+  if (!installId) return;
+  const edition = normalizeQuotaEdition(options.installEdition);
+  const limitBytes = Math.floor(fullDatabaseBytes * quotaFractionForEdition(edition));
+  if (limitBytes <= 0) return;
+
+  const createdAtUnix = deps.clampNonNegativeInt(options.createdAtUnix || Math.floor(Date.now() / 1000));
+  const dayStart = startOfUtcDayUnix(createdAtUnix);
+  const yearStart = startOfUtcYearUnix(createdAtUnix);
+  const dailyRow = await deps.dbGet(
+    db,
+    `SELECT COALESCE(SUM(bytes_served), 0) AS used_bytes
+     FROM tile_request_rollup_daily_install
+     WHERE user_id = ? AND day_start_unix = ?`,
+    [installId, dayStart],
+  );
+  const yearlyRow = await deps.dbGet(
+    db,
+    `SELECT COALESCE(SUM(bytes_served), 0) AS used_bytes
+     FROM tile_request_rollup_daily_install
+     WHERE user_id = ? AND day_start_unix >= ?`,
+    [installId, yearStart],
+  );
+  const dailyBytes = deps.clampNonNegativeInt(dailyRow && dailyRow.used_bytes || 0);
+  const yearlyBytes = deps.clampNonNegativeInt(yearlyRow && yearlyRow.used_bytes || 0);
+  const installEmail = String(options.installEmail || "").trim();
+
+  async function alert(kind, periodStartUnix, usedBytes, blocked) {
+    const key = `${kind}:${installId}:${periodStartUnix}:${edition}`;
+    await ensureUsageLimitAlertsTable(db, deps);
+    const result = await deps.dbRun(
+      db,
+      `INSERT OR IGNORE INTO usage_limit_alerts (
+        key, created_at, install_id, install_email, install_edition, alert_kind,
+        period_start_unix, used_bytes, limit_bytes, blocked
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        key,
+        deps.nowIso(),
+        installId,
+        installEmail,
+        edition,
+        kind,
+        periodStartUnix,
+        deps.clampNonNegativeInt(usedBytes),
+        deps.clampNonNegativeInt(limitBytes),
+        blocked ? 1 : 0,
+      ],
+    );
+    const changes = Number(result && result.meta && result.meta.changes || 0);
+    if (changes <= 0) return;
+    await sendUsageLimitAlert(env, {
+      alert_kind: kind,
+      install_id: installId,
+      install_email: installEmail,
+      install_edition: edition,
+      period_start: isoDateFromUnix(periodStartUnix),
+      used_bytes: deps.clampNonNegativeInt(usedBytes),
+      limit_bytes: deps.clampNonNegativeInt(limitBytes),
+      blocked: Boolean(blocked),
+    });
+  }
+
+  if (dailyBytes >= limitBytes) {
+    await deps.dbRun(db, `UPDATE cloud_installs SET status = 'blocked' WHERE id = ?`, [installId]);
+    await alert("daily_limit_reached", dayStart, dailyBytes, true);
+    return;
+  }
+  if (yearlyBytes >= limitBytes) {
+    await alert("annual_limit_reached", yearStart, yearlyBytes, false);
+  }
+}
+
 function isPublicCloudAssetFolder(folder) {
   const normalized = String(folder || "").trim().toLowerCase();
   return normalized === "clouds_global"
@@ -84,12 +226,15 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
+  const requestedFeature = String(
+    body && body.feature ? body.feature : request.headers.get("X-Planetka-Feature") || "",
+  ).trim();
   const issued = await issueTileSessionToken(
     env,
     auth,
     requestedQualityMode,
     requestedResolveId,
-    {},
+    { feature: requestedFeature },
   );
   if (issued && issued.error) {
     return issued.error;
@@ -99,6 +244,7 @@ export async function handleTileSessionStart(request, env, deps) {
       ok: true,
       resolve_id: issued.resolveId,
       quality_mode: issued.qualityMode,
+      feature: issued.feature || "",
       tile_token: issued.token,
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
@@ -170,6 +316,13 @@ export async function handleResolveSummary(request, env, deps) {
     cf_region: cfRegion,
     path: "/tiles/resolve-summary",
   });
+  await maybeRecordUsageLimitAlert(env, deps, {
+    db: requireDb(env),
+    installId: String(auth && ((auth.install && auth.install.id)) || ""),
+    installEmail: String(auth && ((auth.install && auth.install.email)) || ""),
+    installEdition: String(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || ""),
+    createdAtUnix: Math.floor(Date.now() / 1000),
+  });
   return jsonResponse({ ok: true, stored: Boolean(result && result.stored) }, 200, env);
 }
 
@@ -178,7 +331,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     clampNonNegativeInt,
     normalizeQualityMode,
     readTileSessionClaims,
-    requireCloudSessionContext,
     resolveTileCacheControl,
   } = deps;
 
@@ -203,24 +355,37 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   const publicCloudAsset = isPublicCloudAssetFolder(folder);
 
   let tokenQualityMode = "";
+  let tokenInstallEdition = "";
   const tileSessionAuth = await readTileSessionClaims(request, env);
   if (tileSessionAuth && tileSessionAuth.error) {
     return tileSessionAuth.error;
   }
   if (tileSessionAuth && tileSessionAuth.claims) {
     tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
-  } else if (!publicCloudAsset) {
-    if (request.method !== "HEAD") {
-      return json({ ok: false, error: "missing_tile_session_token" }, 401, env);
+    tokenInstallEdition = String(tileSessionAuth.claims.installEdition || "").trim().toLowerCase();
+  } else if (publicCloudAsset) {
+    if (typeof deps.requireCloudSessionContext !== "function") {
+      return json({ ok: false, error: "missing_cloud_session_context" }, 500, env);
     }
-    const auth = await requireCloudSessionContext(
+    const cloudAuth = await deps.requireCloudSessionContext(
       request,
       env,
       { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },
     );
-    if (auth.error) {
-      return auth.error;
+    if (cloudAuth && cloudAuth.error) {
+      return cloudAuth.error;
     }
+    tokenInstallEdition = String(
+      cloudAuth && (
+        cloudAuth.installEdition
+        || (cloudAuth.access && (cloudAuth.access.install_edition || cloudAuth.access.access_tier))
+      ) || "",
+    ).trim().toLowerCase();
+    if (tokenInstallEdition !== "pro") {
+      return json({ ok: false, error: "cloud_asset_not_available_for_edition" }, 403, env);
+    }
+  } else {
+    return json({ ok: false, error: "missing_tile_session_token" }, 401, env);
   }
 
   try {
@@ -229,6 +394,13 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();
     const requestedQualityMode = normalizeQualityMode(qualityModeRaw);
     const effectiveQualityMode = requestedQualityMode || tokenQualityMode;
+    void effectiveQualityMode;
+    if (
+      typeof deps.isTileFileAllowedForEdition === "function"
+      && !deps.isTileFileAllowedForEdition(tokenInstallEdition, fileName)
+    ) {
+      return json({ ok: false, error: "tile_not_available_for_edition" }, 403, env);
+    }
     if (request.method === "HEAD") {
       const objectHead = await env.PLANETKA_DATA.head(key);
       if (!objectHead) {

@@ -53,8 +53,9 @@ const AUTH_REFRESH_CRITICAL_ERROR_CODES = new Set([
 
 function normalizeAnalyticsEdition(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return "pro";
-  return normalized === "pro" ? "pro" : "free";
+  if (normalized === "pro") return "pro";
+  if (normalized === "private") return "private";
+  return "free";
 }
 
 function latestInstallEditionCte() {
@@ -64,7 +65,8 @@ function latestInstallEditionCte() {
           user_id,
           CASE
             WHEN LOWER(COALESCE(install_edition, '')) = 'pro' THEN 'pro'
-            ELSE 'pro'
+            WHEN LOWER(COALESCE(install_edition, '')) = 'private' THEN 'private'
+            ELSE 'free'
           END AS install_edition
         FROM (
           SELECT
@@ -102,7 +104,7 @@ function latestInstallVersionCte() {
 }
 
 function splitMetricFromRows(rows, valueKey) {
-  const split = { free: 0, pro: 0, total: 0 };
+  const split = { free: 0, private: 0, pro: 0, total: 0 };
   for (const row of (Array.isArray(rows) ? rows : [])) {
     const edition = normalizeAnalyticsEdition(row && row.install_edition);
     const value = Number(row && row[valueKey] || 0);
@@ -114,7 +116,7 @@ function splitMetricFromRows(rows, valueKey) {
 }
 
 function splitActiveCounts() {
-  return { free: 0, pro: 0, total: 0 };
+  return { free: 0, private: 0, pro: 0, total: 0 };
 }
 
 function addSplitCount(target, edition, amount = 1) {
@@ -1285,21 +1287,25 @@ export async function collectAnalyticsSnapshot(
     top_line: {
       installs: {
         free: deps.clampNonNegativeInt(topLineInstalls.free),
+        private: deps.clampNonNegativeInt(topLineInstalls.private),
         pro: deps.clampNonNegativeInt(topLineInstalls.pro),
         total: deps.clampNonNegativeInt(topLineInstalls.total),
       },
       resolves: {
         free: deps.clampNonNegativeInt(topLineResolves.free),
+        private: deps.clampNonNegativeInt(topLineResolves.private),
         pro: deps.clampNonNegativeInt(topLineResolves.pro),
         total: deps.clampNonNegativeInt(topLineResolves.total),
       },
       tile_requests: {
         free: deps.clampNonNegativeInt(topLineTileRequests.free),
+        private: deps.clampNonNegativeInt(topLineTileRequests.private),
         pro: deps.clampNonNegativeInt(topLineTileRequests.pro),
         total: deps.clampNonNegativeInt(topLineTileRequests.total),
       },
       gb_served: {
         free: deps.clampNonNegativeInt(topLineBytesServed.free),
+        private: deps.clampNonNegativeInt(topLineBytesServed.private),
         pro: deps.clampNonNegativeInt(topLineBytesServed.pro),
         total: deps.clampNonNegativeInt(topLineBytesServed.total),
       },
@@ -1329,31 +1335,37 @@ export async function collectAnalyticsSnapshot(
       windows: {
         "6m": {
           free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.free),
+          private: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.private),
           pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_6m && activeWindows.installs_6m.total),
         },
         "3m": {
           free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.free),
+          private: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.private),
           pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_3m && activeWindows.installs_3m.total),
         },
         "1m": {
           free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.free),
+          private: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.private),
           pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1m && activeWindows.installs_1m.total),
         },
         "1w": {
           free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.free),
+          private: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.private),
           pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1w && activeWindows.installs_1w.total),
         },
         "1d": {
           free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.free),
+          private: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.private),
           pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1d && activeWindows.installs_1d.total),
         },
         "1h": {
           free: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.free),
+          private: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.private),
           pro: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.pro),
           total: deps.clampNonNegativeInt(activeWindows && activeWindows.installs_1h && activeWindows.installs_1h.total),
         },

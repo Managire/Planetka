@@ -1,16 +1,7 @@
 .DS_Store
 __pycache__/
 *.py[cod]
-dist/
-logs/
-.wrangler/
 .build/
-generated/local_cloud_adaptive/
-
-# SQLite runtime sidecar files
-*.sqlite-shm
-*.sqlite-wal
-*.sqlite3-shm
-*.sqlite3-wal
-Resources/tile_sizes.sqlite.land_stats_build
-Resources/tile_sizes.sqlite.land_stats_build-*
+.pytest_cache/
+test-results/
+*.log

@@ -3,7 +3,23 @@ export function createAuthSessionRouteHandlers(deps) {
     if (typeof deps.normalizeRequestedAccessTier === "function") {
       return deps.normalizeRequestedAccessTier(value);
     }
-    return String(value || "").trim().toLowerCase() === "pro" ? "pro" : "free";
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "pro") return "pro";
+    if (normalized === "private") return "private";
+    return "free";
+  };
+
+  const verifiedStoredEdition = async (sessionRow, env) => {
+    if (typeof deps.resolveVerifiedInstallEdition !== "function") {
+      return normalizeEdition(sessionRow && sessionRow.install_edition || "free");
+    }
+    return normalizeEdition(await deps.resolveVerifiedInstallEdition(
+      {
+        install_edition: sessionRow && sessionRow.install_edition || "free",
+        edition_signature: sessionRow && sessionRow.edition_signature || "",
+      },
+      env,
+    ));
   };
 
   const strictStoredTier = (value) => {
@@ -150,8 +166,16 @@ export function createAuthSessionRouteHandlers(deps) {
       return errorResponse("refresh_token_expired", 400, session);
     }
     const sessionAuthMethod = String(session.auth_method || "").trim().toLowerCase();
-    const installEdition = normalizeEdition(requestInstallEdition || session.install_edition || "pro");
-    const editionSignature = requestEditionSignature || String(session.edition_signature || "").trim().slice(0, 256);
+    const installEdition = hasRequestEdition
+      ? normalizeEdition(requestInstallEdition || "free")
+      : await verifiedStoredEdition(session, env);
+    const editionSignature = installEdition === "free"
+      ? ""
+      : (
+        hasRequestEdition
+          ? requestEditionSignature
+          : String(session.edition_signature || "").trim().slice(0, 256)
+      );
     const sessionDeviceId = deps.normalizeDeviceId(session.device_id || "");
     if (sessionAuthMethod === "anonymous" && sessionDeviceId && (!requestDeviceId || sessionDeviceId !== requestDeviceId)) {
       return errorResponse("device_id_mismatch", 401, session, {
@@ -332,7 +356,7 @@ export function createAuthSessionRouteHandlers(deps) {
       return auth.error;
     }
     const { install } = auth;
-    const installEdition = normalizeEdition(auth && auth.access && (auth.access.install_edition || auth.access.access_tier) || auth.installEdition || "pro");
+    const installEdition = normalizeEdition(auth && auth.access && (auth.access.install_edition || auth.access.access_tier) || auth.installEdition || "free");
     const installEditionLabel = typeof deps.accessTierDisplayName === "function"
       ? deps.accessTierDisplayName(installEdition)
       : (installEdition === "pro" ? "Pro" : "Free");

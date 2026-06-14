@@ -13,10 +13,8 @@ class ErrorCode:
     RESOLVE_PRECHECK_FAILED = "PKA-RES-003"
     RESOLVE_REFRESH_FAILED = "PKA-RES-006"
 
-    NAV_PRECHECK_FAILED = "PKA-NAV-001"
-    NAV_APPLY_FAILED = "PKA-NAV-002"
-
-    PAYMENT_CHECKOUT_FAILED = "PKA-PAY-001"
+    PRECHECK_FAILED = "PKA-PRE-001"
+    APPLY_FAILED = "PKA-APP-001"
 
     RENDER_FAILED = "PKA-REN-001"
 
@@ -50,7 +48,7 @@ def require_planetka_props(operator, context, logger=None):
     scene = require_scene(operator, context, logger=logger)
     if scene is None:
         return None
-    props = getattr(scene, "planetka", None)
+    props = getattr(scene, "planetka_public", None)
     if props is None:
         fail(
             operator,

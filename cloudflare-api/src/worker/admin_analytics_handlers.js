@@ -27,7 +27,7 @@ function snapshotHasTopLineTotals(snapshot) {
   const topLine = snapshot && snapshot.top_line && typeof snapshot.top_line === "object" ? snapshot.top_line : {};
   return ["installs", "resolves", "tile_requests", "gb_served"].every((key) => {
     const section = topLine[key] && typeof topLine[key] === "object" ? topLine[key] : {};
-    return ["free", "pro", "total"].every((field) => Object.prototype.hasOwnProperty.call(section, field));
+      return ["free", "private", "pro", "total"].every((field) => Object.prototype.hasOwnProperty.call(section, field));
   });
 }
 
@@ -201,12 +201,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
       }),
     );
   }
-  let billingSettings = null;
-  try {
-    billingSettings = typeof deps.readAdminBillingSettings === "function" ? await deps.readAdminBillingSettings(auth.db) : null;
-  } catch (error) {
-    console.error("planetka.admin.analytics.billing_settings_failed", String(error && error.message || "billing_settings_failed"));
-  }
   const snapshotTopLine = initialSnapshot && initialSnapshot.top_line ? initialSnapshot.top_line : {};
   const snapshotSummary = initialSnapshot && initialSnapshot.summary ? initialSnapshot.summary : {};
   const snapshotLiveMap = initialSnapshot && initialSnapshot.live_tile_map ? initialSnapshot.live_tile_map : {};
@@ -266,7 +260,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
-    billingSettings,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");
@@ -329,7 +322,8 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
     const addonVersion = String(row && row.addon_version || "").trim();
     const installedAt = fmtAdminDateTime(row && row.installed_at);
     const status = String(row && row.install_status || "").trim().toLowerCase();
-    const edition = String(row && row.install_edition || "").trim().toLowerCase() === "pro" ? "Pro" : "Free";
+    const normalizedEdition = String(row && row.install_edition || "").trim().toLowerCase();
+    const edition = normalizedEdition === "pro" ? "Pro" : (normalizedEdition === "private" ? "Private" : "Free");
     const installState = status === "blocked" ? "blocked" : "active";
     const installStateLabel = installState === "blocked" ? "Blocked" : "Active";
     let actionButtons = "";

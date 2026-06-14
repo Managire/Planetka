@@ -14,7 +14,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
-    billingSettings,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -22,18 +21,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topLineResolves = safeTopLine.resolves && typeof safeTopLine.resolves === "object" ? safeTopLine.resolves : {};
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
-  const safeBillingSettings = billingSettings && typeof billingSettings === "object" ? billingSettings : {};
-  const billingFullCents = Number(safeBillingSettings.full_resolve_price_cents || 1000);
-  const billingAnimationCents = Number(safeBillingSettings.animation_price_per_300_cents || 2900);
-  const billingCurrency = String(safeBillingSettings.currency || "EUR").toUpperCase();
-
   const renderEditionValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
     const total = Number(safeValues.total || fallbackTotal || 0);
     const free = Number(safeValues.free || 0);
+    const privateValue = Number(safeValues.private || 0);
     const pro = Number(safeValues.pro || 0);
     return `<div class="metric-split">
       <span class="metric-item metric-free"><span class="metric-number">${escapeHtml(String(valueFormatter(free)))}</span></span>
+      <span class="metric-item metric-private"><span class="metric-number">${escapeHtml(String(valueFormatter(privateValue)))}</span></span>
       <span class="metric-item metric-pro"><span class="metric-number">${escapeHtml(String(valueFormatter(pro)))}</span></span>
       <span class="metric-item metric-total"><span class="metric-number">${escapeHtml(String(valueFormatter(total)))}</span></span>
     </div>`;
@@ -64,6 +60,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .metric-item { display:inline-flex; gap:4px; align-items:baseline; white-space:nowrap; }
     .metric-number { font-size:20px; font-weight:700; }
     .metric-free { color:#86efac; }
+    .metric-private { color:#fde047; }
     .metric-pro { color:#fca5a5; }
     .metric-total { color:#ffffff; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
@@ -73,9 +70,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; }
     select, button, input { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
     input[type=number] { width: 110px; }
-    .billing-form { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:10px; }
-    .billing-field { display:flex; flex-direction:column; gap:4px; }
-    .billing-field label { color:#93c5fd; font-size:12px; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
@@ -114,17 +108,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <a id="refresh" href="/admin/analytics?refresh=${encodeURIComponent(buildStamp)}" style="display:inline-block;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:7px 10px;text-decoration:none;">Refresh now</a>
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
-	  <div class="section card">
-    <h3 style="margin:0 0 4px;">Billing Prices</h3>
-    <div class="muted">Used by Blender UI and Planetka checkout for Free edition Full data access.</div>
-    <form id="billingPriceForm" class="billing-form">
-      <div class="billing-field"><label>Full Resolve</label><input id="billingFullPrice" type="number" min="0" step="0.01" value="${escapeHtml((billingFullCents / 100).toFixed(2))}" /></div>
-      <div class="billing-field"><label>Animation / 300 frames</label><input id="billingAnimationPrice" type="number" min="0" step="0.01" value="${escapeHtml((billingAnimationCents / 100).toFixed(2))}" /></div>
-      <div class="billing-field"><label>Currency</label><input id="billingCurrency" maxlength="3" value="${escapeHtml(billingCurrency)}" /></div>
-      <button type="submit">Save Prices</button>
-      <span id="billingPriceStatus" class="muted"></span>
-    </form>
-  </div>
   <div class="grid">
     <div class="card"><div class="label">Installs</div><div id="topInstallsSplit" class="value">${topInstallsHtml}</div></div>
     <div class="card"><div class="label">Resolves</div><div id="topResolvesSplit" class="value">${topResolvesHtml}</div></div>
@@ -214,10 +197,12 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const safeValues = values && typeof values === "object" ? values : {};
       const total = Number(safeValues.total || fallbackTotal || 0);
       const free = Number(safeValues.free || 0);
+      const privateValue = Number(safeValues.private || 0);
       const pro = Number(safeValues.pro || 0);
       const formatter = asGb ? fmtWholeGb : fmtInt;
       target.innerHTML = '<div class="metric-split">' +
         '<span class="metric-item metric-free"><span class="metric-number">' + escapeHtml(formatter(free)) + '</span></span>' +
+        '<span class="metric-item metric-private"><span class="metric-number">' + escapeHtml(formatter(privateValue)) + '</span></span>' +
         '<span class="metric-item metric-pro"><span class="metric-number">' + escapeHtml(formatter(pro)) + '</span></span>' +
         '<span class="metric-item metric-total"><span class="metric-number">' + escapeHtml(formatter(total)) + '</span></span>' +
         '</div>';
@@ -473,37 +458,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         rowClass: tileMapSelectedInstallKey && tileMapSelectedInstallKey === row.installKey ? "install-filter-active" : "",
       }));
     }
-    async function saveBillingPrices(event) {
-      if (event && typeof event.preventDefault === "function") event.preventDefault();
-      const status = document.getElementById("billingPriceStatus");
-      const fullEl = document.getElementById("billingFullPrice");
-      const animationEl = document.getElementById("billingAnimationPrice");
-      const currencyEl = document.getElementById("billingCurrency");
-      const cents = (value) => Math.max(0, Math.round(Number(value || 0) * 100));
-      try {
-        if (status) status.textContent = "Saving...";
-        const res = await fetch("/admin/billing/prices", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            full_resolve_price_cents: cents(fullEl && fullEl.value),
-            animation_price_per_300_cents: cents(animationEl && animationEl.value),
-            currency: String(currencyEl && currencyEl.value || "EUR").toUpperCase(),
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(String(data && (data.message || data.error) || "save_failed"));
-        if (status) status.textContent = "Saved";
-      } catch (error) {
-        if (status) {
-          status.textContent = "Error: " + String(error && error.message || error);
-          status.className = "error";
-        }
-      }
-    }
-    const billingForm = document.getElementById("billingPriceForm");
-    if (billingForm) billingForm.addEventListener("submit", saveBillingPrices);
     async function loadAnalytics() {
       try {
         const minutes = String((windowEl && windowEl.value) || "60");

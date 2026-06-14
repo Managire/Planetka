@@ -1,4 +1,4 @@
-# Planetka 0.8.1 public addon package allowlist.
+# Planetka 1.0.0 public addon package allowlist.
 # One repo-relative file path per line. Wildcards are intentionally not allowed.
 
 # Metadata
@@ -6,56 +6,38 @@ blender_manifest.toml
 LICENSE
 CHANGELOG.md
 
-# Runtime modules
+# Public runtime modules
 __init__.py
-animation_tools.py
 asset_builder.py
 auth.py
-clouds_global.py
-clouds_local.py
-clouds_vdb.py
-compatibility_utils.py
 coverage.py
 diagnostics.py
 error_utils.py
 extension_prefs.py
-geonames_db.py
 mesh_utils.py
 operator_utils.py
-operators.py
 properties.py
+public_operators.py
+public_shader.py
+public_ui.py
+public_validation.py
 r2_source.py
-render_street.py
 render_prep.py
-sanity_utils.py
 shader_utils.py
 state.py
 streaming_utils.py
 tile_utils.py
-updater.py
-ui.py
-validation.py
 
-# Runtime subpackages
+# Runtime subpackages used by Resolve/state
 planetka_ops/__init__.py
 planetka_ops/earth_lifecycle_helpers.py
-planetka_ops/earth_lifecycle_ops.py
-planetka_ops/import_export_ops.py
-planetka_ops/location_ops.py
-planetka_ops/navigation_helpers.py
-planetka_ops/navigation_ops.py
-planetka_ops/scene_setup_ops.py
-planetka_ops/startup_profile_ops.py
 planetka_runtime/__init__.py
-planetka_runtime/asset_cleanup.py
-planetka_runtime/resolve_context.py
-planetka_runtime/resolve.py
-planetka_runtime/resolve_state.py
 planetka_runtime/handler_runtime.py
 planetka_runtime/handler_runtime_context.py
 planetka_runtime/mesh_lifecycle.py
-planetka_runtime/navigation_runtime.py
-planetka_runtime/navigation_runtime_context.py
+planetka_runtime/resolve.py
+planetka_runtime/resolve_context.py
+planetka_runtime/resolve_state.py
 planetka_runtime/scene_sync.py
 planetka_runtime/view_telemetry.py
 planetka_runtime/view_telemetry_context.py
@@ -66,15 +48,11 @@ Documentation/Licencing/Compliance/Copernicus Sentinel-2 Attribution.txt
 Documentation/Licencing/Compliance/DLR World Settlement Footprint 2015 Attribution (CC BY 4.0).txt
 Documentation/Licencing/Compliance/Detailed Source Records.txt
 Documentation/Licencing/Compliance/Earth Surface Data Sources.txt
-Documentation/Licencing/Compliance/GeoNames Attribution (CC BY 4.0).txt
 Documentation/Licencing/Compliance/JAXA AW3D30 Attribution and Terms.txt
 Documentation/Licencing/PRIVACY_POLICY.md
-Documentation/Licencing/PRIVACY_POLICY.pdf
-Documentation/Licencing/README.md
 Documentation/Licencing/TERMS_OF_SERVICE.md
-Documentation/Licencing/TERMS_OF_SERVICE.pdf
-Documentation/Licencing/Using Planetka Free and Pro.txt
 Documentation/Release/FAIR_USAGE_POLICY.md
+Documentation/Release/PLANETKA_1_0.md
 Documentation/Release/SYSTEM_REQUIREMENTS.md
 
 # Bundled resources
@@ -83,29 +61,10 @@ Resources/Fallback Images/blue_pixel_20.exr
 Resources/Fallback Images/el_south_cap_pixel_20.exr
 Resources/Fallback Images/ocean_pixel_final_20.exr
 Resources/Fallback Images/white_pixel_20.exr
-Resources/GeoNames/allCountries.idx.sqlite3
-Resources/GeoNames/planetka_places_extra.json
 Resources/Preview Textures/EL_x000_y000_z360_d000.exr
 Resources/Preview Textures/PO_x000_y000_z360_d000.tif
 Resources/Preview Textures/S2_x000_y000_z360_d000.exr
 Resources/Preview Textures/WT_x000_y000_z360_d000.exr
-Resources/Startup Textures/EL/EL_x000_y000_z180_d720.exr
-Resources/Startup Textures/EL/EL_x180_y000_z180_d720.exr
-Resources/Startup Textures/PO/PO_x000_y000_z180_d720.tif
-Resources/Startup Textures/PO/PO_x180_y000_z180_d720.tif
-Resources/Startup Textures/S2/S2_x000_y000_z180_d720.exr
-Resources/Startup Textures/S2/S2_x180_y000_z180_d720.exr
-Resources/Startup Textures/WT/WT_x000_y000_z180_d720.exr
-Resources/Startup Textures/WT/WT_x180_y000_z180_d720.exr
-Resources/Clouds Global/Clouds_16K.exr
 Resources/planetka_edition.json
 Resources/planetka_surface_material_library.blend
 Resources/planetka_base_sphere_mesh_cache.blend
-Resources/planetka_global_cloud_layer_min.blend
-Resources/planetka_local_cloud_material.blend
-Resources/planetka_vdb_cloud_template_simple.blend
-Resources/planetka_vdb_cloud_template_real.blend
-Resources/planetka_fake_atmosphere.blend
-Resources/planetka_volumetric_atmosphere.blend
-
-billing.py

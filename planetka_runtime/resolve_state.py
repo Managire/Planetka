@@ -29,11 +29,7 @@ class ResolveDownloadJob:
     camera_signature: object = None
     output_signature: object = None
     manual_request: bool = False
-    base_path: str = ""
     texture_quality_mode: str = "PREVIEW"
-    nav_latitude_deg: float = 0.0
-    nav_longitude_deg: float = 0.0
-    nav_altitude_km: float = 0.0
     cancel_event: object = field(default_factory=threading.Event)
     created_at: float = field(default_factory=time.monotonic)
     scene_missing_since: float = 0.0
@@ -68,11 +64,7 @@ def _build_resolve_download_job(
     camera_signature,
     output_signature,
     manual_request,
-    base_path,
     texture_quality_mode,
-    nav_latitude_deg,
-    nav_longitude_deg,
-    nav_altitude_km,
     ctx=None,
 ):
     ctx = _coerce_ctx(ctx)
@@ -84,11 +76,7 @@ def _build_resolve_download_job(
         camera_signature=camera_signature,
         output_signature=output_signature,
         manual_request=bool(manual_request),
-        base_path=str(base_path or ""),
         texture_quality_mode=ctx.deps.normalize_texture_quality_mode(texture_quality_mode),
-        nav_latitude_deg=float(nav_latitude_deg or 0.0),
-        nav_longitude_deg=float(nav_longitude_deg or 0.0),
-        nav_altitude_km=float(nav_altitude_km or 0.0),
     )
 
 
@@ -175,12 +163,10 @@ def get_resolve_runtime_status(scene=None, ctx=None):
         preparing = False
         try:
             r2_source = deps.get_r2_source()
-            get_progress = getattr(r2_source, "get_download_progress", None) if r2_source is not None else None
-            if callable(get_progress):
-                progress = get_progress() or {}
-                active_requests = int(progress.get("active_requests", 0) or 0)
-                downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
-                preparing = bool(active_requests <= 0 and downloaded_bytes <= 0)
+            progress = r2_source.get_download_progress() or {}
+            active_requests = int(progress.get("active_requests", 0) or 0)
+            downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
+            preparing = bool(active_requests <= 0 and downloaded_bytes <= 0)
         except deps.recoverable_exceptions:
             preparing = False
         except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -197,9 +183,7 @@ def get_resolve_runtime_status(scene=None, ctx=None):
         if can_orphan:
             render_running = False
             try:
-                is_render_job_active = getattr(deps, "is_render_job_active", None)
-                if callable(is_render_job_active):
-                    render_running = bool(is_render_job_active())
+                render_running = bool(deps.is_render_job_active())
             except deps.recoverable_exceptions:
                 render_running = False
             except (RuntimeError, TypeError, ValueError, AttributeError):

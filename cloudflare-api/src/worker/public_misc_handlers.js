@@ -14,10 +14,10 @@ function resolveLegalDocumentConfig(path, env) {
       contentType: "application/pdf",
     };
   }
-  if (normalized === "/legal/using-planetka-free-and-pro.txt") {
+  if (normalized === "/legal/planetka-editions.txt") {
     return {
-      key: String(env.LEGAL_USAGE_KEY || "legal/using-planetka-free-and-pro.txt").trim() || "legal/using-planetka-free-and-pro.txt",
-      fileName: "Planetka-Free-and-Pro.txt",
+      key: String(env.LEGAL_EDITIONS_KEY || "legal/planetka-editions.txt").trim() || "legal/planetka-editions.txt",
+      fileName: "Planetka-Editions.txt",
       contentType: "text/plain; charset=utf-8",
     };
   }

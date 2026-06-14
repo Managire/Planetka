@@ -1,5 +1,8 @@
 import { corsHeaders, json } from "./worker/responses.js";
 import {
+  isTileSessionFeatureAllowedForEdition,
+  isTileFileAllowedForEdition,
+  normalizeTileSessionFeature,
   normalizeQualityMode,
 } from "./worker/entitlements.js";
 import {
@@ -52,8 +55,10 @@ function normalizeDeviceId(value) {
 
 function normalizeInstallEdition(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return "pro";
-  return normalized === "pro" ? "pro" : "free";
+  if (normalized === "pro") return "pro";
+  if (normalized === "studio" || normalized === "planetka_studio") return "pro";
+  if (normalized === "private") return "private";
+  return "free";
 }
 
 function requestClientIp(request) {
@@ -254,6 +259,11 @@ function normalizeResolveId(value) {
 
 async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
   const qualityMode = normalizeQualityMode(requestedQualityMode);
+  const feature = normalizeTileSessionFeature(options && options.feature || "");
+  const installEdition = normalizeInstallEdition(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "");
+  if (!isTileSessionFeatureAllowedForEdition(installEdition, feature)) {
+    return { error: json({ ok: false, error: "feature_not_available_for_edition" }, 403, env) };
+  }
   const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const resolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
@@ -262,9 +272,10 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     sub: String(auth && auth.install && auth.install.id || "").trim(),
     email: String(auth && auth.install && auth.install.email || "").trim(),
     quality_mode: qualityMode,
+    feature,
     resolve_id: resolveId,
     auth_method: String(auth && auth.authMethod || "").trim(),
-    install_edition: normalizeInstallEdition(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || ""),
+    install_edition: installEdition,
     device_id: String(auth && auth.deviceId || "").trim(),
     client_ip_scope: String(auth && auth.access && (auth.access.client_ip_scope || auth.access.clientIpScope) || "").trim(),
     scene_id: String(options && options.sceneId || "").trim(),
@@ -275,6 +286,7 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     token,
     resolveId,
     qualityMode,
+    feature,
     expiresInSeconds: ttlSeconds,
     expiresAt: new Date(exp * 1000).toISOString(),
     exp,
@@ -307,6 +319,7 @@ async function readTileSessionClaims(request, env) {
     userId: String(payload.sub || "").trim(),
     userEmail: String(payload.email || "").trim(),
     qualityMode: normalizeQualityMode(payload.quality_mode || ""),
+    feature: normalizeTileSessionFeature(payload.feature || ""),
     resolveId: normalizeResolveId(payload.resolve_id || ""),
     authMethod,
     installEdition: normalizeInstallEdition(payload.install_edition || payload.access_tier || ""),
@@ -499,8 +512,11 @@ const TILE_DEPS = {
   dbRun,
   issueTileSessionToken,
   json,
+  isTileFileAllowedForEdition,
+  isTileSessionFeatureAllowedForEdition,
   normalizeDeviceId,
   normalizeQualityMode,
+  normalizeTileSessionFeature,
   normalizeResolveId,
   nowIso,
   parseJson,

@@ -1,0 +1,58 @@
+CHANGELOG.md
+Documentation/Licencing/Attribution for User Renders.txt
+Documentation/Licencing/Compliance/Copernicus Sentinel-2 Attribution.txt
+Documentation/Licencing/Compliance/DLR World Settlement Footprint 2015 Attribution (CC BY 4.0).txt
+Documentation/Licencing/Compliance/Detailed Source Records.txt
+Documentation/Licencing/Compliance/Earth Surface Data Sources.txt
+Documentation/Licencing/Compliance/JAXA AW3D30 Attribution and Terms.txt
+Documentation/Licencing/PRIVACY_POLICY.md
+Documentation/Licencing/TERMS_OF_SERVICE.md
+Documentation/Release/FAIR_USAGE_POLICY.md
+Documentation/Release/PLANETKA_1_0.md
+Documentation/Release/SYSTEM_REQUIREMENTS.md
+LICENSE
+Resources/Fallback Images/black_pixel_20.exr
+Resources/Fallback Images/blue_pixel_20.exr
+Resources/Fallback Images/el_south_cap_pixel_20.exr
+Resources/Fallback Images/ocean_pixel_final_20.exr
+Resources/Fallback Images/white_pixel_20.exr
+Resources/Preview Textures/EL_x000_y000_z360_d000.exr
+Resources/Preview Textures/PO_x000_y000_z360_d000.tif
+Resources/Preview Textures/S2_x000_y000_z360_d000.exr
+Resources/Preview Textures/WT_x000_y000_z360_d000.exr
+Resources/planetka_base_sphere_mesh_cache.blend
+Resources/planetka_edition.json
+Resources/planetka_surface_material_library.blend
+__init__.py
+asset_builder.py
+auth.py
+blender_manifest.toml
+coverage.py
+diagnostics.py
+error_utils.py
+extension_prefs.py
+mesh_utils.py
+operator_utils.py
+planetka_ops/__init__.py
+planetka_ops/earth_lifecycle_helpers.py
+planetka_runtime/__init__.py
+planetka_runtime/handler_runtime.py
+planetka_runtime/handler_runtime_context.py
+planetka_runtime/mesh_lifecycle.py
+planetka_runtime/resolve.py
+planetka_runtime/resolve_context.py
+planetka_runtime/resolve_state.py
+planetka_runtime/scene_sync.py
+planetka_runtime/view_telemetry.py
+planetka_runtime/view_telemetry_context.py
+properties.py
+public_operators.py
+public_shader.py
+public_ui.py
+public_validation.py
+r2_source.py
+render_prep.py
+shader_utils.py
+state.py
+streaming_utils.py
+tile_utils.py

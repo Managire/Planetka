@@ -2,13 +2,10 @@ import bpy
 import re
 import bmesh
 import logging
-import hashlib
 import os
-from collections import OrderedDict
 from mathutils import Matrix
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object
-from .r2_source import resolve_remote_asset
 
 # Precompile regex for speed
 TILE_RE = re.compile(r"x(\d+)_y(\d+)_z(\d+)_d(\d+)")
@@ -33,8 +30,6 @@ EARTH_SURFACE_DEFAULT_SCALE = (1.0, 1.0, 1.0)
 BASE_SPHERE_CACHE_MESH_NAME = "Planetka__BaseSphereMeshCache_v1"
 BASE_SPHERE_CACHE_BLEND_PATH = os.path.join("Resources", "planetka_base_sphere_mesh_cache.blend")
 BASE_SPHERE_CACHE_MIN_VERTS = 10000
-RESOLVED_MESH_CACHE_PREFIX = "Planetka__ResolvedMeshCache_v1__"
-RESOLVED_MESH_CACHE_MAX_ENTRIES = 0
 FACE_TILE_CACHE_VERSION = 1
 FACE_TILE_CACHE_VERSION_KEY = "planetka_face_tile_cache_version"
 FACE_TILE_LON_ATTR_NAME = "planetka_face_lon"
@@ -50,8 +45,6 @@ _PREVIEW_STATIC_BINDINGS = (
     ("WT", "WT_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.002", "Preview WT")),
     ("PO", "PO_x000_y000_z360_d000.tif", "Linear Rec.709", ("Image Texture.003", "Preview PO")),
 )
-_RESOLVED_MESH_CACHE = OrderedDict()
-_RESOLVED_CACHE_CLEANED = False
 _ADAPTIVE_ENUM_WARNING_EMITTED = False
 
 
@@ -140,13 +133,6 @@ def _enable_adaptive_subdivision(obj, subsurf_mod):
     return adaptive_enabled
 
 
-def _ensure_material_displacement_and_bump(material):
-    if material is None:
-        return False
-    # Keep user-selected displacement mode unchanged during Resolve.
-    return False
-
-
 def parse_tile(tile):
     m = TILE_RE.match(tile)
     if not m:
@@ -207,103 +193,6 @@ def _is_valid_base_sphere_mesh(mesh_data):
     if uv_layers is None or len(uv_layers) == 0:
         return False
     return True
-
-
-def _is_valid_resolved_mesh(mesh_data):
-    if mesh_data is None:
-        return False
-    if len(getattr(mesh_data, "vertices", ())) == 0:
-        return False
-    if len(getattr(mesh_data, "polygons", ())) == 0:
-        return False
-    uv_layers = getattr(mesh_data, "uv_layers", None)
-    if uv_layers is None or len(uv_layers) == 0:
-        return False
-    return True
-
-
-def _cleanup_all_resolved_mesh_cache_datablocks_once():
-    global _RESOLVED_CACHE_CLEANED
-    if _RESOLVED_CACHE_CLEANED:
-        return
-    _RESOLVED_CACHE_CLEANED = True
-    for mesh_data in list(getattr(bpy.data, "meshes", ())):
-        if not str(getattr(mesh_data, "name", "")).startswith(RESOLVED_MESH_CACHE_PREFIX):
-            continue
-        try:
-            if int(getattr(mesh_data, "users", 0)) == 0:
-                bpy.data.meshes.remove(mesh_data)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed cleaning stale resolved mesh cache datablock", exc_info=True)
-
-
-def _normalized_tile_cache_key(tiles, local_radius):
-    normalized = []
-    for tile in (tiles or ()):
-        parsed = parse_tile(str(tile))
-        if not parsed:
-            continue
-        x, y, z, d = parsed
-        normalized.append(f"x{x:03d}_y{y:03d}_z{z:03d}_d{d:03d}")
-    normalized.sort()
-    payload = ",".join(normalized)
-    return f"r{float(local_radius):.9f}|{payload}"
-
-
-def _resolved_mesh_cache_name(cache_key):
-    digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:20]
-    return f"{RESOLVED_MESH_CACHE_PREFIX}{digest}"
-
-
-def _prune_resolved_mesh_cache():
-    while len(_RESOLVED_MESH_CACHE) > RESOLVED_MESH_CACHE_MAX_ENTRIES:
-        _, mesh_name = _RESOLVED_MESH_CACHE.popitem(last=False)
-        mesh_data = bpy.data.meshes.get(mesh_name)
-        if mesh_data is None:
-            continue
-        try:
-            if int(getattr(mesh_data, "users", 0)) == 0:
-                bpy.data.meshes.remove(mesh_data)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed pruning resolved mesh cache entry", exc_info=True)
-
-
-def _get_cached_resolved_mesh(tiles, local_radius):
-    if RESOLVED_MESH_CACHE_MAX_ENTRIES <= 0:
-        return None
-    cache_key = _normalized_tile_cache_key(tiles, local_radius)
-    mesh_name = _RESOLVED_MESH_CACHE.get(cache_key)
-    if not mesh_name:
-        return None
-
-    mesh_data = bpy.data.meshes.get(mesh_name)
-    if not _is_valid_resolved_mesh(mesh_data):
-        _RESOLVED_MESH_CACHE.pop(cache_key, None)
-        return None
-
-    _RESOLVED_MESH_CACHE.move_to_end(cache_key)
-    return mesh_data
-
-
-def _store_resolved_mesh_cache(tiles, local_radius, mesh_data):
-    if RESOLVED_MESH_CACHE_MAX_ENTRIES <= 0:
-        return
-    if not _is_valid_resolved_mesh(mesh_data):
-        return
-
-    cache_key = _normalized_tile_cache_key(tiles, local_radius)
-    mesh_name = _RESOLVED_MESH_CACHE.get(cache_key)
-    existing = bpy.data.meshes.get(mesh_name) if mesh_name else None
-    if _is_valid_resolved_mesh(existing):
-        _RESOLVED_MESH_CACHE.move_to_end(cache_key)
-        return
-
-    cached_copy = mesh_data.copy()
-    cached_copy.name = _resolved_mesh_cache_name(cache_key)
-    cached_copy.use_fake_user = False
-    _RESOLVED_MESH_CACHE[cache_key] = cached_copy.name
-    _RESOLVED_MESH_CACHE.move_to_end(cache_key)
-    _prune_resolved_mesh_cache()
 
 
 def _build_base_sphere_mesh_cache():
@@ -368,7 +257,6 @@ def _load_bundled_base_sphere_mesh_cache():
 
 
 def ensure_base_sphere_mesh_cache():
-    _cleanup_all_resolved_mesh_cache_datablocks_once()
     cache_mesh = bpy.data.meshes.get(BASE_SPHERE_CACHE_MESH_NAME)
     if _is_valid_base_sphere_mesh(cache_mesh):
         return cache_mesh
@@ -414,17 +302,6 @@ def create_uv_sphere(radius, location, rotation, name="Planetka Earth Surface"):
     )
     obj = bpy.context.object
     obj.name = name
-    return obj
-
-
-def _create_object_from_mesh_data(mesh_data, name, location, rotation):
-    scene = getattr(bpy.context, "scene", None)
-    if scene is None or mesh_data is None:
-        return None
-    obj = bpy.data.objects.new(name, mesh_data)
-    scene.collection.objects.link(obj)
-    obj.location = location
-    obj.rotation_euler = rotation
     return obj
 
 
@@ -528,16 +405,8 @@ def _resolve_preview_texture_path(folder, file_name):
     safe_name = str(file_name or "").strip()
     if not safe_folder or not safe_name:
         return ""
-
-    remote_path = resolve_remote_asset(safe_folder, safe_name)
-    if remote_path and os.path.isfile(remote_path):
-        return remote_path
-
-    # Local fallback is kept only for developer environments.
     local_path = _preview_texture_static_path(safe_name)
-    if local_path and os.path.isfile(local_path):
-        return local_path
-    return ""
+    return local_path if os.path.isfile(local_path) else ""
 
 
 def _assign_preview_texture_images(preview_material):
@@ -588,7 +457,7 @@ def _surface_local_radius(parent_surface):
             if inferred > 1e-9:
                 return float(inferred)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed inferring surface local radius for preview scale", exc_info=True)
+            logger.debug("Planetka: failed inferring surface extent for preview scale", exc_info=True)
     return 1.0
 
 
@@ -599,7 +468,7 @@ def _mesh_local_radius(mesh):
     try:
         return max(float(v.co.length) for v in vertices)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed inferring preview mesh local radius", exc_info=True)
+        logger.debug("Planetka: failed inferring preview mesh extent", exc_info=True)
     return 0.0
 
 
@@ -861,7 +730,7 @@ def compute_faces_to_delete_indices(mesh, coverage):
     return faces_to_delete
 
 
-def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collection_policy="inherit_old"):
+def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collection_policy="preserve_surface"):
     # --- Sphere Creation (common to both paths) ---
     existing_surface = get_earth_object() or bpy.data.objects.get("Planetka Earth Surface")
     location = (0.0, 0.0, 0.0)
@@ -873,26 +742,18 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
         location = tuple(existing_surface.location)
         rotation = tuple(existing_surface.rotation_euler)
         scale = tuple(existing_surface.scale)
-        # Keep the local radius stable across resolve rebuilds.
-        # Re-inferring from the currently visible subset of vertices can introduce
-        # tiny frame-to-frame radius drift when segment tile coverage changes.
+        # Keep the base sphere extent stable across resolve rebuilds.
+        # Re-inferring from the visible subset of vertices can introduce tiny
+        # frame-to-frame drift when segment tile coverage changes.
         try:
             stable_radius = float(_surface_local_radius(existing_surface))
             if stable_radius > 1e-6:
                 local_radius = float(stable_radius)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed reading stable local sphere radius from existing surface", exc_info=True)
+            logger.debug("Planetka: failed reading stable sphere extent from existing surface", exc_info=True)
 
-    cached_resolved_mesh = _get_cached_resolved_mesh(tiles, local_radius)
     surface_col = ensure_surface_collection()
-    if cached_resolved_mesh is not None:
-        temp_mesh = cached_resolved_mesh.copy()
-        temp_mesh.use_fake_user = False
-        temp = _create_object_from_mesh_data(temp_mesh, name=name, location=location, rotation=rotation)
-        if temp is None:
-            raise RuntimeError("Failed to create Earth surface from cached resolved mesh")
-    else:
-        temp = create_uv_sphere(local_radius, location, rotation, name=name)
+    temp = create_uv_sphere(local_radius, location, rotation, name=name)
     temp.scale = scale
 
     existing_surface_collections = []
@@ -908,17 +769,19 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
             if collection_policy == "surface_only":
                 if surface_col:
                     target_collections = [surface_col]
-            else:
+            elif collection_policy == "preserve_surface":
                 target_collections = list(existing_surface_collections)
                 if not target_collections and surface_col:
                     target_collections = [surface_col]
+            else:
+                target_collections = [surface_col] if surface_col else []
 
             _set_object_collections(preserved_obj, target_collections)
 
             _remove_object_and_unused_mesh(temp)
             temp = preserved_obj
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed preserving old surface object state", exc_info=True)
+            logger.debug("Planetka: failed preserving surface object state", exc_info=True)
 
     if collection_policy == "surface_only":
         if surface_col:
@@ -933,7 +796,7 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     try:
         temp["planetka_surface_local_radius"] = float(local_radius)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing surface local radius", exc_info=True)
+        logger.debug("Planetka: failed storing surface extent metadata", exc_info=True)
 
     planetka_surface = bpy.data.materials.get("Planetka Earth Material")
     if not planetka_surface:
@@ -944,38 +807,35 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
         poly.material_index = 0
 
     mesh = temp.data
-    if cached_resolved_mesh is None:
-        # --- Conditional Face Deletion ---
-        # Build coverage grid (lon 0-359, lat 0-179)
-        coverage = [[False] * 180 for _ in range(360)]
-        for t in tiles:
-            p = parse_tile(t)
-            if not p:
-                continue
-            x, y, z, _ = p
-            for lon in range(x, x + z):
-                lon_mod = lon % 360
-                for lat in range(y, y + z):
-                    if 0 <= lat < 180:
-                        coverage[lon_mod][lat] = True
+    # --- Conditional Face Deletion ---
+    # Build coverage grid (lon 0-359, lat 0-179)
+    coverage = [[False] * 180 for _ in range(360)]
+    for t in tiles:
+        p = parse_tile(t)
+        if not p:
+            continue
+        x, y, z, _ = p
+        for lon in range(x, x + z):
+            lon_mod = lon % 360
+            for lat in range(y, y + z):
+                if 0 <= lat < 180:
+                    coverage[lon_mod][lat] = True
 
-        if not mesh.uv_layers or not mesh.uv_layers.active:
-            logger.warning("Planetka: no UV map found on Earth surface mesh")
-        else:
-            faces_to_delete_idx = compute_faces_to_delete_indices(mesh, coverage)
-            if faces_to_delete_idx:
-                bm = bmesh.new()
-                bm.from_mesh(mesh)
-                bm.faces.ensure_lookup_table()
-                faces_to_delete = [bm.faces[i] for i in faces_to_delete_idx if i < len(bm.faces)]
-                if faces_to_delete:
-                    bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES')
-                bm.to_mesh(mesh)
-                bm.free()
+    if not mesh.uv_layers or not mesh.uv_layers.active:
+        logger.warning("Planetka: no UV map found on Earth surface mesh")
+    else:
+        faces_to_delete_idx = compute_faces_to_delete_indices(mesh, coverage)
+        if faces_to_delete_idx:
+            bm = bmesh.new()
+            bm.from_mesh(mesh)
+            bm.faces.ensure_lookup_table()
+            faces_to_delete = [bm.faces[i] for i in faces_to_delete_idx if i < len(bm.faces)]
+            if faces_to_delete:
+                bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES')
+            bm.to_mesh(mesh)
+            bm.free()
 
     apply_smooth_shading(temp.data)
-    if cached_resolved_mesh is None:
-        _store_resolved_mesh_cache(tiles, local_radius, temp.data)
 
     # --- Modifiers (common to both paths) ---
     try:
