@@ -219,36 +219,6 @@ async function requireCloudSessionContext(request, env) {
   return result;
 }
 
-async function resolveTileSessionAuth(_request, env, auth) {
-  const db = requireDb(env);
-  const installId = String(auth && auth.install && auth.install.id || "").trim();
-  if (!installId) {
-    return { error: json({ ok: false, error: "invalid_access_token" }, 401, env) };
-  }
-  const row = await db.prepare(
-    `
-      SELECT id, email, status
-      FROM cloud_installs
-      WHERE id = ?
-      LIMIT 1
-    `,
-  ).bind(installId).first();
-  if (!row || !row.id) {
-    return { error: json({ ok: false, error: "cloud_install_not_found" }, 404, env) };
-  }
-  if (String(row.status || "").trim().toLowerCase() === "blocked") {
-    return { error: json({ ok: false, error: "session_blocked", message: "Planetka Cloud access is blocked. Contact info@planetka.io." }, 403, env) };
-  }
-  return {
-    ...auth,
-    install: {
-      id: String(row.id || "").trim(),
-      email: String(row.email || (auth.install && auth.install.email) || "").trim(),
-      status: "",
-    },
-  };
-}
-
 function resolveTileSessionTokenTtlSeconds(env = {}) {
   const parsed = Number(env.TILE_SESSION_TOKEN_TTL_SECONDS || DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS);
   return Math.min(1800, Math.max(60, Number.isFinite(parsed) ? Math.floor(parsed) : DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS));
@@ -525,7 +495,6 @@ const TILE_DEPS = {
   recordResolveSummaryEvent,
   requireCloudSessionContext,
   requireDb,
-  resolveTileSessionAuth,
   resolveTileCacheControl,
 };
 

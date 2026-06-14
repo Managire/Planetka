@@ -211,15 +211,6 @@ export async function handleTileSessionStart(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
-  if (typeof deps.resolveTileSessionAuth === "function") {
-    const resolvedAuth = await deps.resolveTileSessionAuth(request, env, auth);
-    if (resolvedAuth && resolvedAuth.error) {
-      return resolvedAuth.error;
-    }
-    if (resolvedAuth) {
-      auth = resolvedAuth;
-    }
-  }
   const body = await parseJson(request);
   const requestedQualityMode = String(
     body && body.quality_mode ? body.quality_mode : request.headers.get("X-Planetka-Quality-Mode") || "",
