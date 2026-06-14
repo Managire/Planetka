@@ -121,7 +121,7 @@ def _safe_context_scene():
 
 def update_texture_quality_mode(self, context):
     del self, context
-    # Quality Level is now an input for the explicit Resolve Planetka button.
+    # Quality Level is an input for the explicit Resolve Planetka Studio button.
     # Changing it must not start any resolve or download.
     return None
 
@@ -662,7 +662,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Automatically switch cloud shaders",
         default=True,
         description=(
-            "Automatically switch texture-based cloud materials during Resolve Planetka: "
+            "Automatically switch texture-based cloud materials during Resolve Planetka Studio: "
             "Cycles uses the Cycles shader, EEVEE uses the EEVEE shader"
         ),
         update=update_auto_switch_cloud_shaders,

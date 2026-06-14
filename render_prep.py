@@ -427,7 +427,7 @@ def _set_resolve_failure_notice(scene, message):
         return
     safe_message = (
         str(message or "").strip()
-        or "Resolve failed. Please click Resolve Planetka"
+        or "Resolve failed. Please click Resolve Planetka Studio"
     )
     try:
         scene[RESOLVE_FAILURE_FLAG_KEY] = True
@@ -693,8 +693,15 @@ def _prefetch_missing_details_indicate_access_failure(details):
 
 
 class PLANETKA_OT_LoadTextures(bpy.types.Operator):
+    """Main deterministic data resolver used by Studio, Create Earth, and animation.
+
+    Blender data-block edits must happen on the main thread, while downloads can
+    run in the resolve runtime. Keep this operator as the single place that
+    converts camera state + Quality Level into surface tiles and cloud assets.
+    """
+
     bl_idname = "planetka.load_textures"
-    bl_label = "Resolve Earth"
+    bl_label = "Resolve Planetka Studio Data"
     bl_description = "Resolve visible Earth tiles and rebuild the Planetka surface mesh/material assignment"
 
     scope_mode: EnumProperty(
@@ -1854,7 +1861,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "failed storing integrity resolve error on scene",
             )
             _set_resolve_failure_notice(scene, integrity_message)
-            user_message = "Resolve failed. Please click Resolve Planetka"
+            user_message = "Resolve failed. Please click Resolve Planetka Studio"
             self._flush_ui_reports(ui_reports)
             return fail(
                 self,
@@ -1887,8 +1894,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
 
 class PLANETKA_OT_CleanupUnusedData(bpy.types.Operator):
     bl_idname = "planetka.cleanup_unused_data"
-    bl_label = "Cleanup Unused Planetka Data"
-    bl_description = "Remove stale Planetka objects and unused Planetka meshes, images, materials, and node groups"
+    bl_label = "Cleanup Unused Planetka Studio Data"
+    bl_description = "Remove stale Planetka Studio objects and unused meshes, images, materials, and node groups"
 
     def execute(self, context):
         try:

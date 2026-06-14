@@ -324,15 +324,22 @@ class PLANETKA_OT_UpdateNow(bpy.types.Operator):
 
 
 class PLANETKA_OT_ResolvePlanetka(bpy.types.Operator):
+    """Public Studio resolve button.
+
+    This operator is intentionally thin: it validates UI state, handles optional
+    billing access, and delegates the actual deterministic resolve pipeline to
+    ``planetka.load_textures``.
+    """
+
     bl_idname = "planetka.resolve_planetka"
-    bl_label = "Resolve Planetka"
+    bl_label = "Resolve Planetka Studio"
     bl_description = (
-        "Manually resolve Planetka for the current camera: calculate required Earth surface tiles, "
+        "Manually resolve Planetka Studio for the current camera: calculate required Earth surface tiles, "
         "download/apply the selected Quality Level, and optimize texture-based and VDB cloud LODs"
     )
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Resolve Planetka"):
+        if _cancel_if_animation_render_active(self, "Resolve Planetka Studio"):
             return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
@@ -361,7 +368,7 @@ class PLANETKA_OT_ResolvePlanetka(bpy.types.Operator):
                     logger=logger,
                 )
             if not allowed:
-                self.report({'INFO'}, str(message or "Complete Planetka checkout, then press Resolve Planetka again."))
+                self.report({'INFO'}, str(message or "Complete Planetka checkout, then press Resolve Planetka Studio again."))
                 return {'CANCELLED'}
         try:
             result = bpy.ops.planetka.load_textures(
@@ -374,16 +381,16 @@ class PLANETKA_OT_ResolvePlanetka(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
-                "Resolve Planetka failed. Please retry.",
+                "Resolve Planetka Studio failed. Please retry.",
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Resolve Planetka failed",
+                log_message="Resolve Planetka Studio failed",
             )
         except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
             return fail(
                 self,
-                f"Resolve Planetka failed: {exc}",
+                f"Resolve Planetka Studio failed: {exc}",
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
             )

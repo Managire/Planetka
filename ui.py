@@ -840,8 +840,8 @@ def _radius_needs_clipping_adjustment(radius_bu):
 class _PLANETKA_PT_BaseSection:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "Planetka"
-    # Keep Planetka tab ordering behind Blender built-in tabs.
+    bl_category = "Planetka Studio"
+    # Keep the Studio tab ordering behind Blender built-in tabs.
     # Blender's tab/category ordering can be influenced by low panel bl_order values.
     bl_order = 9000
     bl_options = {'DEFAULT_CLOSED'}
@@ -948,7 +948,7 @@ def _resolve_failure_notice(scene=None):
         message = str(target_scene.get(RESOLVE_FAILURE_MESSAGE_KEY, "") or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         message = ""
-    return message or "Resolve failed. Please click Resolve Planetka"
+    return message or "Resolve failed. Please click Resolve Planetka Studio"
 
 
 def _has_resolve_failure_notice(scene=None):
@@ -1140,7 +1140,7 @@ def _draw_general_cloud_summary(layout):
     status_message = get_status_message(prefs)
 
     cloud_box = layout.box()
-    cloud_box.label(text="Planetka Data", icon="WORLD")
+    cloud_box.label(text="Planetka Studio Data", icon="WORLD")
     row = cloud_box.row(align=True)
     row.use_property_split = False
     row.label(text="Status")
@@ -1148,7 +1148,7 @@ def _draw_general_cloud_summary(layout):
     edition_row = cloud_box.row(align=True)
     edition_row.use_property_split = False
     edition_row.label(text="Edition")
-    edition_row.label(text=addon_edition_label(get_session_edition(prefs)), icon="SOLO_ON")
+    edition_row.label(text=addon_edition_label(), icon="SOLO_ON")
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1280,7 +1280,7 @@ def _draw_live_telemetry(layout, scene):
 
         resolve_row = quality_box.row(align=True)
         resolve_row.scale_y = 1.45
-        resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")
+        resolve_row.operator("planetka.resolve_planetka", text="Resolve Planetka Studio", icon="FILE_REFRESH")
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():

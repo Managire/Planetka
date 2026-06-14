@@ -552,6 +552,10 @@ def _normalize_addon_edition(value):
 
 
 def addon_edition_label(value=None):
+    if value is None:
+        local_label = str(read_local_addon_edition().get("label", "") or "").strip()
+        if local_label:
+            return local_label
     edition = _normalize_addon_edition(value if value is not None else read_local_addon_edition().get("edition", "pro"))
     return "Pro" if edition == "pro" else "Free"
 

@@ -83,12 +83,12 @@ from .ui import (
 from .validation import PLANETKA_OT_ReportBug, PLANETKA_OT_SceneHealthCheck
 
 bl_info = {
-    "name": "Planetka - the Earth",
+    "name": "Planetka Studio",
     "author": "Tomas Griger",
     "version": (0, 8, 1),
     "blender": (3, 6, 0),
-    "location": "View3D > Sidebar > Planetka",
-    "description": "Cinematic Earth visualisation system",
+    "location": "View3D > Sidebar > Planetka Studio",
+    "description": "Personal studio build of the Planetka Earth visualisation system",
     "category": "3D View",
 }
 
