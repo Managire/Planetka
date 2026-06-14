@@ -241,8 +241,11 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
                 capped.append(tile_text)
                 continue
             allowed = sorted({int(value) for value in d_levels_by_z.get(int(z), [int(z)])})
-            coarser = [int(candidate) for candidate in allowed if int(candidate) not in {1, 2}]
-            replacement = int(min(coarser)) if coarser else int(max(allowed or [4]))
+            if 4 in allowed:
+                replacement = 4
+            else:
+                coarser = [int(candidate) for candidate in allowed if int(candidate) > int(d)]
+                replacement = int(min(coarser)) if coarser else int(max(allowed or [4]))
             capped.append(tile_utils.format_tile(int(x), int(y), int(z), int(replacement)))
         return list(tile_utils._sort_tiles_for_apply(capped))
 
@@ -269,6 +272,16 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
             replacement = int(min(allowed)) if allowed else int(target_d)
         adjusted.append(tile_utils.format_tile(int(x), int(y), int(z), int(replacement)))
     return _apply_free_1000k_cap(adjusted)
+
+
+def apply_free_texture_cap_to_tiles(tiles):
+    """Return tiles that are legal for the local Free package.
+
+    Free is capped at d004-or-coarser. The backend also enforces this, but the
+    resolve path should request d004 instead of surfacing d001/d002 access
+    errors when the camera is very close to Earth.
+    """
+    return apply_texture_quality_to_full_tiles(tiles or (), "FULL")
 
 
 def _tile_d_value(tile):
@@ -848,8 +861,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
 
         phase_start = time.perf_counter()
         if tiles_override is not None:
-            tiles = [] if force_empty_once else list(tiles_override)
-            full_source_tiles = list(tiles or ())
+            full_source_tiles = list(tiles_override or ())
+            tiles = [] if force_empty_once else apply_free_texture_cap_to_tiles(full_source_tiles)
         else:
             try:
                 full_source_tiles = tile_utils.main(
