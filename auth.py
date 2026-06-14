@@ -533,7 +533,7 @@ def _normalize_addon_edition(value):
     normalized = str(value or "").strip().lower()
     if normalized == "private":
         return "pro"
-    if normalized in {"pro", "studio"}:
+    if normalized in {"hobby", "pro", "studio"}:
         return normalized
     return "free"
 
@@ -544,6 +544,8 @@ def addon_edition_label(value=None):
         if local_label:
             return local_label
     edition = _normalize_addon_edition(value if value is not None else read_local_addon_edition().get("edition", "free"))
+    if edition == "hobby":
+        return "Hobby"
     if edition == "pro":
         return "Pro"
     if edition == "studio":

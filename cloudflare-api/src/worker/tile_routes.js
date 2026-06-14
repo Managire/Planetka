@@ -42,6 +42,7 @@ function firstNonEmpty(...values) {
 
 function normalizeQuotaEdition(value) {
   const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "hobby") return "hobby";
   if (normalized === "pro") return "pro";
   if (normalized === "studio" || normalized === "planetka_studio") return "studio";
   if (normalized === "private") return "pro";

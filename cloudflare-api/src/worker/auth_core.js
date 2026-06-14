@@ -46,6 +46,7 @@ export function createAuthCore(deps) {
       ? deps.normalizeRequestedAccessTier(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "")
       : (() => {
         const value = String(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "").trim().toLowerCase();
+        if (value === "hobby") return "hobby";
         if (value === "pro") return "pro";
         if (value === "studio" || value === "planetka_studio") return "studio";
         if (value === "private") return "pro";
@@ -147,6 +148,7 @@ export function createAuthCore(deps) {
         ? deps.normalizeRequestedAccessTier(payload && (payload.install_edition || payload.access_tier) || "")
         : (() => {
           const value = String(payload && (payload.install_edition || payload.access_tier) || "").trim().toLowerCase();
+          if (value === "hobby") return "hobby";
           if (value === "pro") return "pro";
           if (value === "studio" || value === "planetka_studio") return "studio";
           if (value === "private") return "pro";
@@ -177,6 +179,7 @@ export function createAuthCore(deps) {
       ? deps.normalizeRequestedAccessTier(metadata.install_edition || metadata.installEdition || "")
       : (() => {
         const value = String(metadata.install_edition || metadata.installEdition || "").trim().toLowerCase();
+        if (value === "hobby") return "hobby";
         if (value === "pro") return "pro";
         if (value === "studio" || value === "planetka_studio") return "studio";
         if (value === "private") return "pro";

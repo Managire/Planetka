@@ -1,6 +1,7 @@
 export const ACCESS_STATUS_ACTIVE = "active";
 export const ACCESS_STATUS_BLOCKED = "blocked";
 export const ACCESS_TIER_FREE = "free";
+export const ACCESS_TIER_HOBBY = "hobby";
 export const ACCESS_TIER_PRO = "pro";
 export const ACCESS_TIER_STUDIO = "studio";
 
@@ -47,6 +48,7 @@ export function defaultSignupAccessStatus(env = {}) {
 
 export function normalizeAccessTier(value) {
   const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === ACCESS_TIER_HOBBY) return ACCESS_TIER_HOBBY;
   if (normalized === ACCESS_TIER_PRO) return ACCESS_TIER_PRO;
   if (normalized === ACCESS_TIER_STUDIO || normalized === "planetka_studio") return ACCESS_TIER_STUDIO;
   if (normalized === "private") return ACCESS_TIER_PRO;
@@ -64,6 +66,7 @@ export function defaultSignupAccessTier(env = {}) {
 
 export function accessTierDisplayName(accessTier) {
   const normalized = normalizeAccessTier(accessTier);
+  if (normalized === ACCESS_TIER_HOBBY) return "Hobby";
   if (normalized === ACCESS_TIER_PRO) return "Pro";
   if (normalized === ACCESS_TIER_STUDIO) return "Studio";
   return "Free";
@@ -106,9 +109,11 @@ export function qualityModeNotAllowedMessage(accessStatus, qualityMode) {
 }
 
 export function isTileFileAllowedForEdition(installEdition, fileName) {
-  void installEdition;
-  void fileName;
-  return true;
+  if (normalizeAccessTier(installEdition) !== ACCESS_TIER_FREE) return true;
+  const match = String(fileName || "").match(/_d(\d{3})(?:[._-]|$)/i);
+  if (!match) return true;
+  const dCode = String(match[1] || "");
+  return dCode !== "001" && dCode !== "002";
 }
 
 export function normalizeTileSessionFeature(value) {

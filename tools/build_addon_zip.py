@@ -198,6 +198,7 @@ def _edition_label(edition: str, override: str = "") -> str:
         return override
     return {
         "free": "Free",
+        "hobby": "Hobby",
         "pro": "Pro",
         "studio": "Studio",
     }.get(str(edition or "").strip().lower(), "Free")
@@ -208,7 +209,7 @@ def _write_edition_marker(payload_root: Path, edition: str, label: str, signatur
     if not marker_path.is_file():
         return
     safe_edition = str(edition or "free").strip().lower()
-    if safe_edition not in {"free", "pro", "studio"}:
+    if safe_edition not in {"free", "hobby", "pro", "studio"}:
         safe_edition = "free"
     payload = {
         "edition": safe_edition,
@@ -304,7 +305,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--stage-root", default=str(DEFAULT_STAGE_ROOT), help="Directory used for staging payload files")
     parser.add_argument("--output", default=str(default_output), help="Output zip path")
     parser.add_argument("--keep-stage", action="store_true", help="Keep staging directory after packaging")
-    parser.add_argument("--edition", default="free", choices=("free", "pro", "studio"), help="Edition marker to embed in the package")
+    parser.add_argument("--edition", default="free", choices=("free", "hobby", "pro", "studio"), help="Edition marker to embed in the package")
     parser.add_argument("--edition-label", default="", help="Edition display label; defaults to the edition name")
     parser.add_argument("--edition-signature", default="", help="Package edition signature")
     parser.add_argument("--edition-signature-version", default="1", help="Package edition signature version")

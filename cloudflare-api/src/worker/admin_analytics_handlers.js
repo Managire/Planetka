@@ -27,7 +27,7 @@ function snapshotHasTopLineTotals(snapshot) {
   const topLine = snapshot && snapshot.top_line && typeof snapshot.top_line === "object" ? snapshot.top_line : {};
   return ["installs", "resolves", "tile_requests", "gb_served"].every((key) => {
     const section = topLine[key] && typeof topLine[key] === "object" ? topLine[key] : {};
-      return ["free", "studio", "pro", "total"].every((field) => Object.prototype.hasOwnProperty.call(section, field));
+      return ["free", "hobby", "studio", "pro", "total"].every((field) => Object.prototype.hasOwnProperty.call(section, field));
   });
 }
 
@@ -323,7 +323,7 @@ export async function handleAdminAnalyticsInstallsPage(request, env, deps) {
     const installedAt = fmtAdminDateTime(row && row.installed_at);
     const status = String(row && row.install_status || "").trim().toLowerCase();
     const normalizedEdition = String(row && row.install_edition || "").trim().toLowerCase();
-    const edition = normalizedEdition === "pro" ? "Pro" : (normalizedEdition === "studio" ? "Studio" : "Free");
+    const edition = normalizedEdition === "pro" ? "Pro" : (normalizedEdition === "studio" ? "Studio" : (normalizedEdition === "hobby" ? "Hobby" : "Free"));
     const installState = status === "blocked" ? "blocked" : "active";
     const installStateLabel = installState === "blocked" ? "Blocked" : "Active";
     let actionButtons = "";

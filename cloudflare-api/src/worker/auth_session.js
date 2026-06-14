@@ -118,7 +118,8 @@ export async function requireCloudSessionContext(request, env, options = {}, dep
     ? deps.normalizeRequestedAccessTier(access.install_edition || access.access_tier || "")
     : (() => {
       const value = String(access.install_edition || access.access_tier || "").trim().toLowerCase();
-      if (value === "pro") return "pro";
+      if (value === "hobby") return "hobby";
+        if (value === "pro") return "pro";
       if (value === "studio" || value === "planetka_studio") return "studio";
       if (value === "private") return "pro";
       return "free";

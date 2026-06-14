@@ -23,6 +23,7 @@ from .auth import (
     ensure_authenticated_session,
     get_authorized_headers,
     is_authenticated,
+    local_addon_edition_code,
     looks_like_network_error,
 )
 from .asset_builder import ensure_earth_surface_parent
@@ -219,8 +220,34 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
     elif mode == "PREVIEW":
         factor = 4
 
+    def _apply_free_1000k_cap(tile_list):
+        try:
+            edition = local_addon_edition_code()
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            edition = "free"
+        if edition != "free":
+            return list(tile_utils._sort_tiles_for_apply(tile_list or ()))
+
+        capped = []
+        for raw_tile in tile_list or ():
+            tile_text = str(raw_tile or "").strip()
+            parsed = tile_utils.parse_tile(tile_text)
+            if not parsed:
+                if tile_text:
+                    capped.append(tile_text)
+                continue
+            x, y, z, d = parsed
+            if int(d) not in {1, 2}:
+                capped.append(tile_text)
+                continue
+            allowed = sorted({int(value) for value in d_levels_by_z.get(int(z), [int(z)])})
+            coarser = [int(candidate) for candidate in allowed if int(candidate) not in {1, 2}]
+            replacement = int(min(coarser)) if coarser else int(max(allowed or [4]))
+            capped.append(tile_utils.format_tile(int(x), int(y), int(z), int(replacement)))
+        return list(tile_utils._sort_tiles_for_apply(capped))
+
     if factor == 1:
-        return list(tile_utils._sort_tiles_for_apply(tiles or ()))
+        return _apply_free_1000k_cap(tiles or ())
 
     adjusted = []
     for tile in (tiles or ()):
@@ -241,7 +268,7 @@ def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
         else:
             replacement = int(min(allowed)) if allowed else int(target_d)
         adjusted.append(tile_utils.format_tile(int(x), int(y), int(z), int(replacement)))
-    return list(tile_utils._sort_tiles_for_apply(adjusted))
+    return _apply_free_1000k_cap(adjusted)
 
 
 def _tile_d_value(tile):

@@ -4,6 +4,7 @@ export function createAuthSessionRouteHandlers(deps) {
       return deps.normalizeRequestedAccessTier(value);
     }
     const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "hobby") return "hobby";
     if (normalized === "pro") return "pro";
     if (normalized === "studio" || normalized === "planetka_studio") return "studio";
     if (normalized === "private") return "pro";
@@ -262,11 +263,11 @@ export function createAuthSessionRouteHandlers(deps) {
         install_edition: installEdition,
         install_edition_label: typeof deps.accessTierDisplayName === "function"
           ? deps.accessTierDisplayName(installEdition)
-          : (installEdition === "studio" ? "Studio" : (installEdition === "pro" ? "Pro" : "Free")),
+          : (installEdition === "studio" ? "Studio" : (installEdition === "pro" ? "Pro" : (installEdition === "hobby" ? "Hobby" : "Free"))),
         access_tier: installEdition,
         access_tier_label: typeof deps.accessTierDisplayName === "function"
           ? deps.accessTierDisplayName(installEdition)
-          : (installEdition === "studio" ? "Studio" : (installEdition === "pro" ? "Pro" : "Free")),
+          : (installEdition === "studio" ? "Studio" : (installEdition === "pro" ? "Pro" : (installEdition === "hobby" ? "Hobby" : "Free"))),
       },
       200,
       env,
@@ -360,7 +361,7 @@ export function createAuthSessionRouteHandlers(deps) {
     const installEdition = normalizeEdition(auth && auth.access && (auth.access.install_edition || auth.access.access_tier) || auth.installEdition || "free");
     const installEditionLabel = typeof deps.accessTierDisplayName === "function"
       ? deps.accessTierDisplayName(installEdition)
-      : (installEdition === "studio" ? "Studio" : (installEdition === "pro" ? "Pro" : "Free"));
+      : (installEdition === "studio" ? "Studio" : (installEdition === "pro" ? "Pro" : (installEdition === "hobby" ? "Hobby" : "Free")));
 
     return deps.json(
       {
