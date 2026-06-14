@@ -11,7 +11,12 @@ from .auth import (
 )
 from .extension_prefs import get_earth_object, get_prefs
 from .r2_source import get_download_progress
-from .state import get_resolve_runtime_status, is_final_animation_render_active
+from .state import (
+    LAST_RESOLVE_DOWNLOADED_MB_KEY,
+    LAST_RESOLVE_TILE_COUNT_KEY,
+    get_resolve_runtime_status,
+    is_final_animation_render_active,
+)
 
 
 CREATE_EARTH_STATUS_KEY = "planetka_create_earth_status"
@@ -39,7 +44,36 @@ def _runtime_display(scene):
     code = str(status.get("code", "") or "").strip().upper()
     if running:
         return text or "Resolving", code or "RUNNING", True
-    return text or "Idle", code or "IDLE", False
+    if text.lower() == "idle":
+        text = ""
+    return text or "Resolved successfully", code or "DONE", False
+
+
+def _scene_number(scene, key, default=0.0):
+    if scene is None:
+        return default
+    try:
+        return float(scene.get(key, default) or default)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return default
+
+
+def _progress_display(scene, progress):
+    active = bool(progress.get("download_active", False))
+    downloaded = int(progress.get("downloaded_bytes", 0) or 0)
+    expected = int(progress.get("expected_bytes", 0) or progress.get("total_bytes", 0) or 0)
+    if active:
+        if expected > 0:
+            return f"Downloading: {_fmt_mb(downloaded)} / {_fmt_mb(expected)}", "IMPORT"
+        return f"Downloading: {_fmt_mb(downloaded)}", "IMPORT"
+
+    last_downloaded_mb = _scene_number(scene, LAST_RESOLVE_DOWNLOADED_MB_KEY, 0.0)
+    last_tile_count = int(_scene_number(scene, LAST_RESOLVE_TILE_COUNT_KEY, 0.0))
+    if last_downloaded_mb > 0.0:
+        if last_tile_count > 0:
+            return f"Last download: {last_downloaded_mb:.2f} MB, {last_tile_count} tiles", "CHECKMARK"
+        return f"Last download: {last_downloaded_mb:.2f} MB", "CHECKMARK"
+    return "Ready to download", "IMPORT"
 
 
 def _draw_data_summary(layout):
@@ -105,24 +139,26 @@ def _draw_quality_and_resolve(layout, scene):
         op.texture_quality_mode = key
 
     has_earth = _has_earth()
-    runtime_text, runtime_code, running = _runtime_display(scene)
-    create_status, create_active = _create_status(scene)
-    if not has_earth and create_status:
-        runtime_text = create_status
-        running = bool(create_active)
-    progress = get_download_progress() or {}
-    box.label(text=runtime_text, icon="TIME" if running else "CHECKMARK")
-    if running or bool(progress.get("download_active", False)):
-        downloaded = int(progress.get("downloaded_bytes", 0) or 0)
-        expected = int(progress.get("expected_bytes", 0) or progress.get("total_bytes", 0) or 0)
-        box.label(text=f"Progress: {_fmt_mb(downloaded)} / {_fmt_mb(expected)}", icon="IMPORT")
-
     resolve = box.row()
     resolve.scale_y = 1.3
     if has_earth:
         resolve.operator("planetka_public.resolve_planetka", text="Resolve Planetka", icon="FILE_REFRESH")
     else:
         resolve.operator("planetka_public.add_earth", text="Create New Earth", icon="WORLD_DATA")
+
+    runtime_text, runtime_code, running = _runtime_display(scene)
+    create_status, create_active = _create_status(scene)
+    if not has_earth and create_status:
+        runtime_text = create_status
+        running = bool(create_active)
+    elif not has_earth:
+        runtime_text = "Ready to create Earth"
+    elif runtime_code == "DONE":
+        runtime_text = "Resolved successfully"
+    progress = get_download_progress() or {}
+    box.label(text=runtime_text, icon="TIME" if running else "CHECKMARK")
+    progress_text, progress_icon = _progress_display(scene, progress)
+    box.label(text=progress_text, icon=progress_icon)
 
 
 def _draw_links(layout):
