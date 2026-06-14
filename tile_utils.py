@@ -18,10 +18,9 @@ DATASET_MPP_BASE_D1 = 10.0
 # Bias tile upgrades to happen a bit earlier than strict mathematical minimum.
 # 0.75 means target detail is requested at 75% of nominal threshold distance.
 QUALITY_SAFETY_MARGIN = 0.75
-# Always request one sharper surface texture level than the geometric estimate.
-# In Planetka d-level naming, lower d means higher resolution, so 0.5 turns a
-# calculated d008 target into d004 before snapping to available dataset levels.
-RESOLVE_DETAIL_D_LEVEL_FACTOR = 0.5
+# Use the geometric estimate directly. In Planetka d-level naming, lower d
+# means higher resolution; values below 1.0 intentionally over-resolve.
+RESOLVE_DETAIL_D_LEVEL_FACTOR = 1.0
 MAX_TERRAIN_HEIGHT_M = 9000.0
 DEFAULT_PLANET_RADIUS_BU = 1.0
 Z_LEVELS = (1, 2, 4, 8, 15, 30, 60, 90, 180, 360)

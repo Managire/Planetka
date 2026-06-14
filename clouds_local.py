@@ -898,12 +898,12 @@ def _coarser_vdb_cloud_d_level(d_level, multiplier=1):
     return int(min(candidates) if candidates else max(levels))
 
 
-def _sharper_cloud_d_level(d_level, levels, factor=0.5):
-    """Return one sharper available d-level.
+def _sharper_cloud_d_level(d_level, levels, factor=1.0):
+    """Return the requested d-level snapped to a safe available level.
 
-    Planetka d-levels get sharper as the number gets smaller, so d008 sharpened
-    by factor 0.5 becomes d004. If the exact target is unavailable, choose the
-    nearest sharper/equal level rather than a lower-quality coarser one.
+    Planetka d-levels get sharper as the number gets smaller. If the exact
+    target is unavailable, choose the nearest sharper/equal level rather than a
+    lower-quality coarser one.
     """
     available = tuple(sorted(int(level) for level in levels if int(level) > 0))
     if not available:
