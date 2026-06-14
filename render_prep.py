@@ -18,10 +18,13 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import (
+    DOWNLOAD_INTERRUPTED_MESSAGE,
+    describe_network_error,
     ensure_authenticated_session,
     get_authorized_headers,
     is_authenticated,
     local_addon_edition_code,
+    looks_like_network_error,
 )
 from .asset_builder import ensure_earth_surface_parent
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
@@ -76,6 +79,22 @@ _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
 _PREFETCH_ACCESS_FAILURE_TOKENS = (
     "request limit reached",
 )
+
+
+def _friendly_exception_message(exc, default_message):
+    if looks_like_network_error(exc):
+        return describe_network_error()
+    text = str(exc or "").strip()
+    return text or str(default_message or "Planetka failed. Please retry.")
+
+
+def _friendly_download_exception_message(exc):
+    if looks_like_network_error(exc):
+        return DOWNLOAD_INTERRUPTED_MESSAGE
+    text = str(exc or "").strip()
+    if text:
+        return f"Planetka resolve download failed: {text}"
+    return "Planetka resolve download failed. Please retry."
 
 
 @dataclass
@@ -573,6 +592,21 @@ def _prefetch_missing_details_indicate_access_failure(details):
     return False
 
 
+def _prefetch_missing_details_indicate_network_failure(details):
+    if not isinstance(details, (tuple, list)):
+        return False
+    for entry in details:
+        if not isinstance(entry, dict):
+            continue
+        combined = " ".join((
+            str(entry.get("fetch_error", "") or ""),
+            str(entry.get("remote_error", "") or ""),
+        ))
+        if looks_like_network_error(combined):
+            return True
+    return False
+
+
 class PLANETKA_OT_LoadTextures(bpy.types.Operator):
     """Main deterministic data resolver used by Resolve Planetka, Create Earth, and animation.
 
@@ -712,7 +746,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return ResolvePrepareContextResult(
                 response=fail(
                     self,
-                    "Planetka session could not be started. Check your connection and try again.",
+                    _friendly_exception_message(
+                        exc,
+                        "Planetka session could not be started. Check your connection and try again.",
+                    ),
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                     exc=exc,
@@ -951,7 +988,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return ResolveStreamingResult(
                 response=fail(
                     self,
-                    f"Planetka resolve download failed: {exc}",
+                    _friendly_download_exception_message(exc),
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
                     exc=exc,
@@ -963,7 +1000,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return ResolveStreamingResult(
                 response=fail(
                     self,
-                    f"Planetka resolve download failed: {exc}",
+                    _friendly_download_exception_message(exc),
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
                 ),
@@ -1090,6 +1127,20 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger=logger,
             )
         if int(payload_data.prefetch_missing_count) > 0:
+            if _prefetch_missing_details_indicate_network_failure(payload_data.prefetch_missing_details):
+                network_message = DOWNLOAD_INTERRUPTED_MESSAGE
+                coded_network_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, network_message)
+                _store_last_resolve_error(
+                    scene,
+                    coded_network_message,
+                    "failed storing network resolve error on scene",
+                )
+                return fail(
+                    self,
+                    network_message,
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
+                )
             if _prefetch_missing_details_indicate_access_failure(payload_data.prefetch_missing_details):
                 access_message = "Planetka data download could not be confirmed. Please retry."
                 coded_access_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, access_message)

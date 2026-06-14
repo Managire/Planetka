@@ -4,7 +4,7 @@ import time
 import bpy
 from bpy.props import EnumProperty
 
-from .auth import AuthApiError, ensure_authenticated_session
+from .auth import AuthApiError, describe_cloud_session_error, ensure_authenticated_session
 from .asset_builder import (
     _ensure_surface_material_library,
     ensure_planetka_root,
@@ -133,8 +133,9 @@ class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
             _set_create_status(scene, "Connecting to Planetka Cloud...")
             ensure_authenticated_session(prefs)
         except AuthApiError as exc:
-            _set_create_status(scene, "Create Earth failed: Planetka Cloud unavailable.", active=False)
-            return fail(self, f"Planetka Cloud session failed: {exc}", code=ErrorCode.RESOLVE_PREFS_MISSING, logger=logger)
+            message = describe_cloud_session_error(exc)
+            _set_create_status(scene, message, active=False)
+            return fail(self, message, code=ErrorCode.RESOLVE_PREFS_MISSING, logger=logger)
 
         started = time.perf_counter()
         try:

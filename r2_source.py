@@ -9,6 +9,7 @@ import sys
 import threading
 import tempfile
 import time
+import http.client
 from contextlib import contextmanager
 import urllib.error
 import urllib.parse
@@ -20,10 +21,14 @@ from collections import OrderedDict
 from .auth import (
     AuthApiError,
     CLOUD_OVERLOADED_MESSAGE,
+    DOWNLOAD_INTERRUPTED_MESSAGE,
     describe_cloud_session_error,
+    describe_network_error,
     get_authorized_headers,
     get_api_base_url,
+    looks_like_network_error,
     looks_like_planetka_overload,
+    mark_planetka_cloud_offline,
     mark_planetka_cloud_overloaded,
     recover_from_terminal_cloud_session_error,
     refresh_cloud_session,
@@ -266,17 +271,22 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
                     recover_from_terminal_cloud_session_error(terminal_error, source="r2_authentication_sentinel_retry")
                     raise RuntimeError("Planetka Cloud session expired. Restart Blender and try again.") from retry_exc
                 except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as retry_exc:
+                    if looks_like_network_error(retry_exc):
+                        mark_planetka_cloud_offline(str(retry_exc))
+                        raise RuntimeError(describe_network_error()) from retry_exc
                     raise RuntimeError(f"Planetka remote source check failed: {retry_exc}") from retry_exc
             if int(getattr(exc, "code", 0)) != 404:
                 if looks_like_planetka_overload(getattr(exc, "code", 0), f"http_{getattr(exc, 'code', 0)}"):
                     mark_planetka_cloud_overloaded(reason=f"http_{getattr(exc, 'code', 0)}")
                     raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
                 raise RuntimeError(f"Planetka could not verify the cloud session: HTTP {exc.code}.") from exc
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.IncompleteRead, OSError, ValueError) as exc:
             if allow_cached_on_network_error:
                 # Keep already-cached files usable while temporarily offline.
                 return auth_header
-            raise RuntimeError("Planetka could not verify the cloud session. Check internet connection and retry.") from exc
+            if looks_like_network_error(exc):
+                mark_planetka_cloud_offline(str(exc))
+            raise RuntimeError(describe_network_error()) from exc
 
     with _AUTH_CHECK_LOCK:
         _AUTH_LAST_BEARER = auth_header
@@ -865,6 +875,9 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             raise RuntimeError(f"Planetka Full Quality streaming access could not be confirmed: {error_message}") from exc
         raise RuntimeError("Planetka Full Quality streaming access could not be confirmed. Please retry.") from exc
     except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+        if looks_like_network_error(exc):
+            mark_planetka_cloud_offline(str(exc))
+            raise RuntimeError(describe_network_error()) from exc
         raise RuntimeError(f"Planetka Full Quality streaming access could not be confirmed: {exc}") from exc
 
 
@@ -1222,7 +1235,11 @@ def _r2_request(
                 raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
             recover_from_terminal_cloud_session_error(exc, source="r2_request_headers")
             raise RuntimeError(describe_cloud_session_error(exc)) from exc
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.IncompleteRead, OSError, ValueError) as exc:
+            if looks_like_network_error(exc):
+                mark_planetka_cloud_offline(str(exc))
+                last_error = RuntimeError(DOWNLOAD_INTERRUPTED_MESSAGE)
+                continue
             last_error = exc
         finally:
             if active_started:
@@ -1238,6 +1255,8 @@ def _r2_request(
                 _request_ui_redraw(force=True)
 
     if last_error:
+        if looks_like_network_error(last_error):
+            raise RuntimeError(DOWNLOAD_INTERRUPTED_MESSAGE) from last_error
         raise RuntimeError(f"Planetka R2 request failed for key '{key}': {last_error}")
     return False
 
@@ -1326,6 +1345,8 @@ def prefetch_resolve_downloads(requests, cancel_event=None):
         text = str(message or "").strip().lower()
         if not text:
             return False
+        if looks_like_network_error(text):
+            return True
         if looks_like_planetka_overload(0, text):
             return True
         return any(

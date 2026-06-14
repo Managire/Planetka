@@ -24,6 +24,8 @@ DEFAULT_API_BASE_URL = str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.pl
 CLOUD_OVERLOADED_ERROR_CODE = "planetka_cloud_overloaded"
 CLOUD_OVERLOADED_MESSAGE = "Planetka servers are temporarily overloaded. Please wait a few moments and try again."
 SESSION_EXPIRED_MESSAGE = "Planetka Cloud session expired. Restart Blender and try again."
+NETWORK_UNAVAILABLE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection, then try again."
+DOWNLOAD_INTERRUPTED_MESSAGE = "Planetka download was interrupted because the internet connection was lost. Check your connection, then click Resolve Planetka again."
 _ADDON_VERSION_CACHE = None
 _ADDON_EDITION_CACHE = None
 _CLOUD_CONNECTION_CACHE = {
@@ -34,7 +36,7 @@ _CLOUD_CONNECTION_CACHE = {
 }
 _AUTHORIZED_HEADERS_CACHE_LOCK = threading.Lock()
 _AUTHORIZED_HEADERS_CACHE = {}
-_CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection or try again later."
+_CLOUD_CONNECTION_OFFLINE_MESSAGE = NETWORK_UNAVAILABLE_MESSAGE
 _OVERLOAD_HTTP_STATUSES = {429, 503, 520, 522, 524, 529}
 _SESSION_LIMIT_OR_ACCESS_TOKENS = (
     "request limit reached",
@@ -59,6 +61,31 @@ _OVERLOAD_TEXT_TOKENS = (
     "bad gateway",
     "gateway timeout",
     "connection timed out",
+)
+_NETWORK_ERROR_TEXT_TOKENS = (
+    "network_error",
+    "timed out",
+    "timeout",
+    "temporary failure in name resolution",
+    "nodename nor servname",
+    "name or service not known",
+    "dns",
+    "connection refused",
+    "connection reset",
+    "connection aborted",
+    "broken pipe",
+    "unreachable",
+    "no route to host",
+    "network is down",
+    "connection was lost",
+    "lost connection",
+    "not connected to the internet",
+    "internet connection appears to be offline",
+    "cannot connect",
+    "check your connection",
+    "failed to establish a new connection",
+    "remote end closed connection",
+    "incomplete read",
 )
 
 
@@ -221,6 +248,29 @@ def looks_like_planetka_overload(status=0, *details):
     if status_code in _OVERLOAD_HTTP_STATUSES and not combined:
         return True
     return False
+
+
+def looks_like_network_error(*details):
+    combined_parts = []
+    for detail in details:
+        if detail is None:
+            continue
+        if isinstance(detail, urllib.error.URLError):
+            return True
+        combined_parts.append(str(detail))
+        reason = getattr(detail, "reason", None)
+        if reason is not None:
+            combined_parts.append(str(reason))
+    combined = " ".join(combined_parts).strip().lower()
+    if not combined:
+        return False
+    return any(token in combined for token in _NETWORK_ERROR_TEXT_TOKENS)
+
+
+def describe_network_error(stage="session"):
+    if str(stage or "").strip().lower() == "download":
+        return DOWNLOAD_INTERRUPTED_MESSAGE
+    return NETWORK_UNAVAILABLE_MESSAGE
 
 
 def mark_planetka_cloud_overloaded(prefs=None, reason=""):
@@ -451,6 +501,11 @@ def _json_request(method, path, body=None, headers=None, timeout=30):
     except urllib.error.URLError as exc:
         mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc))
         raise AuthApiError(0, f"network_error_{exc.reason}") from exc
+    except OSError as exc:
+        if looks_like_network_error(exc):
+            mark_planetka_cloud_offline(str(exc))
+            raise AuthApiError(0, "network_error", payload={"message": NETWORK_UNAVAILABLE_MESSAGE}) from exc
+        raise
     except ValueError as exc:
         mark_planetka_cloud_online()
         raise AuthApiError(0, "invalid_json_response") from exc
