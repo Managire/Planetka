@@ -12,9 +12,9 @@ Planetka has three editions: Free, Pro, and Studio. They are distributed as thre
 
 Free is an unsigned package. It provides the full Planetka texture range. Free is personal-use only, includes community support, and has best-effort data access.
 
-Pro is a signed paid package. It has the same add-on functionality as Free, adds a commercial licence, includes direct support, and includes guaranteed data access.
+Pro is a signed package. It has the same add-on functionality as Free, adds a commercial licence, includes direct support, and includes guaranteed data access.
 
-Studio is a signed paid package. It has the same resolving workflow as Pro, adds the animation panel with Quick Preview and Final Animation Render, includes a commercial licence, includes multiple seats, includes direct support, and includes guaranteed data access.
+Studio is a signed package. It has the same resolving workflow as Pro, adds the animation panel with Quick Preview and Final Animation Render, includes a commercial licence, includes multiple seats, includes direct support, and includes guaranteed data access.
 
 Free and Pro do not include the animation panel.
 

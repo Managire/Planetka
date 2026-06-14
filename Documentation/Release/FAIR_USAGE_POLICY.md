@@ -7,8 +7,8 @@ Planetka is an online texture-streaming service. This Fair Usage Policy protects
 Planetka is distributed as three separate ZIP files:
 
 - Free: unsigned package, full Planetka texture range, personal use only, community support, best-effort data access.
-- Pro: signed paid package, full Planetka texture range, commercial licence, direct support, guaranteed data access.
-- Studio: signed paid package, full Planetka texture range, Quick Preview and Final Animation Render, commercial licence, multiple seats, direct support, guaranteed data access.
+- Pro: signed package, full Planetka texture range, commercial licence, direct support, guaranteed data access.
+- Studio: signed package, full Planetka texture range, Quick Preview and Final Animation Render, commercial licence, multiple seats, direct support, guaranteed data access.
 
 Free and Pro have identical add-on functionality. They differ by licence, support level, and data-access guarantee. Studio adds the animation panel.
 

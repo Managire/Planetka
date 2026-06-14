@@ -8,11 +8,11 @@ Planetka creates the Earth surface, provides the Planetka Resolve workflow, and 
 
 Planetka is distributed as three separate ZIP files. They are editions of the same add-on, so installing one edition replaces the other. Only one Planetka edition should be installed at a time.
 
-| Edition | Package | Texture Access | Animation Panel | Licence | Support | Price |
-| --- | --- | --- | --- | --- | --- | --- |
-| Free | Unsigned ZIP | Full Planetka texture range | No | Personal use only | Community support | 0 EUR |
-| Pro | Signed ZIP | Full Planetka texture range | No | Commercial use | Direct support, guaranteed data access | 150 EUR |
-| Studio | Signed ZIP | Full Planetka texture range | Yes: Quick Preview and Final Animation Render | Commercial use, multiple seats | Direct support, guaranteed data access | 350 EUR |
+| Edition | Package | Texture Access | Animation Panel | Licence | Support |
+| --- | --- | --- | --- | --- | --- |
+| Free | Unsigned ZIP | Full Planetka texture range | No | Personal use only | Community support |
+| Pro | Signed ZIP | Full Planetka texture range | No | Commercial use | Direct support, guaranteed data access |
+| Studio | Signed ZIP | Full Planetka texture range | Yes: Quick Preview and Final Animation Render | Commercial use, multiple seats | Direct support, guaranteed data access |
 
 Free and Pro have identical add-on functionality. They differ by licence, support level, and data-access guarantee. Studio has the same resolving workflow and adds the animation panel.
 
