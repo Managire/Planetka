@@ -30,7 +30,7 @@ bl_info = {
 
 
 logger = logging.getLogger(__name__)
-_PRO_EDITION = local_addon_edition_code() == "pro"
+_STUDIO_EDITION = local_addon_edition_code() == "studio"
 mark_render_job_progress = None
 mark_render_job_started = None
 recover_post_render_state = None
@@ -47,8 +47,8 @@ base_classes = (
     PLANETKA_PT_PublicMainPanel,
 )
 
-pro_classes = ()
-if _PRO_EDITION:
+studio_classes = ()
+if _STUDIO_EDITION:
     from .animation_tools import (
         PLANETKA_OT_AnimationClearPrepared,
         PLANETKA_OT_AnimationMakeReady,
@@ -62,7 +62,7 @@ if _PRO_EDITION:
         recover_post_render_state,
     )
 
-    pro_classes = (
+    studio_classes = (
         PLANETKA_OT_AnimationPreviewShot,
         PLANETKA_OT_AnimationMakeReady,
         PLANETKA_OT_AnimationClearPrepared,
@@ -71,7 +71,7 @@ if _PRO_EDITION:
         PLANETKA_PT_PublicAnimationPanel,
     )
 
-classes = base_classes + pro_classes
+classes = base_classes + studio_classes
 
 
 def _safe_register_class(cls):
@@ -111,29 +111,29 @@ def _safe_unregister_class(cls):
 
 
 def _planetka_render_pre(scene):
-    if _PRO_EDITION:
+    if _STUDIO_EDITION:
         mark_render_job_started(scene)
 
 
 def _planetka_render_post(scene, *args):
     del args
-    if _PRO_EDITION:
+    if _STUDIO_EDITION:
         mark_render_job_progress(scene, frame_written=False)
 
 
 def _planetka_render_write(scene, *args):
     del args
-    if _PRO_EDITION:
+    if _STUDIO_EDITION:
         mark_render_job_progress(scene, frame_written=True)
 
 
 def _planetka_render_complete(scene):
-    if _PRO_EDITION:
+    if _STUDIO_EDITION:
         recover_post_render_state(scene, cancelled=False)
 
 
 def _planetka_render_cancel(scene):
-    if _PRO_EDITION:
+    if _STUDIO_EDITION:
         recover_post_render_state(scene, cancelled=True)
 
 
@@ -145,7 +145,7 @@ def _planetka_shutdown_cleanup(*_args):
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed stopping resolve during shutdown", exc_info=True)
     try:
-        if _PRO_EDITION:
+        if _STUDIO_EDITION:
             recover_post_render_state(None, cancelled=True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed clearing render state during shutdown", exc_info=True)
@@ -196,7 +196,7 @@ def register():
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed initializing install id", exc_info=True)
 
-    if _PRO_EDITION:
+    if _STUDIO_EDITION:
         _remove_render_handlers()
         bpy.app.handlers.render_pre.append(_planetka_render_pre)
         bpy.app.handlers.render_post.append(_planetka_render_post)

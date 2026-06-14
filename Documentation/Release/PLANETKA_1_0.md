@@ -10,13 +10,13 @@ Planetka is distributed as three separate ZIP files. They are editions of the sa
 
 | Edition | Package | Texture Access | Animation Panel | Licence | Support | Price |
 | --- | --- | --- | --- | --- | --- | --- |
-| Free | Unsigned ZIP | 1000K textures, capped at d004 or coarser | No | Personal use only | Community support | Free |
-| Private | Signed ZIP | Full 4000K textures | No | Personal use only | Community support | 15 EUR |
-| Pro | Signed ZIP | Full 4000K textures | Yes: Quick Preview and Final Animation Render | Commercial licence | Direct support | 150 EUR |
+| Free | Unsigned ZIP | Full Planetka texture range | No | Personal use only | Community support | 0 EUR |
+| Pro | Signed ZIP | Full Planetka texture range | No | Commercial use | Direct support, guaranteed data access | 150 EUR |
+| Studio | Signed ZIP | Full Planetka texture range | Yes: Quick Preview and Final Animation Render | Commercial use, multiple seats | Direct support, guaranteed data access | 350 EUR |
 
-Private has the same add-on functionality as Free, but unlocks full 4000K texture access. Pro has the same texture access as Private and adds the animation panel.
+Free and Pro have identical add-on functionality. They differ by licence, support level, and data-access guarantee. Studio has the same resolving workflow and adds the animation panel.
 
-Paid edition signatures are used by Planetka Cloud to identify authorised paid packages. Free does not require a package signature.
+Paid edition signatures are used by Planetka Cloud to identify authorised Pro and Studio packages. Free does not require a package signature.
 
 ## Fair Usage Allowance
 
@@ -25,8 +25,8 @@ Planetka Cloud is a streaming service, not a raw dataset download product.
 Annual fair usage allowance is measured against the full Planetka hosted dataset:
 
 - Free: 2.5% of the full dataset per year
-- Private: 5% of the full dataset per year
 - Pro: 15% of the full dataset per year
+- Studio: 15% of the full dataset per year
 
 For higher usage allowance, users must contact Tomas Griger / Planetka.
 
@@ -45,9 +45,9 @@ It includes:
 - Tutorials and website links
 - Scene Health Check
 
-The Pro edition also includes a second panel for:
+The Studio edition also includes a second panel for:
 
 - Quick Preview
 - Final Animation Render
 
-Free and Private do not include the animation panel.
+Free and Pro do not include the animation panel.

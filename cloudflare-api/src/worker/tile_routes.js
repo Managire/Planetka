@@ -43,14 +43,14 @@ function firstNonEmpty(...values) {
 function normalizeQuotaEdition(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "pro") return "pro";
-  if (normalized === "private") return "private";
+  if (normalized === "studio" || normalized === "planetka_studio") return "studio";
+  if (normalized === "private") return "pro";
   return "free";
 }
 
 function quotaFractionForEdition(edition) {
   const normalized = normalizeQuotaEdition(edition);
-  if (normalized === "pro") return 0.15;
-  if (normalized === "private") return 0.05;
+  if (normalized === "pro" || normalized === "studio") return 0.15;
   return 0.025;
 }
 
@@ -381,7 +381,8 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         || (cloudAuth.access && (cloudAuth.access.install_edition || cloudAuth.access.access_tier))
       ) || "",
     ).trim().toLowerCase();
-    if (tokenInstallEdition !== "pro") {
+    const normalizedAssetEdition = normalizeQuotaEdition(tokenInstallEdition);
+    if (normalizedAssetEdition !== "pro" && normalizedAssetEdition !== "studio") {
       return json({ ok: false, error: "cloud_asset_not_available_for_edition" }, 403, env);
     }
   } else {

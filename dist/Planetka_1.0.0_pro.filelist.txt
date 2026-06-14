@@ -24,7 +24,6 @@ Resources/planetka_base_sphere_mesh_cache.blend
 Resources/planetka_edition.json
 Resources/planetka_surface_material_library.blend
 __init__.py
-animation_tools.py
 asset_builder.py
 auth.py
 blender_manifest.toml

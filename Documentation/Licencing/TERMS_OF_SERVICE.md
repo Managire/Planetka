@@ -8,21 +8,21 @@ These Terms govern access to Planetka-hosted data, Planetka Cloud services, and 
 
 ## 2. Editions
 
-Planetka has three editions: Free, Private, and Pro. They are distributed as three separate ZIP files. They are editions of the same add-on, so installing one edition replaces the other.
+Planetka has three editions: Free, Pro, and Studio. They are distributed as three separate ZIP files. They are editions of the same add-on, so installing one edition replaces the other.
 
-Free is an unsigned package. It provides 1000K texture access capped at d004 or coarser. Free is personal-use only and includes community support.
+Free is an unsigned package. It provides the full Planetka texture range. Free is personal-use only, includes community support, and has best-effort data access.
 
-Private is a signed paid package. It has the same add-on functionality as Free, but unlocks full 4000K texture access. Private is personal-use only and includes community support.
+Pro is a signed paid package. It has the same add-on functionality as Free, adds a commercial licence, includes direct support, and includes guaranteed data access.
 
-Pro is a signed paid package. It unlocks full 4000K texture access, includes the animation panel with Quick Preview and Final Animation Render, includes a commercial licence, and includes direct support.
+Studio is a signed paid package. It has the same resolving workflow as Pro, adds the animation panel with Quick Preview and Final Animation Render, includes a commercial licence, includes multiple seats, includes direct support, and includes guaranteed data access.
 
-Free and Private do not include the animation panel.
+Free and Pro do not include the animation panel.
 
 ## 3. Planetka Cloud Access
 
 Planetka currently uses automatic anonymous install/session access for Planetka Cloud data. Planetka may use install/session identifiers, device/session checks, abuse controls, IP-based controls, request limits, and temporary throttling to protect service reliability, prevent scraping, and revoke compromised access.
 
-Paid edition signatures are used by Planetka Cloud to identify authorised Private and Pro packages. Free does not require a package signature.
+Paid edition signatures are used by Planetka Cloud to identify authorised Pro and Studio packages. Free does not require a package signature.
 
 ## 4. Hosted Data And Cache
 
@@ -32,9 +32,9 @@ You may not scrape, bulk-download, reconstruct, redistribute, resell, sublicense
 
 ## 5. Rendered Output
 
-Free and Private rendered output may be used for personal, non-commercial work.
+Free rendered output may be used for personal, non-commercial work.
 
-Pro rendered output may be used for commercial work, including still images, videos, animations, VFX shots, educational material, and client deliverables.
+Pro and Studio rendered output may be used for commercial work, including still images, videos, animations, VFX shots, educational material, and client deliverables.
 
 You are responsible for following required attribution obligations in published work where source datasets require attribution.
 
@@ -52,13 +52,13 @@ Planetka data is visualisation data and is not suitable for safety-critical use,
 
 ## 8. Payments And Services
 
-Free access may be offered without payment. Private, Pro, higher usage allowance, custom support, or other written service arrangements may be paid.
+Free access may be offered without payment. Pro, Studio, higher usage allowance, custom support, or other written service arrangements may be paid.
 
 Payments are handled by the payment provider, marketplace, invoice, or written agreement used for that service. Planetka does not store full payment-card details.
 
 ## 9. Availability
 
-Planetka depends on hosted infrastructure, storage providers, Blender compatibility, graphics drivers, and network availability. Planetka is provided as-is and as-available unless a separate Pro service agreement states otherwise.
+Planetka depends on hosted infrastructure, storage providers, Blender compatibility, graphics drivers, and network availability. Free data access is best effort and may be interrupted when Planetka needs to protect or repair the hosted data service. Planetka is provided as-is and as-available unless a separate Pro or Studio service agreement states otherwise.
 
 ## 10. Contact
 

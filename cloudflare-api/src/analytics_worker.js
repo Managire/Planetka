@@ -434,9 +434,6 @@ function timingSafeHexEquals(left, right) {
 
 async function resolveVerifiedInstallEdition(body = {}, env = {}) {
   const requestedRaw = String(body.install_edition || body.edition || body.access_tier || defaultSignupAccessTier(env)).trim().toLowerCase();
-  if (requestedRaw === "studio" || requestedRaw === "planetka_studio") {
-    return "pro";
-  }
   const requested = normalizeRequestedAccessTier(requestedRaw);
   if (requested === "free") {
     return "free";
@@ -451,9 +448,9 @@ async function resolveVerifiedInstallEdition(body = {}, env = {}) {
   }
   const version = String(body.edition_signature_version || body.signature_version || "1").trim() || "1";
   const exactSignature = String(
-    requested === "private"
-      ? env.PLANETKA_PRIVATE_SIGNATURE_V1 || ""
-      : env.PLANETKA_PRO_SIGNATURE_V1 || "",
+    requested === "studio"
+      ? env.PLANETKA_STUDIO_SIGNATURE_V1 || ""
+      : env.PLANETKA_PRO_SIGNATURE_V1 || env.PLANETKA_PRIVATE_SIGNATURE_V1 || "",
   ).trim().toLowerCase();
   if (version === "1" && exactSignature && timingSafeHexEquals(signature, exactSignature)) {
     return requested;
@@ -1293,7 +1290,7 @@ async function handleAddonReleaseDownload(request, env, path) {
     return json({ ok: false, error: "release_storage_unavailable" }, 503, env);
   }
   const fileName = decodeURIComponent(String(path || "").replace(/^\/addon\/releases\//, "")).trim();
-  if (!/^(?:Planetka_update_\d+\.\d+\.\d+|Planetka_\d+\.\d+\.\d+_(?:free|private|pro|public))\.zip$/.test(fileName)) {
+  if (!/^(?:Planetka_update_\d+\.\d+\.\d+|Planetka_\d+\.\d+\.\d+_(?:free|pro|studio|public|private))\.zip$/.test(fileName)) {
     return notFound(env);
   }
   const key = `releases/${fileName}`;

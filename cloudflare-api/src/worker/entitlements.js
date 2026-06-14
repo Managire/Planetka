@@ -1,8 +1,8 @@
 export const ACCESS_STATUS_ACTIVE = "active";
 export const ACCESS_STATUS_BLOCKED = "blocked";
 export const ACCESS_TIER_FREE = "free";
-export const ACCESS_TIER_PRIVATE = "private";
 export const ACCESS_TIER_PRO = "pro";
+export const ACCESS_TIER_STUDIO = "studio";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
 
@@ -48,8 +48,8 @@ export function defaultSignupAccessStatus(env = {}) {
 export function normalizeAccessTier(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === ACCESS_TIER_PRO) return ACCESS_TIER_PRO;
-  if (normalized === "studio" || normalized === "planetka_studio") return ACCESS_TIER_PRO;
-  if (normalized === ACCESS_TIER_PRIVATE) return ACCESS_TIER_PRIVATE;
+  if (normalized === ACCESS_TIER_STUDIO || normalized === "planetka_studio") return ACCESS_TIER_STUDIO;
+  if (normalized === "private") return ACCESS_TIER_PRO;
   return ACCESS_TIER_FREE;
 }
 
@@ -65,7 +65,7 @@ export function defaultSignupAccessTier(env = {}) {
 export function accessTierDisplayName(accessTier) {
   const normalized = normalizeAccessTier(accessTier);
   if (normalized === ACCESS_TIER_PRO) return "Pro";
-  if (normalized === ACCESS_TIER_PRIVATE) return "Private";
+  if (normalized === ACCESS_TIER_STUDIO) return "Studio";
   return "Free";
 }
 
@@ -106,11 +106,9 @@ export function qualityModeNotAllowedMessage(accessStatus, qualityMode) {
 }
 
 export function isTileFileAllowedForEdition(installEdition, fileName) {
-  if (normalizeAccessTier(installEdition) !== ACCESS_TIER_FREE) return true;
-  const match = String(fileName || "").match(/_d(\d{3})(?:[._-]|$)/i);
-  if (!match) return true;
-  const dCode = String(match[1] || "");
-  return dCode !== "001" && dCode !== "002";
+  void installEdition;
+  void fileName;
+  return true;
 }
 
 export function normalizeTileSessionFeature(value) {
@@ -123,7 +121,7 @@ export function normalizeTileSessionFeature(value) {
 export function isTileSessionFeatureAllowedForEdition(installEdition, feature) {
   const safeFeature = normalizeTileSessionFeature(feature);
   if (safeFeature !== "final_animation_render") return true;
-  return normalizeAccessTier(installEdition) === ACCESS_TIER_PRO;
+  return normalizeAccessTier(installEdition) === ACCESS_TIER_STUDIO;
 }
 
 export function isTileFileAllowedForAccess(accessStatus, fileName) {

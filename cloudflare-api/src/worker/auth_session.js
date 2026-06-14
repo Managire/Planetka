@@ -119,7 +119,8 @@ export async function requireCloudSessionContext(request, env, options = {}, dep
     : (() => {
       const value = String(access.install_edition || access.access_tier || "").trim().toLowerCase();
       if (value === "pro") return "pro";
-      if (value === "private") return "private";
+      if (value === "studio" || value === "planetka_studio") return "studio";
+      if (value === "private") return "pro";
       return "free";
     })();
   const tokenIpScope = String(access.client_ip_scope || access.clientIpScope || "").trim();

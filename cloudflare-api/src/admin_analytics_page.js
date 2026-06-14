@@ -25,11 +25,11 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const safeValues = values && typeof values === "object" ? values : {};
     const total = Number(safeValues.total || fallbackTotal || 0);
     const free = Number(safeValues.free || 0);
-    const privateValue = Number(safeValues.private || 0);
+    const studioValue = Number(safeValues.studio || 0);
     const pro = Number(safeValues.pro || 0);
     return `<div class="metric-split">
       <span class="metric-item metric-free"><span class="metric-number">${escapeHtml(String(valueFormatter(free)))}</span></span>
-      <span class="metric-item metric-private"><span class="metric-number">${escapeHtml(String(valueFormatter(privateValue)))}</span></span>
+      <span class="metric-item metric-studio"><span class="metric-number">${escapeHtml(String(valueFormatter(studioValue)))}</span></span>
       <span class="metric-item metric-pro"><span class="metric-number">${escapeHtml(String(valueFormatter(pro)))}</span></span>
       <span class="metric-item metric-total"><span class="metric-number">${escapeHtml(String(valueFormatter(total)))}</span></span>
     </div>`;
@@ -60,7 +60,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .metric-item { display:inline-flex; gap:4px; align-items:baseline; white-space:nowrap; }
     .metric-number { font-size:20px; font-weight:700; }
     .metric-free { color:#86efac; }
-    .metric-private { color:#fde047; }
+    .metric-studio { color:#fde047; }
     .metric-pro { color:#fca5a5; }
     .metric-total { color:#ffffff; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
@@ -197,12 +197,12 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const safeValues = values && typeof values === "object" ? values : {};
       const total = Number(safeValues.total || fallbackTotal || 0);
       const free = Number(safeValues.free || 0);
-      const privateValue = Number(safeValues.private || 0);
+      const studioValue = Number(safeValues.studio || 0);
       const pro = Number(safeValues.pro || 0);
       const formatter = asGb ? fmtWholeGb : fmtInt;
       target.innerHTML = '<div class="metric-split">' +
         '<span class="metric-item metric-free"><span class="metric-number">' + escapeHtml(formatter(free)) + '</span></span>' +
-        '<span class="metric-item metric-private"><span class="metric-number">' + escapeHtml(formatter(privateValue)) + '</span></span>' +
+        '<span class="metric-item metric-studio"><span class="metric-number">' + escapeHtml(formatter(studioValue)) + '</span></span>' +
         '<span class="metric-item metric-pro"><span class="metric-number">' + escapeHtml(formatter(pro)) + '</span></span>' +
         '<span class="metric-item metric-total"><span class="metric-number">' + escapeHtml(formatter(total)) + '</span></span>' +
         '</div>';

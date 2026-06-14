@@ -9,7 +9,7 @@ Planetka collects the minimum operational data needed to provide hosted data acc
 Planetka may process:
 
 - anonymous install identifiers, device/session identifiers, and token metadata;
-- Free, Private, or Pro service metadata where a paid service is arranged;
+- Free, Pro, or Studio service metadata where a paid service is arranged;
 - payment or invoice metadata where a paid service is arranged;
 - texture request metadata needed to serve data and protect the service;
 - operational telemetry, errors, cache status, request counts, and bytes served;
@@ -19,7 +19,7 @@ Planetka does not intentionally collect your Blender project files, scene conten
 
 ## Payments
 
-Planetka may provide Free access without payment. Private, Pro, higher usage allowance, custom support, or other written service arrangements may be processed by the payment provider, marketplace, invoice, or written agreement used for that service. Planetka does not store your full card number or full payment-card details.
+Planetka may provide Free access without payment. Pro, Studio, higher usage allowance, custom support, or other written service arrangements may be processed by the payment provider, marketplace, invoice, or written agreement used for that service. Planetka does not store your full card number or full payment-card details.
 
 ## How Data Is Used
 

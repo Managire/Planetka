@@ -10,4 +10,4 @@ Planetka connects to Planetka Cloud automatically through an anonymous install s
 
 ## Hardware
 
-A GPU capable of handling high-resolution textures is recommended, especially for Private and Pro editions using Full quality.
+A GPU capable of handling high-resolution textures is recommended, especially when using Full quality.

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -192,7 +193,42 @@ def _display_path(path: Path) -> str:
         return path.as_posix()
 
 
-def build_package(allowlist_path: Path, stage_root: Path, output_path: Path, keep_stage: bool) -> dict:
+def _edition_label(edition: str, override: str = "") -> str:
+    if override:
+        return override
+    return {
+        "free": "Free",
+        "pro": "Pro",
+        "studio": "Studio",
+    }.get(str(edition or "").strip().lower(), "Free")
+
+
+def _write_edition_marker(payload_root: Path, edition: str, label: str, signature: str, signature_version: int) -> None:
+    marker_path = payload_root / "Resources" / "planetka_edition.json"
+    if not marker_path.is_file():
+        return
+    safe_edition = str(edition or "free").strip().lower()
+    if safe_edition not in {"free", "pro", "studio"}:
+        safe_edition = "free"
+    payload = {
+        "edition": safe_edition,
+        "label": _edition_label(safe_edition, label),
+        "signature": str(signature or "").strip(),
+        "signature_version": int(signature_version or 1),
+    }
+    marker_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def build_package(
+    allowlist_path: Path,
+    stage_root: Path,
+    output_path: Path,
+    keep_stage: bool,
+    edition: str,
+    edition_label: str,
+    edition_signature: str,
+    edition_signature_version: int,
+) -> dict:
     manifest = _read_manifest()
     addon_id = str(manifest.get("id") or "planetka").strip() or "planetka"
     version = str(manifest.get("version") or "0").strip() or "0"
@@ -213,6 +249,7 @@ def build_package(allowlist_path: Path, stage_root: Path, output_path: Path, kee
         _copy_allowlisted_file(src, dst)
         expected_files.add(rel.as_posix())
 
+    _write_edition_marker(payload_root, edition, edition_label, edition_signature, edition_signature_version)
     _validate_stage(payload_root, expected_files)
     file_count, total_bytes = _zip_payload(payload_root, output_path)
     sha256 = _sha256_file(output_path)
@@ -267,6 +304,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--stage-root", default=str(DEFAULT_STAGE_ROOT), help="Directory used for staging payload files")
     parser.add_argument("--output", default=str(default_output), help="Output zip path")
     parser.add_argument("--keep-stage", action="store_true", help="Keep staging directory after packaging")
+    parser.add_argument("--edition", default="free", choices=("free", "pro", "studio"), help="Edition marker to embed in the package")
+    parser.add_argument("--edition-label", default="", help="Edition display label; defaults to the edition name")
+    parser.add_argument("--edition-signature", default="", help="Package edition signature")
+    parser.add_argument("--edition-signature-version", default="1", help="Package edition signature version")
     args = parser.parse_args(argv)
 
     result = build_package(
@@ -274,6 +315,10 @@ def main(argv: list[str]) -> int:
         stage_root=Path(args.stage_root).resolve(),
         output_path=Path(args.output).resolve(),
         keep_stage=bool(args.keep_stage),
+        edition=str(args.edition or "free"),
+        edition_label=str(args.edition_label or ""),
+        edition_signature=str(args.edition_signature or ""),
+        edition_signature_version=int(args.edition_signature_version or 1),
     )
 
     print("Planetka package built")

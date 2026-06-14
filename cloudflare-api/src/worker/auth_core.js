@@ -47,7 +47,8 @@ export function createAuthCore(deps) {
       : (() => {
         const value = String(auth && (auth.installEdition || (auth.access && (auth.access.install_edition || auth.access.access_tier))) || "").trim().toLowerCase();
         if (value === "pro") return "pro";
-        if (value === "private") return "private";
+        if (value === "studio" || value === "planetka_studio") return "studio";
+        if (value === "private") return "pro";
         return "free";
       })();
     if (
@@ -147,7 +148,8 @@ export function createAuthCore(deps) {
         : (() => {
           const value = String(payload && (payload.install_edition || payload.access_tier) || "").trim().toLowerCase();
           if (value === "pro") return "pro";
-          if (value === "private") return "private";
+          if (value === "studio" || value === "planetka_studio") return "studio";
+          if (value === "private") return "pro";
           return "free";
         })(),
       deviceId: deps.normalizeDeviceId(payload && payload.device_id || ""),
@@ -176,7 +178,8 @@ export function createAuthCore(deps) {
       : (() => {
         const value = String(metadata.install_edition || metadata.installEdition || "").trim().toLowerCase();
         if (value === "pro") return "pro";
-        if (value === "private") return "private";
+        if (value === "studio" || value === "planetka_studio") return "studio";
+        if (value === "private") return "pro";
         return "free";
       })();
     const editionSignature = String(metadata.edition_signature || metadata.editionSignature || "").trim().slice(0, 256);

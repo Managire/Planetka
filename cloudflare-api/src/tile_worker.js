@@ -56,8 +56,8 @@ function normalizeDeviceId(value) {
 function normalizeInstallEdition(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "pro") return "pro";
-  if (normalized === "studio" || normalized === "planetka_studio") return "pro";
-  if (normalized === "private") return "private";
+  if (normalized === "studio" || normalized === "planetka_studio") return "studio";
+  if (normalized === "private") return "pro";
   return "free";
 }
 

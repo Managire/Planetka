@@ -2,21 +2,21 @@
 
 Planetka is an online texture-streaming service. This Fair Usage Policy protects service reliability for all users.
 
-## Free, Private, And Pro
+## Free, Pro, And Studio
 
 Planetka is distributed as three separate ZIP files:
 
-- Free: unsigned package, 1000K texture access capped at d004 or coarser, personal use only, community support.
-- Private: signed paid package, full 4000K texture access, personal use only, community support.
-- Pro: signed paid package, full 4000K texture access, Quick Preview and Final Animation Render, commercial licence, direct support.
+- Free: unsigned package, full Planetka texture range, personal use only, community support, best-effort data access.
+- Pro: signed paid package, full Planetka texture range, commercial licence, direct support, guaranteed data access.
+- Studio: signed paid package, full Planetka texture range, Quick Preview and Final Animation Render, commercial licence, multiple seats, direct support, guaranteed data access.
 
-Free and Private do not include the animation panel. Private has the same add-on functionality as Free, but unlocks full 4000K texture access.
+Free and Pro have identical add-on functionality. They differ by licence, support level, and data-access guarantee. Studio adds the animation panel.
 
 Annual fair usage allowance is measured against the full Planetka hosted dataset:
 
 - Free: 2.5% of the full dataset per year.
-- Private: 5% of the full dataset per year.
 - Pro: 15% of the full dataset per year.
+- Studio: 15% of the full dataset per year.
 
 For higher usage allowance, users must contact Planetka.
 
@@ -24,9 +24,9 @@ If an installation reaches its allowance within one day, Planetka may block that
 
 ## Fair Use
 
-Free and Private may be used for personal, non-commercial work within the edition allowance.
+Free may be used for personal, non-commercial work within the edition allowance. Free data access is best effort and may be interrupted when Planetka needs to protect or repair the hosted data service.
 
-Pro may be used for commercial rendering workflows, including freelance, client, broadcast, advertising, and production work, within the edition allowance.
+Pro and Studio may be used for commercial rendering workflows, including freelance, client, broadcast, advertising, and production work, within the edition allowance.
 
 Planetka may apply request limits, caching rules, abuse detection, device/session checks, IP-based controls, and temporary throttling to protect service reliability and hosted data.
 

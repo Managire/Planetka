@@ -169,7 +169,7 @@ class PLANETKA_PT_PublicAnimationPanel(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         del context
-        return local_addon_edition_code() == "pro"
+        return local_addon_edition_code() == "studio"
 
     def draw(self, context):
         scene = getattr(context, "scene", None)
