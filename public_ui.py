@@ -108,8 +108,8 @@ def _draw_data_summary(layout):
         status_text = "Connected"
         status_icon = "CHECKMARK"
     elif authenticated and not checked:
-        status_text = "Checking"
-        status_icon = "INFO"
+        status_text = "Ready"
+        status_icon = "CHECKMARK"
     elif authenticated and overloaded:
         status_text = "Cloud busy"
         status_icon = "ERROR"
