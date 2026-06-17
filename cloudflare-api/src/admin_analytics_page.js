@@ -14,6 +14,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
+    serviceStatus,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -42,6 +43,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topTileRequestsHtml = renderEditionValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
   const fmtWholeGbLocal = (value) => `${Math.round(Number(value || 0) / (1024 * 1024 * 1024)).toLocaleString("en-US")} GB`;
   const topGbServedHtml = renderEditionValue(topLineGbServed, fmtWholeGbLocal, topLineGbServed.total);
+  const safeServiceStatus = serviceStatus && typeof serviceStatus === "object" ? serviceStatus : {};
+  const serviceStatusJson = JSON.stringify({
+    enabled: Boolean(safeServiceStatus.enabled),
+    message: String(safeServiceStatus.message || ""),
+    url: String(safeServiceStatus.url || ""),
+    severity: String(safeServiceStatus.severity || "info"),
+    updated_at: String(safeServiceStatus.updated_at || ""),
+    updated_by: String(safeServiceStatus.updated_by || ""),
+  }).replace(/</g, "\\u003c");
   return `
 <!doctype html>
 <html>
@@ -71,8 +81,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .map-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
     .map-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     .map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; }
-    select, button, input { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
+    select, button, input, textarea { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
     input[type=number] { width: 110px; }
+    textarea { width: 100%; min-height: 46px; box-sizing: border-box; resize: vertical; margin-top: 8px; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
@@ -84,6 +95,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .error { color: #fca5a5; }
     .install-filter-active { outline: 1px solid #60a5fa; outline-offset: -1px; }
     .subvalue { color:#9ca3af; font-size:12px; line-height:1.35; margin-top:4px; }
+    .service-status-card { max-width: 980px; margin: 10px 0 18px; }
+    .service-status-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top: 8px; }
+    .service-status-row input[type=text] { min-width: 280px; flex: 1; }
   </style>
 </head>
 <body>
@@ -111,6 +125,24 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <a id="refresh" href="/admin/analytics?refresh=${encodeURIComponent(buildStamp)}" style="display:inline-block;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:7px 10px;text-decoration:none;">Refresh now</a>
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
+  <div class="card service-status-card">
+    <div class="label">Planetka Data Status</div>
+    <div class="muted">Shown in the add-on Status field after the next session refresh.</div>
+    <textarea id="serviceStatusMessage" maxlength="160" placeholder="Connected"></textarea>
+    <div class="service-status-row">
+      <input id="serviceStatusUrl" type="text" placeholder="Details URL" />
+      <select id="serviceStatusSeverity">
+        <option value="info">Info</option>
+        <option value="warning">Warning</option>
+        <option value="maintenance">Maintenance</option>
+        <option value="error">Error</option>
+      </select>
+      <label><input id="serviceStatusEnabled" type="checkbox" /> Enabled</label>
+      <button id="serviceStatusSave" type="button">Save</button>
+      <button id="serviceStatusClear" type="button">Clear</button>
+      <span id="serviceStatusResult" class="muted"></span>
+    </div>
+  </div>
   <div class="grid">
     <div class="card"><div class="label">Installs</div><div id="topInstallsSplit" class="value">${topInstallsHtml}</div></div>
     <div class="card"><div class="label">Resolves</div><div id="topResolvesSplit" class="value">${topResolvesHtml}</div></div>
@@ -167,6 +199,14 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    const windowEl = document.getElementById("window");
 	    const tileMapWindowEl = document.getElementById("tileMapWindow");
 	    const refreshBtn = document.getElementById("refresh");
+    const serviceStatusInitial = ${serviceStatusJson};
+    const serviceStatusMessageEl = document.getElementById("serviceStatusMessage");
+    const serviceStatusUrlEl = document.getElementById("serviceStatusUrl");
+    const serviceStatusSeverityEl = document.getElementById("serviceStatusSeverity");
+    const serviceStatusEnabledEl = document.getElementById("serviceStatusEnabled");
+    const serviceStatusSaveEl = document.getElementById("serviceStatusSave");
+    const serviceStatusClearEl = document.getElementById("serviceStatusClear");
+    const serviceStatusResultEl = document.getElementById("serviceStatusResult");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     const escapeHtml = (value) => String(value || "")
       .replace(/&/g, "&amp;")
@@ -194,6 +234,45 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     };
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
     const fmtWholeGb = (v) => Math.round(Number(v || 0) / (1024 * 1024 * 1024)).toLocaleString() + " GB";
+    function setServiceStatusForm(status) {
+      const safe = status && typeof status === "object" ? status : {};
+      if (serviceStatusMessageEl) serviceStatusMessageEl.value = String(safe.message || "");
+      if (serviceStatusUrlEl) serviceStatusUrlEl.value = String(safe.url || "");
+      if (serviceStatusSeverityEl) serviceStatusSeverityEl.value = String(safe.severity || "info");
+      if (serviceStatusEnabledEl) serviceStatusEnabledEl.checked = Boolean(safe.enabled);
+      if (serviceStatusResultEl) {
+        const updatedAt = String(safe.updated_at || "");
+        serviceStatusResultEl.textContent = updatedAt ? "Updated " + updatedAt : "";
+      }
+    }
+    async function saveServiceStatus(action) {
+      if (serviceStatusResultEl) serviceStatusResultEl.textContent = "Saving...";
+      const payload = action === "clear"
+        ? { action: "clear" }
+        : {
+          enabled: serviceStatusEnabledEl ? Boolean(serviceStatusEnabledEl.checked) : false,
+          message: serviceStatusMessageEl ? serviceStatusMessageEl.value : "",
+          url: serviceStatusUrlEl ? serviceStatusUrlEl.value : "",
+          severity: serviceStatusSeverityEl ? serviceStatusSeverityEl.value : "info",
+        };
+      try {
+        const response = await fetch("/admin/service-status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+          throw new Error(data && data.error || "service_status_save_failed");
+        }
+        setServiceStatusForm(data.status || {});
+      } catch (error) {
+        if (serviceStatusResultEl) serviceStatusResultEl.textContent = "Error: " + String(error && error.message || error);
+      }
+    }
+    setServiceStatusForm(serviceStatusInitial);
+    if (serviceStatusSaveEl) serviceStatusSaveEl.addEventListener("click", () => saveServiceStatus("save"));
+    if (serviceStatusClearEl) serviceStatusClearEl.addEventListener("click", () => saveServiceStatus("clear"));
     const renderEditionMetric = (id, values, asGb = false, fallbackTotal = 0) => {
       const target = document.getElementById(id);
       if (!target) return;

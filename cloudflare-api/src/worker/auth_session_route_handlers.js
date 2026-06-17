@@ -249,6 +249,10 @@ export function createAuthSessionRouteHandlers(deps) {
         : null,
     });
 
+    const planetkaDataStatus = typeof deps.planetkaDataStatusPayload === "function"
+      ? await deps.planetkaDataStatusPayload(env)
+      : null;
+
     return deps.json(
       {
         ok: true,
@@ -268,6 +272,7 @@ export function createAuthSessionRouteHandlers(deps) {
         access_tier_label: typeof deps.accessTierDisplayName === "function"
           ? deps.accessTierDisplayName(installEdition)
           : (installEdition === "studio" ? "Studio" : (installEdition === "pro" ? "Pro" : (installEdition === "hobby" ? "Hobby" : "Free"))),
+        planetka_data_status: planetkaDataStatus,
       },
       200,
       env,
@@ -338,6 +343,10 @@ export function createAuthSessionRouteHandlers(deps) {
     }
 
 
+    const planetkaDataStatus = typeof deps.planetkaDataStatusPayload === "function"
+      ? await deps.planetkaDataStatusPayload(env)
+      : null;
+
     return deps.json(
       {
         ok: true,
@@ -376,6 +385,7 @@ export function createAuthSessionRouteHandlers(deps) {
         install_edition_label: installEditionLabel,
         access_tier: installEdition,
         access_tier_label: installEditionLabel,
+        planetka_data_status: planetkaDataStatus,
       },
       200,
       env,

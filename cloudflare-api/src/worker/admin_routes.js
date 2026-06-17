@@ -17,6 +17,7 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminInstallUnblock,
     handleAdminInstallHardBlock,
     handleAdminQaAuthReset,
+    handleAdminServiceStatus,
   } = deps;
 
   switch (path) {
@@ -79,6 +80,11 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/qa/auth-reset":
       if (request.method === "POST") {
         return await handleAdminQaAuthReset(request, env);
+      }
+      return null;
+    case "/admin/service-status":
+      if (request.method === "GET" || request.method === "POST") {
+        return await handleAdminServiceStatus(request, env);
       }
       return null;
     default:

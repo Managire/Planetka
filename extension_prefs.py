@@ -38,6 +38,10 @@ class PlanetkaSessionStore:
         "cloud_session_refresh_token": "",
         "cloud_session_status_message": "",
         "cloud_session_edition": "free",
+        "cloud_service_status_message": "",
+        "cloud_service_status_url": "",
+        "cloud_service_status_severity": "info",
+        "cloud_service_status_updated_at": "",
     }
 
     def __init__(self, path):

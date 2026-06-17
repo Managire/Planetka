@@ -5,6 +5,7 @@ from .auth import (
     addon_edition_label,
     ensure_authenticated_session,
     get_cached_cloud_connection_status,
+    get_service_status,
     get_status_message,
     is_authenticated,
     local_addon_edition_code,
@@ -89,29 +90,45 @@ def _draw_data_summary(layout):
     online = bool(authenticated and checked and cloud.get("online", False))
     message = str(cloud.get("message", "") or "").strip()
     overloaded = message == CLOUD_OVERLOADED_MESSAGE
+    service_status = get_service_status(prefs)
+    service_message = str((service_status or {}).get("message", "") or "").strip()
+    service_url = str((service_status or {}).get("url", "") or "").strip()
+    service_severity = str((service_status or {}).get("severity", "info") or "info").strip().lower()
+    session_status_message = str(get_status_message(prefs) or "").strip()
+
+    status_icon = "INFO"
+    status_text = "Starting session"
+    if service_message:
+        status_text = service_message
+        status_icon = "ERROR" if service_severity in {"warning", "error", "maintenance"} else "INFO"
+    elif session_status_message:
+        status_text = session_status_message
+        status_icon = "ERROR" if (overloaded or not online) else "INFO"
+    elif online:
+        status_text = "Connected"
+        status_icon = "CHECKMARK"
+    elif authenticated and not checked:
+        status_text = "Checking"
+        status_icon = "INFO"
+    elif authenticated and overloaded:
+        status_text = "Cloud busy"
+        status_icon = "ERROR"
+    elif authenticated:
+        status_text = "Not connected"
+        status_icon = "ERROR"
 
     box = layout.box()
     box.label(text="Planetka Data", icon="WORLD")
     row = box.row(align=True)
     row.label(text="Status")
-    if online:
-        row.label(text="Connected", icon="CHECKMARK")
-    elif authenticated and not checked:
-        row.label(text="Checking", icon="INFO")
-    elif authenticated and overloaded:
-        row.label(text="Cloud busy", icon="ERROR")
-    elif authenticated:
-        row.label(text="Not connected", icon="ERROR")
-    else:
-        row.label(text="Starting session", icon="INFO")
+    row.label(text=status_text, icon=status_icon)
+    if service_message and service_url:
+        op = row.operator("wm.url_open", text="", icon="URL")
+        op.url = service_url
 
     row = box.row(align=True)
     row.label(text="Edition")
     row.label(text=addon_edition_label(), icon="SOLO_ON")
-
-    status_message = str(get_status_message(prefs) or "").strip()
-    if status_message:
-        box.label(text=status_message, icon="INFO")
 
 
 def _create_status(scene):

@@ -36,6 +36,10 @@ import {
   handleAddonUpdateManifest,
   handleLegalDocumentRequest,
 } from "./worker/public_misc_handlers.js";
+import {
+  publicServiceStatus,
+  readServiceStatus,
+} from "./worker/service_status.js";
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
@@ -1201,9 +1205,14 @@ const authSessionRouteDeps = {
   isSyntheticAnonymousEmail,
   legacyPublicEmail,
   legacyAccessFields: legacyProfessionalAccessFields,
+  planetkaDataStatusPayload,
 };
 
 const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRouteDeps);
+
+async function planetkaDataStatusPayload(env) {
+  return publicServiceStatus(await readServiceStatus(env));
+}
 
 async function handleAnonymousAuth(request, env) {
   const db = requireDb(env);
@@ -1274,6 +1283,7 @@ async function handleAnonymousAuth(request, env) {
     },
   );
   const publicEmail = isSyntheticAnonymousEmail(policyUser.email) ? "" : String(policyUser.email || "");
+  const planetkaDataStatus = await planetkaDataStatusPayload(env);
   return json(
     {
       ok: true,
@@ -1288,6 +1298,7 @@ async function handleAnonymousAuth(request, env) {
       access_tier_label: accessTierDisplayName(requestedInstallEdition),
       access_token: accessToken,
       refresh_token: refreshToken,
+      planetka_data_status: planetkaDataStatus,
     },
     200,
     env,

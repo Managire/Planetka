@@ -245,6 +245,9 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     .join("");
   const snapshotGeneratedAt = deps.escapeHtml(String(initialSnapshot && initialSnapshot.generated_at || deps.nowIso()));
   const buildStamp = deps.nowIso();
+  const serviceStatus = typeof deps.readServiceStatus === "function"
+    ? await deps.readServiceStatus(env)
+    : null;
   const htmlContent = buildAdminAnalyticsPageHtml({
     escapeHtml: deps.escapeHtml,
     encodeURIComponent,
@@ -260,6 +263,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     serverActiveInstallsRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
+    serviceStatus,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");

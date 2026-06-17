@@ -88,6 +88,9 @@ import {
   handleAdminInstallUnblock as handleAdminInstallUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
+  handleAdminServiceStatus as handleAdminServiceStatusRoute,
+} from "./worker/admin_service_status_handlers.js";
+import {
   runScheduledMaintenanceJobs,
 } from "./worker/maintenance_jobs.js";
 import {
@@ -96,6 +99,11 @@ import {
 import {
   runWorkerOverloadMonitor,
 } from "./worker/worker_overload_monitor.js";
+import {
+  publicServiceStatus,
+  readServiceStatus,
+  writeServiceStatus,
+} from "./worker/service_status.js";
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
@@ -1260,9 +1268,14 @@ const authSessionRouteDeps = {
   normalizeDeviceId,
   readBearerInstall,
   requireCloudSessionContext,
+  planetkaDataStatusPayload,
 };
 
 const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRouteDeps);
+
+async function planetkaDataStatusPayload(env) {
+  return publicServiceStatus(await readServiceStatus(env));
+}
 
 
 const updateManifestDeps = {
@@ -1662,6 +1675,7 @@ const ADMIN_ANALYTICS_DEPS = {
   ACCESS_STATUS_ACTIVE,
   publicErrorMessage: (message) => message,
   requireAnalyticsAdmin,
+  readServiceStatus,
   sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
     sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
   sanitizeLiveTileMapMinutes: (value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) =>
@@ -1748,6 +1762,14 @@ const ADMIN_USER_DEPS = {
   upsertCloudInstallByEmail,
 };
 
+const ADMIN_SERVICE_STATUS_DEPS = {
+  json,
+  parseJson,
+  readServiceStatus,
+  requireAnalyticsAdmin,
+  writeServiceStatus,
+};
+
 const MAINTENANCE_JOB_DEPS = {
   DEFAULT_ALERT_PROD_403_THRESHOLD,
   DEFAULT_ALERT_PROD_403_WINDOW_SECONDS,
@@ -1810,6 +1832,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminInstallHardBlock: (request, env) => handleAdminInstallHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminInstallUnblock: (request, env) => handleAdminInstallUnblockRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminServiceStatus: (request, env) => handleAdminServiceStatusRoute(request, env, ADMIN_SERVICE_STATUS_DEPS),
 };
 
 function analyticsWorkerHealth(env) {

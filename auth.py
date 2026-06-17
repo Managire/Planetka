@@ -383,6 +383,7 @@ def clear_cloud_session(prefs=None, state="logged_out", status_message=""):
     prefs.cloud_session_refresh_token = ""
     prefs.cloud_session_edition = _normalize_addon_edition(read_local_addon_edition().get("edition", "free"))
     prefs.cloud_session_status_message = str(status_message or "")
+    _store_service_status(prefs, {})
     _save_user_prefs()
     _tag_ui_redraw()
 
@@ -412,6 +413,51 @@ def get_status_message(prefs=None):
     if prefs is None:
         return ""
     return str(getattr(prefs, "cloud_session_status_message", "") or "").strip()
+
+
+def _normalize_service_status(payload):
+    source = {}
+    if isinstance(payload, dict):
+        raw = payload.get("planetka_data_status") or payload.get("service_status") or {}
+        source = raw if isinstance(raw, dict) else {}
+    message = str(source.get("message", "") or "").strip()[:160]
+    active = bool(source.get("active", source.get("enabled", False))) and bool(message)
+    severity = str(source.get("severity", "info") or "info").strip().lower()
+    if severity not in {"info", "warning", "error", "maintenance"}:
+        severity = "info"
+    return {
+        "message": message if active else "",
+        "url": str(source.get("url", "") or source.get("details_url", "") or "").strip()[:500] if active else "",
+        "severity": severity,
+        "updated_at": str(source.get("updated_at", "") or "").strip()[:40] if active else "",
+    }
+
+
+def _store_service_status(prefs, payload):
+    if prefs is None:
+        return
+    status = _normalize_service_status(payload)
+    try:
+        prefs.cloud_service_status_message = status["message"]
+        prefs.cloud_service_status_url = status["url"]
+        prefs.cloud_service_status_severity = status["severity"]
+        prefs.cloud_service_status_updated_at = status["updated_at"]
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing cloud service status", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing cloud service status", exc_info=True)
+
+
+def get_service_status(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return {"message": "", "url": "", "severity": "info", "updated_at": ""}
+    return {
+        "message": str(getattr(prefs, "cloud_service_status_message", "") or "").strip(),
+        "url": str(getattr(prefs, "cloud_service_status_url", "") or "").strip(),
+        "severity": str(getattr(prefs, "cloud_service_status_severity", "info") or "info").strip().lower(),
+        "updated_at": str(getattr(prefs, "cloud_service_status_updated_at", "") or "").strip(),
+    }
 
 
 def _ensure_cloud_install_id(prefs=None):
@@ -621,6 +667,7 @@ def _apply_auth_payload(prefs, payload, status_message=""):
     prefs.cloud_session_access_token = str(payload.get("access_token", "") or "").strip()
     prefs.cloud_session_refresh_token = str(payload.get("refresh_token", "") or "").strip()
     _store_session_edition(prefs, payload if isinstance(payload, dict) else {})
+    _store_service_status(prefs, payload if isinstance(payload, dict) else {})
     prefs.cloud_session_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
