@@ -78,6 +78,7 @@ def _progress_display(scene, progress):
 
 
 def _draw_data_summary(layout):
+    has_earth = _has_earth()
     prefs = get_prefs()
     if prefs is not None and not is_authenticated(prefs):
         try:
@@ -108,7 +109,7 @@ def _draw_data_summary(layout):
         status_text = "Connected"
         status_icon = "CHECKMARK"
     elif authenticated and not checked:
-        status_text = "Ready"
+        status_text = "Connected" if has_earth else "Ready"
         status_icon = "CHECKMARK"
     elif authenticated and overloaded:
         status_text = "Cloud busy"
