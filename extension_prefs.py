@@ -1,7 +1,10 @@
 import logging
+import json
+import os
+import sys
+import tempfile
+import threading
 import bpy
-from bpy.types import AddonPreferences
-from bpy.props import StringProperty
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
@@ -10,22 +13,93 @@ EARTH_ROLE_KEY = "planetka_role"
 EARTH_ROLE_VALUE = "earth_preview"
 
 logger = logging.getLogger(__name__)
+_SESSION_STORE = None
+_SESSION_STORE_LOCK = threading.Lock()
 
-class PlanetkaExtensionPreferences(AddonPreferences):
-    __slots__ = ()
 
-    bl_idname = __package__ or __name__
+def _session_store_path():
+    override = str(os.getenv("PLANETKA_SESSION_FILE") or "").strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    home = os.path.expanduser("~")
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        return os.path.join(base, "Planetka", "cloud_session.json")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "Planetka", "cloud_session.json")
+    base = os.getenv("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    return os.path.join(base, "planetka", "cloud_session.json")
 
-    cloud_install_id: StringProperty(name="Cloud Install ID", default="", options={'HIDDEN'})
-    cloud_session_access_token: StringProperty(name="Cloud Session Access Token", default="", options={'HIDDEN'})
-    cloud_session_refresh_token: StringProperty(name="Cloud Session Refresh Token", default="", options={'HIDDEN'})
-    cloud_session_status_message: StringProperty(name="Cloud Session Status Message", default="", options={'HIDDEN'})
-    cloud_session_edition: StringProperty(name="Cloud Session Edition", default="pro", options={'HIDDEN'})
-    # File format preference
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text="Planetka Preferences", icon='WORLD')
-        layout.label(text="Planetka connects to Planetka Cloud automatically.", icon="INFO")
+
+class PlanetkaSessionStore:
+    _defaults = {
+        "cloud_install_id": "",
+        "cloud_session_access_token": "",
+        "cloud_session_refresh_token": "",
+        "cloud_session_status_message": "",
+        "cloud_session_edition": "free",
+    }
+
+    def __init__(self, path):
+        object.__setattr__(self, "_path", str(path or ""))
+        object.__setattr__(self, "_lock", threading.RLock())
+        object.__setattr__(self, "_data", dict(self._defaults))
+        self._load()
+
+    def _load(self):
+        path = object.__getattribute__(self, "_path")
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            logger.debug("Planetka: failed reading cloud session store", exc_info=True)
+            return
+        if not isinstance(payload, dict):
+            return
+        with object.__getattribute__(self, "_lock"):
+            data = object.__getattribute__(self, "_data")
+            for key in self._defaults:
+                if key in payload:
+                    data[key] = str(payload.get(key, "") or "")
+
+    def _save(self):
+        path = object.__getattribute__(self, "_path")
+        if not path:
+            return
+        directory = os.path.dirname(path)
+        try:
+            os.makedirs(directory, exist_ok=True)
+            data = dict(object.__getattribute__(self, "_data"))
+            fd, tmp_path = tempfile.mkstemp(prefix=".cloud_session.", suffix=".tmp", dir=directory)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(data, handle, indent=2, sort_keys=True)
+                    handle.write("\n")
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except (OSError, TypeError, ValueError):
+            logger.debug("Planetka: failed writing cloud session store", exc_info=True)
+
+    def __getattr__(self, name):
+        if name in self._defaults:
+            with object.__getattribute__(self, "_lock"):
+                return object.__getattribute__(self, "_data").get(name, self._defaults[name])
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        if name not in self._defaults:
+            object.__setattr__(self, name, value)
+            return
+        with object.__getattribute__(self, "_lock"):
+            object.__getattribute__(self, "_data")[name] = str(value or "")
+            self._save()
 
 
 def mark_earth_object(obj):
@@ -58,20 +132,8 @@ def get_earth_object():
 
 
 def get_prefs():
-    def _addon_pref_by_name(addons, key):
-        if key in addons:
-            return addons[key].preferences
-        return None
-
-    extension_name = __package__ or __name__
-    preferences = getattr(getattr(bpy, "context", None), "preferences", None)
-    addons = getattr(preferences, "addons", None) if preferences is not None else None
-    if addons:
-        found = _addon_pref_by_name(addons, extension_name)
-        if found is not None:
-            return found
-        short_name = extension_name.split(".")[-1]
-        found = _addon_pref_by_name(addons, short_name)
-        if found is not None:
-            return found
-    return None
+    global _SESSION_STORE
+    with _SESSION_STORE_LOCK:
+        if _SESSION_STORE is None:
+            _SESSION_STORE = PlanetkaSessionStore(_session_store_path())
+        return _SESSION_STORE

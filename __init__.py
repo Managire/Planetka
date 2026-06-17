@@ -5,7 +5,6 @@ from bpy.props import PointerProperty
 
 from .auth import local_addon_edition_code
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from .extension_prefs import PlanetkaExtensionPreferences
 from .properties import PlanetkaProperties
 from .public_operators import (
     PLANETKA_OT_PublicCreateEarth,
@@ -37,7 +36,6 @@ recover_post_render_state = None
 
 
 base_classes = (
-    PlanetkaExtensionPreferences,
     PlanetkaProperties,
     PLANETKA_OT_PublicSetTextureQuality,
     PLANETKA_OT_PublicCreateEarth,
