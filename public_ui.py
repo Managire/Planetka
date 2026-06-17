@@ -182,7 +182,7 @@ def _draw_links(layout):
     box = layout.box()
     box.label(text="Links", icon="URL")
     box.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.youtube.com/@tomasgriger-planetka/videos"
-    box.operator("wm.url_open", text="www.planetka.io", icon="URL").url = "https://www.planetka.io"
+    box.operator("wm.url_open", text="Resources", icon="VOLUME_DATA").url = "https://www.planetka.io"
 
 
 class PLANETKA_PT_PublicMainPanel(bpy.types.Panel):
