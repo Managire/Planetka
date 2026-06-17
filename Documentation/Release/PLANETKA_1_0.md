@@ -1,6 +1,6 @@
 # Planetka 1.0.0 Editions
 
-Planetka 1.0.0 is a DIY Earth texture-streaming add-on for Blender.
+Planetka 1.0.0 is a Cinematic Earth Visualistaion System for Blender.
 
 Planetka creates the Earth surface, provides the Planetka Resolve workflow, and streams the required data from Planetka Cloud.
 
