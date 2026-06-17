@@ -45,7 +45,6 @@ It includes:
 - Quality Level: Preview, Balanced, Full
 - Combined Create New Earth / Resolve Planetka action
 - Tutorials and website links
-- Scene Health Check
 
 The Studio edition also includes a second panel for:
 

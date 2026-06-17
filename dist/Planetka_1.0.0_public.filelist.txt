@@ -28,7 +28,6 @@ asset_builder.py
 auth.py
 blender_manifest.toml
 coverage.py
-diagnostics.py
 error_utils.py
 extension_prefs.py
 mesh_utils.py
@@ -49,7 +48,6 @@ properties.py
 public_operators.py
 public_shader.py
 public_ui.py
-public_validation.py
 r2_source.py
 render_prep.py
 shader_utils.py

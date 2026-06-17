@@ -748,7 +748,7 @@ def set_resolve_request_context(
         _REQUEST_CONTEXT_FEATURE = safe_feature if safe_feature in {"panorama", "final_animation_render"} else ""
         # Tile-session tokens carry selected texture quality for one
         # resolve. Reusing one after camera/quality changes can make backend
-        # diagnostics and failures point at the wrong request.
+        # errors point at the wrong request.
         _REQUEST_CONTEXT_TILE_TOKEN = ""
         _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
 
@@ -1336,8 +1336,8 @@ def prefetch_resolve_downloads(requests, cancel_event=None):
     cancelled = False
     seen = set()
     tasks = []
-    diagnostics_max = _parse_positive_int(_env("PLANETKA_R2_PREFETCH_DIAGNOSTICS_MAX_KEYS"), 24)
-    diagnostics_max = max(1, int(diagnostics_max))
+    missing_details_max = _parse_positive_int(_env("PLANETKA_R2_PREFETCH_MISSING_DETAILS_MAX_KEYS"), 24)
+    missing_details_max = max(1, int(missing_details_max))
     missing_details = []
     fatal_error = ""
 
@@ -1427,11 +1427,11 @@ def prefetch_resolve_downloads(requests, cancel_event=None):
 
     def _append_missing_details(task, task_error=""):
         nonlocal missing_details
-        if len(missing_details) >= diagnostics_max:
+        if len(missing_details) >= missing_details_max:
             return
         task_folder, task_prefix, task_filename, task_exts = task
         for task_ext in task_exts:
-            if len(missing_details) >= diagnostics_max:
+            if len(missing_details) >= missing_details_max:
                 break
             missing_details.append(
                 _probe_missing_asset(task_folder, task_prefix, task_filename, task_ext, task_error=task_error)
@@ -1558,7 +1558,7 @@ def prefetch_resolve_downloads(requests, cancel_event=None):
             reportable_missing_details.append(entry)
         if reportable_missing_details:
             logger.warning(
-                "Planetka resolve prefetch diagnostics: required_s2_missing=%d resolved=%d error=%d sample=%s",
+                "Planetka resolve prefetch missing assets: required_s2_missing=%d resolved=%d error=%d sample=%s",
                 int(len(reportable_missing_details)),
                 int(resolved_count),
                 int(error_count),

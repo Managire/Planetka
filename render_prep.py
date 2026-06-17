@@ -5,13 +5,11 @@ This module executes the Earth resolve flow:
 2) compute visible tiles
 3) fetch/prepare tile data
 4) rebuild mesh + shader assignments
-5) write diagnostics/telemetry
 """
 
 import json
 import os
 import time
-import re
 from dataclasses import dataclass, field
 
 import bpy
@@ -27,7 +25,6 @@ from .auth import (
     looks_like_network_error,
 )
 from .asset_builder import ensure_earth_surface_parent
-from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -75,7 +72,6 @@ LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded
 LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
 
 
-_TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
 _PREFETCH_ACCESS_FAILURE_TOKENS = (
     "request limit reached",
 )
@@ -282,53 +278,6 @@ def apply_free_texture_cap_to_tiles(tiles):
     errors when the camera is very close to Earth.
     """
     return apply_texture_quality_to_full_tiles(tiles or (), "FULL")
-
-
-def _tile_d_value(tile):
-    if not tile:
-        return None
-    text = str(tile)
-    match = _TILE_ZD_PATTERN.search(text)
-    if not match:
-        return None
-    try:
-        z = int(match.group(1))
-        d_code = int(match.group(2))
-        if z == 360 and d_code == 0:
-            return 1440
-        return d_code
-    except (TypeError, ValueError):
-        return None
-
-
-def _resolve_safety(required_mpp, resolved_tiles):
-    if not resolved_tiles:
-        return "OK"
-
-    if required_mpp is None:
-        return "OK"
-    try:
-        required_mpp_value = float(required_mpp)
-    except (TypeError, ValueError):
-        return None
-    if required_mpp_value <= 0.0:
-        return None
-
-    d_values = []
-    for tile in resolved_tiles or ():
-        d_value = _tile_d_value(tile)
-        if d_value is not None and d_value > 0:
-            d_values.append(int(d_value))
-    if not d_values:
-        return "WARNING"
-
-    best_available_mpp = min(d_values) * 10.0
-    ratio = best_available_mpp / required_mpp_value
-    if ratio <= 1.0:
-        return "OK"
-    if ratio <= 1.15:
-        return "CAUTION"
-    return "WARNING"
 
 
 def _parse_tiles_override(raw_json):
@@ -883,11 +832,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                         del scene[LAST_REQUIRED_MPP_KEY]
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug("Planetka: failed clearing required-mpp key after tile resolve runtime failure", exc_info=True)
-                write_tile_view_diagnostics(
-                    scene=scene,
-                    camera_altitude_bu=None,
-                    nearest_visible_distance_bu=None,
-                )
                 logger.debug("Planetka tile resolve runtime failure: %s", exc, exc_info=True)
                 tiles = []
                 full_source_tiles = []
@@ -1430,7 +1374,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_post_delete_ms = 0.0
         phase_post_mark_ms = 0.0
         phase_post_preview_ms = 0.0
-        phase_unaccounted_ms = 0.0
 
         prepare_ctx = self._phase_prepare_context(context)
         self._flush_ui_reports(getattr(prepare_ctx, "ui_reports", ()))
@@ -1531,74 +1474,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         if not (force_empty_once and len(tiles) == 0):
             ui_reports.append(self._ui_report("INFO", f"Planetka resolved ({len(tiles)} tiles)"))
         resolve_total_ms = (time.perf_counter() - resolve_start) * 1000.0
-        measured_sum_ms = (
-            phase_assets_ms
-            + phase_tile_select_ms
-            + phase_stream_ms
-            + phase_mesh_ms
-            + phase_shader_ms
-            + phase_post_ms
-        )
-        if measured_sum_ms < resolve_total_ms:
-            phase_unaccounted_ms = resolve_total_ms - measured_sum_ms
-        fallback_count = int(shader_result.get("missing_texture_count", 0)) + int(
-            shader_result.get("higher_z_fallback_count", 0)
-        )
-        loaded_texture_bytes = 0
-        if isinstance(shader_result, dict):
-            try:
-                loaded_texture_bytes = int(shader_result.get("loaded_texture_bytes", 0) or 0)
-            except (TypeError, ValueError):
-                loaded_texture_bytes = 0
-        loaded_textures_mb = float(loaded_texture_bytes) / (1024.0 * 1024.0)
         downloaded_bytes = 0
-        downloaded_ms = 0.0
-        downloaded_thread_ms = 0.0
         if isinstance(download_capture, dict):
             try:
                 downloaded_bytes = int(download_capture.get("downloaded_bytes", 0) or 0)
             except (TypeError, ValueError):
                 downloaded_bytes = 0
-            try:
-                downloaded_ms = float(download_capture.get("download_ms", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                downloaded_ms = 0.0
-            try:
-                downloaded_thread_ms = float(download_capture.get("download_thread_ms", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                downloaded_thread_ms = 0.0
-        downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
-        try:
-            required_mpp = scene.get(LAST_REQUIRED_MPP_KEY)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            required_mpp = None
-        resolved_tiles = shader_result.get("resolved_tiles", []) if isinstance(shader_result, dict) else []
-        resolution_safety = _resolve_safety(required_mpp, resolved_tiles)
-        write_resolve_diagnostics(
-            scene=scene,
-            tile_count=len(tiles),
-            resolve_ms=resolve_total_ms,
-            fallback_count=fallback_count,
-            breakdown={
-                "assets_ms": phase_assets_ms,
-                "tile_select_ms": phase_tile_select_ms,
-                "stream_ms": phase_stream_ms,
-                "mesh_ms": phase_mesh_ms,
-                "shader_ms": phase_shader_ms,
-                "post_ms": phase_post_ms,
-                "post_delete_ms": phase_post_delete_ms,
-                "post_mark_ms": phase_post_mark_ms,
-                "post_preview_ms": phase_post_preview_ms,
-                "unaccounted_ms": phase_unaccounted_ms,
-                "required_mpp_m": required_mpp,
-                "resolution_safety": resolution_safety,
-                "loaded_textures_mb": loaded_textures_mb,
-                "download_ms": downloaded_ms,
-                "download_thread_ms": downloaded_thread_ms,
-                "downloaded_mb": downloaded_mb,
-                "full_quality_cost_bytes": int(max(0, int(full_quality_cost_bytes or 0))),
-            },
-        )
         if manual_summary_requested:
             self._store_manual_resolve_summary(
                 scene=scene,

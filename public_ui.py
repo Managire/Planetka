@@ -185,12 +185,6 @@ def _draw_links(layout):
     box.operator("wm.url_open", text="www.planetka.io", icon="URL").url = "https://www.planetka.io"
 
 
-def _draw_diagnostics(layout):
-    box = layout.box()
-    box.label(text="Diagnostics", icon="CHECKMARK")
-    box.operator("planetka_public.scene_health_check", text="Scene Health Check", icon="CHECKMARK")
-
-
 class PLANETKA_PT_PublicMainPanel(bpy.types.Panel):
     bl_label = "Planetka by Tomas Griger"
     bl_idname = "PLANETKA_PT_public_main"
@@ -206,7 +200,6 @@ class PLANETKA_PT_PublicMainPanel(bpy.types.Panel):
         layout.use_property_decorate = False
         _draw_data_summary(layout)
         _draw_quality_and_resolve(layout, scene)
-        _draw_diagnostics(layout)
         _draw_links(layout)
 
 

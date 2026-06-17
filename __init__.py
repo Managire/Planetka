@@ -12,7 +12,6 @@ from .public_operators import (
     PLANETKA_OT_PublicSetTextureQuality,
 )
 from .public_ui import PLANETKA_PT_PublicAnimationPanel, PLANETKA_PT_PublicMainPanel
-from .public_validation import PLANETKA_OT_PublicSceneHealthCheck
 from .render_prep import PLANETKA_OT_LoadTextures
 from .state import stop_resolve
 
@@ -41,7 +40,6 @@ base_classes = (
     PLANETKA_OT_PublicCreateEarth,
     PLANETKA_OT_PublicResolvePlanetka,
     PLANETKA_OT_LoadTextures,
-    PLANETKA_OT_PublicSceneHealthCheck,
     PLANETKA_PT_PublicMainPanel,
 )
 

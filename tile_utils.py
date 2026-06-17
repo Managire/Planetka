@@ -7,7 +7,6 @@ import bpy
 import mathutils
 from mathutils import Vector
 
-from .diagnostics import write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 
@@ -2611,14 +2610,14 @@ def main(scope_mode="AUTO", edge_boost=False):
     try:
         scene[LAST_SCOPE_USED_KEY] = scope_used
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing resolve scope in scene diagnostics", exc_info=True)
+        logger.debug("Planetka: failed storing resolve scope", exc_info=True)
     try:
         scene[LAST_PANORAMA_MODE_KEY] = bool(is_panorama_equirect)
         scene[LAST_PANORAMA_LIMIT_EXCEEDED_KEY] = False
         scene[LAST_PANORAMA_REQUIRED_TILES_KEY] = 0
         scene[LAST_PANORAMA_REQUIRED_Z_KEY] = 0
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing panorama resolve diagnostics", exc_info=True)
+        logger.debug("Planetka: failed storing panorama resolve state", exc_info=True)
     bias_factor = _resolution_bias_factor(scene)
 
     earth = get_earth_object()
@@ -2646,12 +2645,7 @@ def main(scope_mode="AUTO", edge_boost=False):
             if LAST_TARGET_D_KEY in scene:
                 del scene[LAST_TARGET_D_KEY]
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed clearing tile target diagnostics for below-surface camera", exc_info=True)
-        write_tile_view_diagnostics(
-            scene=scene,
-            camera_altitude_bu=float(camera_altitude),
-            nearest_visible_distance_bu=None,
-        )
+            logger.debug("Planetka: failed clearing tile target state for below-surface camera", exc_info=True)
         return []
 
     required_mpp_near = _required_mpp_from_distance(
@@ -2728,7 +2722,7 @@ def main(scope_mode="AUTO", edge_boost=False):
             scene[LAST_PANORAMA_REQUIRED_TILES_KEY] = int(tile_count)
             scene[LAST_PANORAMA_REQUIRED_Z_KEY] = int(selected_z)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed writing panorama required tile diagnostics", exc_info=True)
+            logger.debug("Planetka: failed writing panorama required tile state", exc_info=True)
         try:
             scene[LAST_PANORAMA_LIMIT_EXCEEDED_KEY] = bool(int(tile_count) > int(MAX_SHADER_TILE_BUDGET))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -2777,12 +2771,7 @@ def main(scope_mode="AUTO", edge_boost=False):
             scene[LAST_REQUIRED_MPP_KEY] = float(required_mpp_near)
             scene[LAST_TARGET_D_KEY] = int(_target_d_from_required_mpp(required_mpp_near))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed writing tile target diagnostics", exc_info=True)
-        write_tile_view_diagnostics(
-            scene=scene,
-            camera_altitude_bu=float(camera_altitude),
-            nearest_visible_distance_bu=None,
-        )
+            logger.debug("Planetka: failed writing tile target state", exc_info=True)
         return []
 
     try:
@@ -2799,7 +2788,7 @@ def main(scope_mode="AUTO", edge_boost=False):
         if int(previous_selected_z) != int(selected_z):
             scene[LAST_Z_SWITCH_DISTANCE_KEY] = max(0.0, float(reference_distance))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing temporal z hysteresis diagnostics", exc_info=True)
+        logger.debug("Planetka: failed storing temporal z hysteresis state", exc_info=True)
 
     required_mpp_selected = required_mpp_near
     if selected_nearest_distance is not None:
@@ -2817,7 +2806,7 @@ def main(scope_mode="AUTO", edge_boost=False):
         scene[LAST_REQUIRED_MPP_KEY] = float(required_mpp_selected)
         scene[LAST_TARGET_D_KEY] = int(_target_d_from_required_mpp(required_mpp_selected))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed writing selected tile diagnostics", exc_info=True)
+        logger.debug("Planetka: failed writing selected tile state", exc_info=True)
 
     final_tiles = find_optimizable_tiles(list(selected_tiles))
     final_tiles = _one_pass_selective_refinement(
@@ -2875,9 +2864,4 @@ def main(scope_mode="AUTO", edge_boost=False):
             int(MAX_SHADER_TILE_BUDGET),
         )
     LAST_TILE_BUDGET_OUTPUT = list(final_tiles)
-    write_tile_view_diagnostics(
-        scene=scene,
-        camera_altitude_bu=float(camera_altitude),
-        nearest_visible_distance_bu=None if selected_nearest_distance is None else float(selected_nearest_distance),
-    )
     return final_tiles
