@@ -35,9 +35,9 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     texture_quality_mode: EnumProperty(
         name="Quality Level",
         items=(
-            ("PREVIEW", "Preview", "Fast lower-resolution streaming textures for preview work"),
-            ("BALANCED", "Balanced", "Medium-resolution streaming textures for normal work"),
-            ("FULL", "Full", "Highest available streaming textures"),
+            ("PREVIEW", "Preview", "Downloaded textures are 1/4 of the edge size of Full resolution textures, making them 1/16 of the pixel size"),
+            ("BALANCED", "Balanced", "Downloaded textures are 1/2 of the edge size of Full resolution textures, making them 1/4 of the pixel size"),
+            ("FULL", "Full", "Makes sure at least one pixel from the source texture is used for every pixel in the final render if proximity to Earth allows"),
         ),
         default="PREVIEW",
         description="Choose the streaming texture quality used the next time Resolve Planetka runs",

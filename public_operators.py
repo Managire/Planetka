@@ -36,9 +36,9 @@ PLANETKA_SUNLIGHT_ROTATION_Y = math.radians(90.0)
 
 
 QUALITY_LEVEL_DESCRIPTIONS = {
-    "PREVIEW": "Preview: fast lower-resolution streaming textures for preview work. Press Resolve Planetka to apply this quality level to the Earth surface.",
-    "BALANCED": "Balanced: medium-resolution streaming textures for normal work. Press Resolve Planetka to apply this quality level to the Earth surface.",
-    "FULL": "Full: highest available streaming textures for final stills or close camera work. Press Resolve Planetka to apply this quality level to the Earth surface.",
+    "PREVIEW": "Preview: downloaded textures are 1/4 of the edge size of Full resolution textures, making them 1/16 of the pixel size. Press Resolve Planetka to apply this quality level to the Earth surface.",
+    "BALANCED": "Balanced: downloaded textures are 1/2 of the edge size of Full resolution textures, making them 1/4 of the pixel size. Press Resolve Planetka to apply this quality level to the Earth surface.",
+    "FULL": "Full: makes sure at least one pixel from the source texture is used for every pixel in the final render if proximity to Earth allows. Press Resolve Planetka to apply this quality level to the Earth surface.",
 }
 
 PLANETKA_LINKS = {
@@ -168,9 +168,9 @@ class PLANETKA_OT_PublicSetTextureQuality(bpy.types.Operator):
     texture_quality_mode: EnumProperty(
         name="Quality Level",
         items=(
-            ("PREVIEW", "Preview", "Fast lower-resolution streaming textures for preview work"),
-            ("BALANCED", "Balanced", "Medium-resolution streaming textures for normal work"),
-            ("FULL", "Full", "Highest available streaming textures"),
+            ("PREVIEW", "Preview", "Downloaded textures are 1/4 of the edge size of Full resolution textures, making them 1/16 of the pixel size"),
+            ("BALANCED", "Balanced", "Downloaded textures are 1/2 of the edge size of Full resolution textures, making them 1/4 of the pixel size"),
+            ("FULL", "Full", "Makes sure at least one pixel from the source texture is used for every pixel in the final render if proximity to Earth allows"),
         ),
         default="PREVIEW",
         options={'HIDDEN', 'SKIP_SAVE'},
