@@ -28,7 +28,7 @@ from .asset_builder import ensure_earth_surface_unparented
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
-from .public_shader import bind_public_surface_displacement_scale_driver
+from .public_shader import set_public_surface_displacement_scale_static
 from .r2_source import (
     remote_tile_asset_exists,
     retain_recent_resolve_cache,
@@ -1292,11 +1292,11 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         except (AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed final canonical rename for Earth surface object", exc_info=True)
         try:
-            bind_public_surface_displacement_scale_driver(new_obj)
+            set_public_surface_displacement_scale_static()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed binding displacement scale driver", exc_info=True)
+            logger.debug("Planetka: failed setting static displacement scale", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed binding displacement scale driver", exc_info=True)
+            logger.debug("Planetka: failed setting static displacement scale", exc_info=True)
 
         try:
             scene["planetka_last_resolved_tiles"] = list(tiles)

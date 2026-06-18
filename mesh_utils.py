@@ -441,6 +441,39 @@ def _surface_local_radius(parent_surface):
     return 1.0
 
 
+def _object_dimensions_tuple(obj):
+    if obj is None:
+        return None
+    try:
+        dimensions = tuple(float(value) for value in obj.dimensions)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed reading existing surface dimensions", exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reading existing surface dimensions", exc_info=True)
+        return None
+    if len(dimensions) != 3:
+        return None
+    if any(value <= 1e-9 for value in dimensions):
+        return None
+    return dimensions
+
+
+def _apply_object_dimensions(obj, dimensions):
+    if obj is None or dimensions is None:
+        return False
+    try:
+        bpy.context.view_layer.update()
+        obj.dimensions = dimensions
+        bpy.context.view_layer.update()
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed preserving Earth Surface dimensions", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed preserving Earth Surface dimensions", exc_info=True)
+    return False
+
+
 def _mesh_local_radius(mesh):
     vertices = getattr(mesh, "vertices", None)
     if not vertices:
@@ -595,11 +628,13 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     rotation = (0.0, 0.0, 0.0)
     scale = EARTH_SURFACE_DEFAULT_SCALE
     local_radius = EARTH_SURFACE_DEFAULT_RADIUS
+    target_dimensions = None
 
     if existing_surface and getattr(existing_surface, "type", None) == 'MESH':
         location = tuple(existing_surface.location)
         rotation = tuple(existing_surface.rotation_euler)
         scale = tuple(existing_surface.scale)
+        target_dimensions = _object_dimensions_tuple(existing_surface)
         # Keep the base sphere extent stable across resolve rebuilds.
         # Re-inferring from the visible subset of vertices can introduce tiny
         # frame-to-frame drift when segment tile coverage changes.
@@ -690,6 +725,7 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
                 bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES')
             bm.to_mesh(mesh)
             bm.free()
+            mesh.update()
 
     apply_smooth_shading(temp.data)
 
@@ -738,5 +774,7 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
         subsurf_mod.use_creases = False
     if hasattr(subsurf_mod, "use_custom_normals"):
         subsurf_mod.use_custom_normals = False
+
+    _apply_object_dimensions(temp, target_dimensions)
 
     return temp
