@@ -54,7 +54,7 @@ Planetka data is visualisation data and is not suitable for safety-critical use,
 
 ## 8. Payments And Services
 
-Free access may be offered without payment. Hobby, Pro, Studio, higher usage allowance, custom support, or other written service arrangements may be paid.
+Free access may be offered without payment. Hobby, Pro, Studio, custom data-access arrangements, custom support, or other written service arrangements may be paid.
 
 Payments are handled by the payment provider, marketplace, invoice, or written agreement used for that service. Planetka does not store full payment-card details.
 
@@ -64,4 +64,4 @@ Planetka depends on hosted infrastructure, storage providers, Blender compatibil
 
 ## 10. Contact
 
-For support, service questions, higher usage allowance, or written service arrangements, contact Planetka through the support or contact address provided on planetka.io.
+For support, service questions, unrestricted access, API access to the texture database, or custom arrangements, contact info@planetka.io.

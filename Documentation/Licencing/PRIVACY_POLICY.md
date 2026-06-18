@@ -19,7 +19,7 @@ Planetka does not intentionally collect your Blender project files, scene conten
 
 ## Payments
 
-Planetka may provide Free access without payment. Hobby, Pro, Studio, higher usage allowance, custom support, or other written service arrangements may be processed by the payment provider, marketplace, invoice, or written agreement used for that service. Planetka does not store your full card number or full payment-card details.
+Planetka may provide Free access without payment. Hobby, Pro, Studio, custom data-access arrangements, custom support, or other written service arrangements may be processed by the payment provider, marketplace, invoice, or written agreement used for that service. Planetka does not store your full card number or full payment-card details.
 
 ## How Data Is Used
 

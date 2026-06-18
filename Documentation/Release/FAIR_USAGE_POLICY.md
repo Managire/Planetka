@@ -13,22 +13,15 @@ Planetka is distributed as separate ZIP files for each edition:
 
 Hobby and Pro have identical add-on functionality. They differ by licence, support level, and data-access guarantee. Studio adds the animation panel.
 
-Annual fair usage allowance is measured against the full Planetka hosted dataset:
+Data usage per installation is reviewed regularly. If data usage is excessive, Planetka may throttle or block the installation when the activity appears suspicious or consistent with data harvesting.
 
-- Free: 2.5% of the full dataset per year.
-- Hobby: 2.5% of the full dataset per year.
-- Pro: 15% of the full dataset per year.
-- Studio: 15% of the full dataset per year.
-
-For higher usage allowance, users must contact Planetka.
-
-If an installation reaches its allowance within one day, Planetka may block that installation automatically and notify Planetka support. If an installation reaches its allowance over a longer period, Planetka may notify support without automatically blocking the installation.
+For unrestricted access, API access to the texture database, or custom arrangements, contact info@planetka.io.
 
 ## Fair Use
 
-Free and Hobby may be used for personal, non-commercial work within the edition allowance. Free and Hobby data access is best effort and may be interrupted when Planetka needs to protect or repair the hosted data service.
+Free and Hobby may be used for personal, non-commercial work subject to this policy. Free and Hobby data access is best effort and may be interrupted when Planetka needs to protect or repair the hosted data service.
 
-Pro and Studio may be used for commercial rendering workflows, including freelance, client, broadcast, advertising, and production work, within the edition allowance.
+Pro and Studio may be used for commercial rendering workflows, including freelance, client, broadcast, advertising, and production work, subject to this policy.
 
 Planetka may apply request limits, caching rules, abuse detection, device/session checks, IP-based controls, and temporary throttling to protect service reliability and hosted data.
 

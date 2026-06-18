@@ -19,20 +19,13 @@ Hobby and Pro have identical add-on functionality. They differ by licence, suppo
 
 Edition signatures are used by Planetka Cloud to identify authorised Hobby, Pro, and Studio packages. Free does not require a package signature.
 
-## Fair Usage Allowance
+## Fair Usage
 
 Planetka Cloud is a streaming service, not a raw dataset download product.
 
-Annual fair usage allowance is measured against the full Planetka hosted dataset:
+Data usage per installation is reviewed regularly. If data usage is excessive, Planetka may throttle or block the installation when the activity appears suspicious or consistent with data harvesting.
 
-- Free: 2.5% of the full dataset per year
-- Hobby: 2.5% of the full dataset per year
-- Pro: 15% of the full dataset per year
-- Studio: 15% of the full dataset per year
-
-For higher usage allowance, users must contact Tomas Griger / Planetka.
-
-If an installation reaches its allowance within one day, the backend may block that installation automatically and notify Planetka. If the allowance is reached over a longer period, Planetka is notified and may review the usage manually.
+For unrestricted access, API access to the texture database, or custom arrangements, contact info@planetka.io.
 
 ## UI
 
