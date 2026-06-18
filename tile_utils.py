@@ -109,26 +109,49 @@ def get_earth_radius_blender_units(earth_obj):
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed reading stored surface extent metadata", exc_info=True)
         stored_local_radius = 0.0
+
+    mesh_data = getattr(earth_obj, "data", None)
+    local_radius = _mesh_surface_vertex_radius(mesh_data)
+    if local_radius > 1e-9:
+        if stored_local_radius <= 1e-9:
+            effective_local_radius = float(local_radius)
+        elif abs(float(local_radius) - float(stored_local_radius)) > max(
+            1e-5,
+            abs(float(stored_local_radius)) * 1e-5,
+        ):
+            effective_local_radius = float(local_radius)
+        else:
+            effective_local_radius = float(stored_local_radius)
+        world_scale = earth_obj.matrix_world.to_scale()
+        max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
+        return effective_local_radius * float(max_scale)
+
     if stored_local_radius > 1e-9:
         world_scale = earth_obj.matrix_world.to_scale()
         max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
         return stored_local_radius * float(max_scale)
 
-    mesh_data = getattr(earth_obj, "data", None)
-    vertices = getattr(mesh_data, "vertices", None)
-    if vertices and len(vertices) > 0:
-        try:
-            local_radius = max(v.co.length for v in vertices)
-            if local_radius > 1e-9:
-                world_scale = earth_obj.matrix_world.to_scale()
-                max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
-                return float(local_radius) * float(max_scale)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: vertex-based surface extent inference failed", exc_info=True)
-
     scale = earth_obj.matrix_world.to_scale()
     max_scale = max(abs(scale.x), abs(scale.y), abs(scale.z), 1.0)
     return DEFAULT_PLANET_RADIUS_BU * max_scale
+
+
+def _mesh_surface_vertex_radius(mesh_data):
+    vertices = getattr(mesh_data, "vertices", None)
+    polygons = getattr(mesh_data, "polygons", None)
+    if not vertices or len(vertices) <= 0:
+        return 0.0
+    try:
+        used_indices = set()
+        if polygons:
+            for poly in polygons:
+                used_indices.update(int(index) for index in poly.vertices)
+        if used_indices:
+            return max(float(vertices[index].co.length) for index in used_indices if 0 <= index < len(vertices))
+        return max(float(vertex.co.length) for vertex in vertices)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka: vertex-based surface extent inference failed", exc_info=True)
+    return 0.0
 
 
 def get_planet_root():
