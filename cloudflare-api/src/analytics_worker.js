@@ -1577,14 +1577,21 @@ async function maybeSignalTileFarmingActivity(_db, _env, _details = {}) {
 
 async function sendOpsAlertEmail(env, subject, lines = []) {
   const apiKey = String(env.EMAIL_API_KEY || "").trim();
-  const to = String(env.SECURITY_ALERT_EMAIL || "").trim();
-  if (!apiKey || !to) return;
+  const to = String(env.SECURITY_ALERT_EMAIL || env.WORKER_OVERLOAD_ALERT_EMAIL || "info@planetka.io").trim();
+  if (!apiKey || !to) return { sent: false, error: "email_not_configured" };
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-  await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to: [to], subject: String(subject || "Planetka alert"), text: Array.isArray(lines) ? lines.join("\n") : String(lines || "") }),
-  });
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to: [to], subject: String(subject || "Planetka alert"), text: Array.isArray(lines) ? lines.join("\n") : String(lines || "") }),
+    });
+    if (response.ok) return { sent: true, status: response.status };
+    const body = await response.text();
+    return { sent: false, status: response.status, error: String(body || "email_provider_error").slice(0, 500) };
+  } catch (_error) {
+    return { sent: false, error: "email_fetch_failed" };
+  }
 }
 
 async function handleInternalUsageAlert(request, env) {
@@ -1625,8 +1632,18 @@ async function handleInternalUsageAlert(request, env) {
     return json({ ok: true, emailed: false, dry_run: true }, 200, env);
   }
 
-  await sendOpsAlertEmail(env, subject, lines);
-  return json({ ok: true, emailed: true }, 200, env);
+  const emailResult = await sendOpsAlertEmail(env, subject, lines);
+  const emailed = Boolean(emailResult && emailResult.sent);
+  return json(
+    {
+      ok: emailed,
+      emailed,
+      email_status: emailResult && emailResult.status || 0,
+      email_error: emailed ? "" : String(emailResult && emailResult.error || "email_delivery_failed"),
+    },
+    emailed ? 200 : 502,
+    env,
+  );
 }
 
 async function trackThresholdAlertDb(_db, _eventName, _threshold, _windowSeconds, _payload = {}) {
