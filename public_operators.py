@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 import webbrowser
 
@@ -27,9 +28,11 @@ from .public_shader import bind_public_surface_displacement_scale_driver, prepar
 logger = logging.getLogger(__name__)
 CREATE_EARTH_STATUS_KEY = "planetka_create_earth_status"
 CREATE_EARTH_STATUS_ACTIVE_KEY = "planetka_create_earth_status_active"
-PLANETKA_SUNLIGHT_OBJECT_NAME = "Planetka sunlight"
-PLANETKA_SUNLIGHT_DATA_NAME = "Planetka sunlight"
+PLANETKA_SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
+PLANETKA_SUNLIGHT_DATA_NAME = "Planetka Sunlight"
+PLANETKA_SUNLIGHT_LEGACY_OBJECT_NAME = "Planetka sunlight"
 PLANETKA_SUNLIGHT_ENERGY = 10.0
+PLANETKA_SUNLIGHT_ROTATION_Y = math.radians(90.0)
 
 
 QUALITY_LEVEL_DESCRIPTIONS = {
@@ -105,6 +108,16 @@ def _ensure_planetka_sunlight(scene):
         return None
 
     existing = bpy.data.objects.get(PLANETKA_SUNLIGHT_OBJECT_NAME)
+    legacy_existing = bpy.data.objects.get(PLANETKA_SUNLIGHT_LEGACY_OBJECT_NAME)
+    if existing is None and legacy_existing is not None:
+        existing = legacy_existing
+    elif existing is not None and legacy_existing is not None and legacy_existing is not existing:
+        try:
+            bpy.data.objects.remove(legacy_existing, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed removing duplicate legacy sunlight object", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed removing duplicate legacy sunlight object", exc_info=True)
     if existing is not None and str(getattr(existing, "type", "") or "") != "LIGHT":
         try:
             bpy.data.objects.remove(existing, do_unlink=True)
@@ -137,7 +150,7 @@ def _ensure_planetka_sunlight(scene):
         light_obj.data.type = "SUN"
         light_obj.data.energy = float(PLANETKA_SUNLIGHT_ENERGY)
         light_obj.location = (0.0, 0.0, 0.0)
-        light_obj.rotation_euler = (0.0, 0.0, 0.0)
+        light_obj.rotation_euler = (0.0, float(PLANETKA_SUNLIGHT_ROTATION_Y), 0.0)
         light_obj.scale = (1.0, 1.0, 1.0)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed configuring Planetka sunlight", exc_info=True)
