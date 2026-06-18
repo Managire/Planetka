@@ -87,7 +87,6 @@ ANIMATION_HORIZON_BAND_FRONT_DEG = 0.5
 ANIMATION_HORIZON_BAND_STEP_DEG = 0.25
 ANIMATION_HORIZON_BAND_U_SAMPLES = 101
 ANIMATION_HORIZON_BAND_VIEW_NDC_MARGIN = 0.02
-ANIMATION_HORIZON_BAND_U_NDC_MARGIN = 1.0
 ANIMATION_HORIZON_BAND_V_SCAN_MIN = -1.5
 ANIMATION_HORIZON_BAND_V_SCAN_MAX = 1.5
 ANIMATION_HORIZON_BAND_V_SCAN_STEPS = 180
@@ -1631,8 +1630,7 @@ def _collect_horizon_band_tiles(
 
     horizon_tiles_by_key = {}
     nearest_distance = None
-    u_ndc_margin = max(0.0, float(ANIMATION_HORIZON_BAND_U_NDC_MARGIN))
-    view_ndc_margin = max(0.0, float(ANIMATION_HORIZON_BAND_VIEW_NDC_MARGIN), u_ndc_margin)
+    view_ndc_margin = max(0.0, float(ANIMATION_HORIZON_BAND_VIEW_NDC_MARGIN))
     horizon_frustum_margin = 1.0
 
     back_band = float(ANIMATION_HORIZON_BAND_BACK_DEG)
@@ -1644,12 +1642,7 @@ def _collect_horizon_band_tiles(
         current += float(ANIMATION_HORIZON_BAND_STEP_DEG)
 
     for i in range(max(2, int(ANIMATION_HORIZON_BAND_U_SAMPLES))):
-        u = (
-            -1.0
-            - u_ndc_margin
-            + (2.0 + (2.0 * u_ndc_margin))
-            * (float(i) / float(max(1, int(ANIMATION_HORIZON_BAND_U_SAMPLES) - 1)))
-        )
+        u = -1.0 + 2.0 * (float(i) / float(max(1, int(ANIMATION_HORIZON_BAND_U_SAMPLES) - 1)))
         v_root = _find_horizon_v_root_for_u(
             cam_pos_local=cam_pos_local,
             cam_forward_local=cam_forward_local,

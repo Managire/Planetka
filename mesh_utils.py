@@ -1,14 +1,10 @@
 import bpy
-import re
 import bmesh
 import logging
 import os
 from mathutils import Matrix
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object
-
-# Precompile regex for speed
-TILE_RE = re.compile(r"x(\d+)_y(\d+)_z(\d+)_d(\d+)")
 
 logger = logging.getLogger(__name__)
 _RECOVERABLE_LOG_COUNTS = {}
@@ -27,13 +23,10 @@ SURFACE_CULL_MOD_NAME = "Camera Cull Surface"
 SURFACE_COLLECTION_NAME = "Planetka Earth Surface Collection"
 EARTH_SURFACE_DEFAULT_RADIUS = 2.0
 EARTH_SURFACE_DEFAULT_SCALE = (1.0, 1.0, 1.0)
+SURFACE_MESH_RADIUS_GUARD_FACTOR = 1.0005
 BASE_SPHERE_CACHE_MESH_NAME = "Planetka__BaseSphereMeshCache_v1"
 BASE_SPHERE_CACHE_BLEND_PATH = os.path.join("Resources", "planetka_base_sphere_mesh_cache.blend")
 BASE_SPHERE_CACHE_MIN_VERTS = 10000
-FACE_TILE_CACHE_VERSION = 1
-FACE_TILE_CACHE_VERSION_KEY = "planetka_face_tile_cache_version"
-FACE_TILE_LON_ATTR_NAME = "planetka_face_lon"
-FACE_TILE_LAT_ATTR_NAME = "planetka_face_lat"
 PREVIEW_OBJECT_NAME = "Planetka Preview Object"
 PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 PREVIEW_SEGMENTS = 36
@@ -133,16 +126,6 @@ def _enable_adaptive_subdivision(obj, subsurf_mod):
     return adaptive_enabled
 
 
-def parse_tile(tile):
-    m = TILE_RE.match(tile)
-    if not m:
-        return None
-    x, y, z, d = map(int, m.groups())
-    if d == 0:
-        d = 1440
-    return x, y, z, d
-
-
 def ensure_surface_collection():
     scene = getattr(bpy.context, "scene", None)
     if scene is None:
@@ -220,11 +203,6 @@ def _build_base_sphere_mesh_cache():
         cache_mesh.use_fake_user = True
     finally:
         bm.free()
-
-    try:
-        _ensure_face_tile_lookup(cache_mesh)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed precomputing face-tile lookup cache", exc_info=True)
 
     return cache_mesh
 
@@ -554,182 +532,6 @@ def apply_smooth_shading(mesh):
             poly.use_smooth = True
 
 
-def _remove_attribute_if_exists(mesh, attr_name):
-    attributes = getattr(mesh, "attributes", None)
-    if not attributes:
-        return
-    attr = attributes.get(attr_name)
-    if attr is None:
-        return
-    try:
-        attributes.remove(attr)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing mesh attribute %s", attr_name, exc_info=True)
-
-
-def _read_face_tile_lookup(mesh):
-    attributes = getattr(mesh, "attributes", None)
-    if not attributes:
-        return None
-
-    poly_count = len(mesh.polygons)
-    if poly_count == 0:
-        return None
-
-    version = int(mesh.get(FACE_TILE_CACHE_VERSION_KEY, 0))
-    if version != FACE_TILE_CACHE_VERSION:
-        return None
-
-    lon_attr = attributes.get(FACE_TILE_LON_ATTR_NAME)
-    lat_attr = attributes.get(FACE_TILE_LAT_ATTR_NAME)
-    if lon_attr is None or lat_attr is None:
-        return None
-    if lon_attr.domain != 'FACE' or lat_attr.domain != 'FACE':
-        return None
-    if lon_attr.data_type != 'INT' or lat_attr.data_type != 'INT':
-        return None
-    if len(lon_attr.data) != poly_count or len(lat_attr.data) != poly_count:
-        return None
-
-    lon_values = [0] * poly_count
-    lat_values = [0] * poly_count
-    lon_attr.data.foreach_get("value", lon_values)
-    lat_attr.data.foreach_get("value", lat_values)
-    return lon_values, lat_values
-
-
-def _build_face_tile_lookup(mesh):
-    uv_layer = mesh.uv_layers.active
-    if not uv_layer:
-        return False
-
-    poly_count = len(mesh.polygons)
-    if poly_count == 0:
-        return False
-
-    loops_len = len(mesh.loops)
-    uvs = [0.0] * (2 * loops_len)
-    uv_layer.data.foreach_get("uv", uvs)
-
-    loop_starts = [0] * poly_count
-    loop_totals = [0] * poly_count
-    mesh.polygons.foreach_get("loop_start", loop_starts)
-    mesh.polygons.foreach_get("loop_total", loop_totals)
-
-    lon_values = [0] * poly_count
-    lat_values = [0] * poly_count
-    for i in range(poly_count):
-        start = loop_starts[i]
-        total = loop_totals[i]
-        if total <= 0:
-            continue
-        idx = start * 2
-        u_total = 0.0
-        v_total = 0.0
-        for _ in range(total):
-            u_total += uvs[idx]
-            v_total += uvs[idx + 1]
-            idx += 2
-        u = u_total / total
-        v = v_total / total
-        lon = int(u * 360.0) % 360
-        lat = int(v * 180.0)
-        if lat < 0:
-            lat = 0
-        elif lat > 179:
-            lat = 179
-        lon_values[i] = lon
-        lat_values[i] = lat
-
-    attributes = getattr(mesh, "attributes", None)
-    if not attributes:
-        return False
-
-    _remove_attribute_if_exists(mesh, FACE_TILE_LON_ATTR_NAME)
-    _remove_attribute_if_exists(mesh, FACE_TILE_LAT_ATTR_NAME)
-
-    lon_attr = attributes.new(name=FACE_TILE_LON_ATTR_NAME, type='INT', domain='FACE')
-    lat_attr = attributes.new(name=FACE_TILE_LAT_ATTR_NAME, type='INT', domain='FACE')
-    lon_attr.data.foreach_set("value", lon_values)
-    lat_attr.data.foreach_set("value", lat_values)
-    mesh[FACE_TILE_CACHE_VERSION_KEY] = FACE_TILE_CACHE_VERSION
-    return True
-
-
-def _ensure_face_tile_lookup(mesh):
-    cached = _read_face_tile_lookup(mesh)
-    if cached is not None:
-        return cached
-    if not _build_face_tile_lookup(mesh):
-        return None
-    return _read_face_tile_lookup(mesh)
-
-
-def compute_faces_to_delete_indices(mesh, coverage):
-    uv_layer = mesh.uv_layers.active
-    if not uv_layer:
-        return []
-
-    poly_count = len(mesh.polygons)
-    if poly_count == 0:
-        return []
-
-    # Mark smooth shading in bulk
-    try:
-        mesh.polygons.foreach_set("use_smooth", [True] * poly_count)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        for poly in mesh.polygons:
-            poly.use_smooth = True
-
-    try:
-        cached_lookup = _ensure_face_tile_lookup(mesh)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        cached_lookup = None
-    if cached_lookup is not None:
-        lon_values, lat_values = cached_lookup
-        return [
-            i
-            for i in range(poly_count)
-            if not coverage[lon_values[i]][lat_values[i]]
-        ]
-
-    # Fallback (should be rare): compute directly from UV loops.
-    loops_len = len(mesh.loops)
-    uvs = [0.0] * (2 * loops_len)
-    uv_layer.data.foreach_get("uv", uvs)
-
-    loop_starts = [0] * poly_count
-    loop_totals = [0] * poly_count
-    mesh.polygons.foreach_get("loop_start", loop_starts)
-    mesh.polygons.foreach_get("loop_total", loop_totals)
-
-    faces_to_delete = []
-    for i in range(poly_count):
-        start = loop_starts[i]
-        total = loop_totals[i]
-        if total <= 0:
-            continue
-        idx = start * 2
-        u_total = 0.0
-        v_total = 0.0
-        for _ in range(total):
-            u_total += uvs[idx]
-            v_total += uvs[idx + 1]
-            idx += 2
-        u = u_total / total
-        v = v_total / total
-
-        lon = int(u * 360.0) % 360
-        lat = int(v * 180.0)
-        if lat < 0:
-            lat = 0
-        elif lat > 179:
-            lat = 179
-        if not coverage[lon][lat]:
-            faces_to_delete.append(i)
-    return faces_to_delete
-
-
 def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collection_policy="preserve_surface"):
     # --- Sphere Creation (common to both paths) ---
     existing_surface = get_earth_object() or bpy.data.objects.get("Planetka Earth Surface")
@@ -755,6 +557,8 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     surface_col = ensure_surface_collection()
     temp = create_uv_sphere(local_radius, location, rotation, name=name)
     temp.scale = scale
+    temp.data.transform(Matrix.Scale(SURFACE_MESH_RADIUS_GUARD_FACTOR, 4))
+    temp.data.update()
 
     existing_surface_collections = []
     if existing_surface and getattr(existing_surface, "type", None) == 'MESH':
@@ -805,35 +609,6 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     temp.data.materials.append(planetka_surface)
     for poly in temp.data.polygons:
         poly.material_index = 0
-
-    mesh = temp.data
-    # --- Conditional Face Deletion ---
-    # Build coverage grid (lon 0-359, lat 0-179)
-    coverage = [[False] * 180 for _ in range(360)]
-    for t in tiles:
-        p = parse_tile(t)
-        if not p:
-            continue
-        x, y, z, _ = p
-        for lon in range(x, x + z):
-            lon_mod = lon % 360
-            for lat in range(y, y + z):
-                if 0 <= lat < 180:
-                    coverage[lon_mod][lat] = True
-
-    if not mesh.uv_layers or not mesh.uv_layers.active:
-        logger.warning("Planetka: no UV map found on Earth surface mesh")
-    else:
-        faces_to_delete_idx = compute_faces_to_delete_indices(mesh, coverage)
-        if faces_to_delete_idx:
-            bm = bmesh.new()
-            bm.from_mesh(mesh)
-            bm.faces.ensure_lookup_table()
-            faces_to_delete = [bm.faces[i] for i in faces_to_delete_idx if i < len(bm.faces)]
-            if faces_to_delete:
-                bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES')
-            bm.to_mesh(mesh)
-            bm.free()
 
     apply_smooth_shading(temp.data)
 
