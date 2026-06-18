@@ -426,19 +426,41 @@ def _surface_local_radius(parent_surface):
         stored = float(parent_surface.get("planetka_surface_local_radius", 0.0))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         stored = 0.0
-    if stored > 1e-9:
-        return float(stored)
 
     mesh = getattr(parent_surface, "data", None)
-    vertices = getattr(mesh, "vertices", None)
-    if vertices:
-        try:
-            inferred = max(float(v.co.length) for v in vertices)
-            if inferred > 1e-9:
-                return float(inferred)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed inferring surface extent for preview scale", exc_info=True)
+    inferred = _mesh_surface_vertex_radius(mesh)
+    if inferred > 1e-9:
+        if stored <= 1e-9:
+            return float(inferred)
+        # If the user applied object transforms, Blender bakes the object scale
+        # into the surface mesh while our custom radius metadata may still hold
+        # the old value. The face vertices are the authoritative rendered size.
+        if abs(float(inferred) - float(stored)) > max(1e-5, abs(float(stored)) * 1e-5):
+            return float(inferred)
+        return float(stored)
+    if stored > 1e-9:
+        return float(stored)
     return 1.0
+
+
+def _mesh_surface_vertex_radius(mesh):
+    vertices = getattr(mesh, "vertices", None)
+    polygons = getattr(mesh, "polygons", None)
+    if not vertices:
+        return 0.0
+    try:
+        used_indices = set()
+        if polygons:
+            for poly in polygons:
+                used_indices.update(int(index) for index in poly.vertices)
+        if used_indices:
+            return max(float(vertices[index].co.length) for index in used_indices if 0 <= index < len(vertices))
+        return max(float(vertex.co.length) for vertex in vertices)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed inferring Earth Surface face radius", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka: failed inferring Earth Surface face radius", exc_info=True)
+    return 0.0
 
 
 def _object_dimensions_tuple(obj):
