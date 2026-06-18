@@ -2,7 +2,7 @@ import logging
 
 import bpy
 
-from .asset_builder import NIGHTDAY_GROUP_NAME, SURFACE_GRADING_GROUP_NAME
+from .asset_builder import EARTH_MATERIAL_NAME, PREVIEW_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 
@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 SURFACE_ELEVATION_SCALE_NODE_NAME = "Math.011"
 SURFACE_ELEVATION_SCALE_EXPRESSION = "0.024 * ((max(dim_x, dim_y, dim_z) / 2.0) / 2.0)"
 SURFACE_ELEVATION_SCALE_DEFAULT = 0.024
+SUNLIGHT_TEXTURE_COORD_NODE_NAME = "Select Sunlight Source Object Here"
+SUNLIGHT_VECTOR_SOCKET_NAME = "SunLight Object"
+SURFACE_MATERIAL_NAMES = (EARTH_MATERIAL_NAME, PREVIEW_MATERIAL_NAME)
 
 
 def _iter_group_nodes(group_name):
@@ -24,32 +27,74 @@ def _iter_group_nodes(group_name):
 
 
 def prepare_public_sunlight_shader_control(sunlight_object=None):
-    """Make the day/night object picker discoverable inside the shader graph."""
+    """Bind the material-level sunlight coordinate node used by the locked v1 shader."""
     changed = False
-    for node_group in _iter_group_nodes(NIGHTDAY_GROUP_NAME):
-        nodes = getattr(node_group, "nodes", None)
+    for material_name in SURFACE_MATERIAL_NAMES:
+        material = bpy.data.materials.get(material_name)
+        node_tree = getattr(material, "node_tree", None)
+        nodes = getattr(node_tree, "nodes", None)
+        links = getattr(node_tree, "links", None)
         if nodes is None:
             continue
-        target_nodes = []
-        named = nodes.get("Texture Coordinate") if hasattr(nodes, "get") else None
-        if named is not None and str(getattr(named, "bl_idname", "")) == "ShaderNodeTexCoord":
-            target_nodes.append(named)
-        target_nodes.extend(
-            node
-            for node in nodes
-            if str(getattr(node, "bl_idname", "")) == "ShaderNodeTexCoord" and node not in target_nodes
-        )
-        for node in target_nodes:
-            try:
-                node.label = "Select Sunlight Source Object Here"
-                node.name = "Select Sunlight Source Object Here"
-                if sunlight_object is not None:
-                    node.object = sunlight_object
+
+        node = nodes.get(SUNLIGHT_TEXTURE_COORD_NODE_NAME) if hasattr(nodes, "get") else None
+        if node is None or str(getattr(node, "bl_idname", "")) != "ShaderNodeTexCoord":
+            node = next(
+                (
+                    candidate
+                    for candidate in nodes
+                    if str(getattr(candidate, "bl_idname", "")) == "ShaderNodeTexCoord"
+                    and str(getattr(candidate, "label", "") or "") == SUNLIGHT_TEXTURE_COORD_NODE_NAME
+                ),
+                None,
+            )
+        if node is None or str(getattr(node, "bl_idname", "")) != "ShaderNodeTexCoord":
+            continue
+
+        try:
+            node.label = SUNLIGHT_TEXTURE_COORD_NODE_NAME
+            node.name = SUNLIGHT_TEXTURE_COORD_NODE_NAME
+            if sunlight_object is not None:
+                node.object = sunlight_object
+            changed = True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed binding public sunlight shader control", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed binding public sunlight shader control", exc_info=True)
+            continue
+
+        if links is None:
+            continue
+        try:
+            object_socket = node.outputs.get("Object") if hasattr(node.outputs, "get") else None
+            if object_socket is None:
+                continue
+            has_link = any(
+                str(getattr(link.from_node, "name", "") or "") == str(getattr(node, "name", "") or "")
+                and str(getattr(link.from_socket, "name", "") or "") == "Object"
+                and str(getattr(link.to_socket, "name", "") or "") == SUNLIGHT_VECTOR_SOCKET_NAME
+                for link in tuple(links)
+            )
+            if has_link:
+                continue
+            target_socket = None
+            for candidate in nodes:
+                if str(getattr(candidate, "bl_idname", "")) != "ShaderNodeGroup":
+                    continue
+                if getattr(candidate, "node_tree", None) is None:
+                    continue
+                if str(getattr(candidate.node_tree, "name", "") or "").split(".")[0] != SURFACE_GRADING_GROUP_NAME:
+                    continue
+                target_socket = candidate.inputs.get(SUNLIGHT_VECTOR_SOCKET_NAME) if hasattr(candidate.inputs, "get") else None
+                if target_socket is not None:
+                    break
+            if target_socket is not None:
+                links.new(object_socket, target_socket)
                 changed = True
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed labelling public sunlight shader control", exc_info=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed labelling public sunlight shader control", exc_info=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed checking public sunlight shader link", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed checking public sunlight shader link", exc_info=True)
     return changed
 
 

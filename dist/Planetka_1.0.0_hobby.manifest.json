@@ -5,6 +5,6 @@
   "zip_path": "dist/Planetka_1.0.0_hobby.zip",
   "stage_path": ".build/staging/planetka_1.0.0",
   "file_count": 56,
-  "total_uncompressed_bytes": 8210681,
-  "sha256": "02854e77c5589b103ff23bddeb8714eecbbe8759408aadd33c9ccc949d411b3f"
+  "total_uncompressed_bytes": 8202071,
+  "sha256": "a9d93c4d9677237c443aaf38acd5a6739dd3bd75df6b15b0419deb3441b10fda"
 }
