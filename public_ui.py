@@ -132,8 +132,8 @@ def _progress_display(scene, progress):
     expected = int(progress.get("expected_bytes", 0) or progress.get("total_bytes", 0) or 0)
     if active:
         if expected > 0:
-            return _with_busy_indicator(f"Downloading: {_fmt_mb(downloaded)} / {_fmt_mb(expected)}", True), "IMPORT"
-        return _with_busy_indicator(f"Downloading: {_fmt_mb(downloaded)}", True), "IMPORT"
+            return _with_busy_indicator(f"{_fmt_mb(downloaded)} / {_fmt_mb(expected)}", True), "IMPORT"
+        return _with_busy_indicator(_fmt_mb(downloaded), True), "IMPORT"
 
     last_downloaded_mb = _scene_number(scene, LAST_RESOLVE_DOWNLOADED_MB_KEY, 0.0)
     last_tile_count = int(_scene_number(scene, LAST_RESOLVE_TILE_COUNT_KEY, 0.0))
