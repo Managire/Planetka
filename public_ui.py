@@ -1,4 +1,5 @@
 import bpy
+import time
 
 from .auth import (
     CLOUD_OVERLOADED_MESSAGE,
@@ -21,6 +22,73 @@ from .state import (
 
 CREATE_EARTH_STATUS_KEY = "planetka_create_earth_status"
 CREATE_EARTH_STATUS_ACTIVE_KEY = "planetka_create_earth_status_active"
+_BUSY_INDICATOR_INTERVAL_SECONDS = 0.35
+_BUSY_INDICATOR_TIMER_RUNNING = False
+
+
+def _busy_suffix():
+    frame = (int(time.monotonic() / _BUSY_INDICATOR_INTERVAL_SECONDS) % 3) + 1
+    return "." * frame
+
+
+def _with_busy_indicator(text, active):
+    base = str(text or "").rstrip(". ")
+    if not active:
+        return base
+    return f"{base}{_busy_suffix()}"
+
+
+def _tag_planetka_ui_redraw():
+    window_manager = getattr(bpy.context, "window_manager", None)
+    for window in getattr(window_manager, "windows", ()) if window_manager else ():
+        screen = getattr(window, "screen", None)
+        for area in getattr(screen, "areas", ()) if screen else ():
+            if getattr(area, "type", None) == 'VIEW_3D':
+                area.tag_redraw()
+
+
+def _scene_has_busy_status(scene):
+    if scene is None:
+        return False
+    try:
+        if bool(scene.get(CREATE_EARTH_STATUS_ACTIVE_KEY, False)):
+            return True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    try:
+        status = get_resolve_runtime_status(scene=scene) or {}
+        if bool(status.get("running", False)):
+            return True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    try:
+        progress = get_download_progress() or {}
+        if bool(progress.get("download_active", False)):
+            return True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return False
+
+
+def _busy_indicator_timer():
+    global _BUSY_INDICATOR_TIMER_RUNNING
+    scene = getattr(bpy.context, "scene", None)
+    if not _scene_has_busy_status(scene):
+        _BUSY_INDICATOR_TIMER_RUNNING = False
+        return None
+    _tag_planetka_ui_redraw()
+    return _BUSY_INDICATOR_INTERVAL_SECONDS
+
+
+def _ensure_busy_indicator_timer(scene):
+    global _BUSY_INDICATOR_TIMER_RUNNING
+    if _BUSY_INDICATOR_TIMER_RUNNING or not _scene_has_busy_status(scene):
+        return
+    try:
+        bpy.app.timers.register(_busy_indicator_timer, first_interval=_BUSY_INDICATOR_INTERVAL_SECONDS)
+        _BUSY_INDICATOR_TIMER_RUNNING = True
+    except (RuntimeError, ValueError):
+        _BUSY_INDICATOR_TIMER_RUNNING = False
 
 
 def _has_earth():
@@ -64,8 +132,8 @@ def _progress_display(scene, progress):
     expected = int(progress.get("expected_bytes", 0) or progress.get("total_bytes", 0) or 0)
     if active:
         if expected > 0:
-            return f"Downloading: {_fmt_mb(downloaded)} / {_fmt_mb(expected)}", "IMPORT"
-        return f"Downloading: {_fmt_mb(downloaded)}", "IMPORT"
+            return _with_busy_indicator(f"Downloading: {_fmt_mb(downloaded)} / {_fmt_mb(expected)}", True), "IMPORT"
+        return _with_busy_indicator(f"Downloading: {_fmt_mb(downloaded)}", True), "IMPORT"
 
     last_downloaded_mb = _scene_number(scene, LAST_RESOLVE_DOWNLOADED_MB_KEY, 0.0)
     last_tile_count = int(_scene_number(scene, LAST_RESOLVE_TILE_COUNT_KEY, 0.0))
@@ -170,7 +238,8 @@ def _draw_quality_and_resolve(layout, scene):
     elif runtime_code == "DONE":
         runtime_text = "Resolved successfully"
     progress = get_download_progress() or {}
-    box.label(text=runtime_text, icon="TIME" if running else "CHECKMARK")
+    _ensure_busy_indicator_timer(scene)
+    box.label(text=_with_busy_indicator(runtime_text, running), icon="TIME" if running else "CHECKMARK")
     progress_text, progress_icon = _progress_display(scene, progress)
     box.label(text=progress_text, icon=progress_icon)
 
