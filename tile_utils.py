@@ -1195,22 +1195,6 @@ def _adaptive_horizon_precision_active():
         return False
 
 
-def _cycles_render_engine_active():
-    scene = getattr(bpy.context, "scene", None)
-    if scene is None:
-        return False
-    render = getattr(scene, "render", None)
-    if render is None:
-        return False
-    try:
-        engine = str(getattr(render, "engine", "") or "").strip().upper()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return False
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return False
-    return engine == "CYCLES"
-
-
 def _should_adaptive_refine_tile(stats, z):
     if not _adaptive_horizon_precision_active():
         return False
@@ -1878,7 +1862,7 @@ def _collect_visible_tiles(
     edge_boost=False,
 ):
     adaptive_mode = _adaptive_horizon_precision_active()
-    horizon_band_mode = _cycles_render_engine_active()
+    horizon_band_mode = str(camera_type or "").strip().upper() != "ORTHO"
     tan_half_h = math.tan(max(1e-9, float(h_fov)) * 0.5)
     tan_half_v = math.tan(max(1e-9, float(v_fov)) * 0.5)
     ortho_half_w, ortho_half_h = _orthographic_half_extents(ortho_scale, res_x, res_y)
