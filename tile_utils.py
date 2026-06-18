@@ -90,6 +90,11 @@ ANIMATION_HORIZON_BAND_VIEW_NDC_MARGIN = 0.02
 ANIMATION_HORIZON_BAND_V_SCAN_MIN = -1.5
 ANIMATION_HORIZON_BAND_V_SCAN_MAX = 1.5
 ANIMATION_HORIZON_BAND_V_SCAN_STEPS = 180
+CAMERA_RAY_TILE_GRID_X = 161
+CAMERA_RAY_TILE_GRID_Y = 91
+CAMERA_RAY_TILE_EDGE_SAMPLES = 321
+CAMERA_RAY_TILE_HORIZON_U_SAMPLES = 321
+CAMERA_RAY_TILE_HORIZON_V_OFFSETS = (-0.018, -0.009, 0.0, 0.009, 0.018)
 ANIMATION_HORIZON_BAND_BACK_DEG = math.degrees(
     math.acos(REAL_EARTH_RADIUS_M / (REAL_EARTH_RADIUS_M + MAX_TERRAIN_HEIGHT_M))
 )
@@ -1766,6 +1771,153 @@ def _collect_horizon_band_tiles(
     return horizon_tiles, nearest_distance
 
 
+def _add_camera_ray_sample_tile(
+    distances,
+    *,
+    z,
+    earth_radius,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    tan_half_h,
+    tan_half_v,
+    ortho_half_w,
+    ortho_half_h,
+    ndc_u,
+    ndc_v,
+):
+    disc, ray_origin, ray_direction, _a, _b = _ray_sphere_discriminant_for_ndc(
+        cam_pos_local=cam_pos_local,
+        cam_forward_local=cam_forward_local,
+        cam_right_local=cam_right_local,
+        cam_up_local=cam_up_local,
+        camera_type=camera_type,
+        tan_half_h=tan_half_h,
+        tan_half_v=tan_half_v,
+        ortho_half_w=ortho_half_w,
+        ortho_half_h=ortho_half_h,
+        frustum_margin=1.0,
+        u=ndc_u,
+        v=ndc_v,
+        earth_radius=earth_radius,
+    )
+    if disc is None:
+        return
+    hit = _intersect_ray_sphere_nearest(ray_origin, ray_direction, earth_radius)
+    if hit is None:
+        return
+    lonlat = _cartesian_to_lonlat(hit)
+    if lonlat is None:
+        return
+    lon, lat = lonlat
+    tile = get_tile_from_coordinates(lon, lat, z, z)
+    parsed = parse_tile(tile) if tile else None
+    if not parsed:
+        return
+    x, y, _z, _d = parsed
+    distance = float((hit - cam_pos_local).length)
+    key = (int(x), int(y))
+    existing = distances.get(key)
+    if existing is None or distance < existing:
+        distances[key] = distance
+
+
+def _collect_camera_ray_hit_tiles(
+    z,
+    earth_radius,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    h_fov,
+    v_fov,
+    res_x,
+    res_y,
+    ortho_scale,
+    bias_factor,
+):
+    tan_half_h = math.tan(max(1e-9, float(h_fov)) * 0.5)
+    tan_half_v = math.tan(max(1e-9, float(v_fov)) * 0.5)
+    ortho_half_w, ortho_half_h = _orthographic_half_extents(ortho_scale, res_x, res_y)
+    distances = {}
+
+    def add(u, v):
+        _add_camera_ray_sample_tile(
+            distances,
+            z=z,
+            earth_radius=earth_radius,
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            tan_half_h=tan_half_h,
+            tan_half_v=tan_half_v,
+            ortho_half_w=ortho_half_w,
+            ortho_half_h=ortho_half_h,
+            ndc_u=float(u),
+            ndc_v=float(v),
+        )
+
+    for ix in range(max(2, int(CAMERA_RAY_TILE_GRID_X))):
+        u = -1.0 + 2.0 * (float(ix) / float(max(1, int(CAMERA_RAY_TILE_GRID_X) - 1)))
+        for iy in range(max(2, int(CAMERA_RAY_TILE_GRID_Y))):
+            v = -1.0 + 2.0 * (float(iy) / float(max(1, int(CAMERA_RAY_TILE_GRID_Y) - 1)))
+            add(u, v)
+
+    for i in range(max(2, int(CAMERA_RAY_TILE_EDGE_SAMPLES))):
+        t = -1.0 + 2.0 * (float(i) / float(max(1, int(CAMERA_RAY_TILE_EDGE_SAMPLES) - 1)))
+        add(t, -1.0)
+        add(t, 1.0)
+        add(-1.0, t)
+        add(1.0, t)
+
+    if str(camera_type or "").strip().upper() != "ORTHO":
+        for i in range(max(2, int(CAMERA_RAY_TILE_HORIZON_U_SAMPLES))):
+            u = -1.0 + 2.0 * (float(i) / float(max(1, int(CAMERA_RAY_TILE_HORIZON_U_SAMPLES) - 1)))
+            v_root = _find_horizon_v_root_for_u(
+                cam_pos_local=cam_pos_local,
+                cam_forward_local=cam_forward_local,
+                cam_right_local=cam_right_local,
+                cam_up_local=cam_up_local,
+                camera_type=camera_type,
+                tan_half_h=tan_half_h,
+                tan_half_v=tan_half_v,
+                ortho_half_w=ortho_half_w,
+                ortho_half_h=ortho_half_h,
+                frustum_margin=1.0,
+                earth_radius=earth_radius,
+                u=u,
+            )
+            if v_root is None or abs(float(v_root)) > 1.0:
+                continue
+            for offset in CAMERA_RAY_TILE_HORIZON_V_OFFSETS:
+                v = max(-1.0, min(1.0, float(v_root) + float(offset)))
+                add(u, v)
+
+    ray_tiles = set()
+    nearest_distance = None
+    for (x, y), distance in distances.items():
+        required_mpp = _required_mpp_from_distance(
+            distance=distance,
+            earth_radius=earth_radius,
+            camera_type=camera_type,
+            h_fov=h_fov,
+            v_fov=v_fov,
+            res_x=res_x,
+            res_y=res_y,
+            ortho_scale=ortho_scale,
+        )
+        d_value = compute_d_value(required_mpp, z, bias_factor=bias_factor)
+        ray_tiles.add(format_tile(x, y, z, d_value))
+        if nearest_distance is None or distance < nearest_distance:
+            nearest_distance = distance
+    return ray_tiles, nearest_distance
+
+
 def _orthographic_half_extents(ortho_scale, res_x, res_y):
     aspect = max(1e-9, float(res_x) / max(1.0, float(res_y)))
     if aspect >= 1.0:
@@ -2002,6 +2154,25 @@ def _collect_visible_tiles(
     final_tiles.update(guard_tiles)
     if guard_nearest_distance is not None and (nearest_distance is None or guard_nearest_distance < nearest_distance):
         nearest_distance = guard_nearest_distance
+
+    ray_tiles, ray_nearest_distance = _collect_camera_ray_hit_tiles(
+        z=z,
+        earth_radius=earth_radius,
+        cam_pos_local=cam_pos_local,
+        cam_forward_local=cam_forward_local,
+        cam_right_local=cam_right_local,
+        cam_up_local=cam_up_local,
+        camera_type=camera_type,
+        h_fov=h_fov,
+        v_fov=v_fov,
+        res_x=res_x,
+        res_y=res_y,
+        ortho_scale=ortho_scale,
+        bias_factor=bias_factor,
+    )
+    final_tiles.update(ray_tiles)
+    if ray_nearest_distance is not None and (nearest_distance is None or ray_nearest_distance < nearest_distance):
+        nearest_distance = ray_nearest_distance
 
     if horizon_band_mode:
         horizon_tiles, horizon_nearest_distance = _collect_horizon_band_tiles(
