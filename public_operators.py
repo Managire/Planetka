@@ -9,6 +9,7 @@ from .auth import AuthApiError, describe_cloud_session_error, ensure_authenticat
 from .asset_builder import (
     _ensure_surface_material_library,
     remove_planetka_root_object,
+    ensure_surface_collection,
 )
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
@@ -26,6 +27,9 @@ from .public_shader import bind_public_surface_displacement_scale_driver, prepar
 logger = logging.getLogger(__name__)
 CREATE_EARTH_STATUS_KEY = "planetka_create_earth_status"
 CREATE_EARTH_STATUS_ACTIVE_KEY = "planetka_create_earth_status_active"
+PLANETKA_SUNLIGHT_OBJECT_NAME = "Planetka sunlight"
+PLANETKA_SUNLIGHT_DATA_NAME = "Planetka sunlight"
+PLANETKA_SUNLIGHT_ENERGY = 10.0
 
 
 QUALITY_LEVEL_DESCRIPTIONS = {
@@ -93,6 +97,54 @@ def _configure_public_defaults(scene, props):
         logger.debug("Planetka: failed syncing public defaults", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed syncing public defaults", exc_info=True)
+
+
+def _ensure_planetka_sunlight(scene):
+    scene = scene or getattr(bpy.context, "scene", None)
+    if scene is None:
+        return None
+
+    existing = bpy.data.objects.get(PLANETKA_SUNLIGHT_OBJECT_NAME)
+    if existing is not None and str(getattr(existing, "type", "") or "") != "LIGHT":
+        try:
+            bpy.data.objects.remove(existing, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed replacing non-light Planetka sunlight object", exc_info=True)
+            return None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed replacing non-light Planetka sunlight object", exc_info=True)
+            return None
+        existing = None
+
+    if existing is None:
+        light_data = bpy.data.lights.new(PLANETKA_SUNLIGHT_DATA_NAME, type="SUN")
+        light_obj = bpy.data.objects.new(PLANETKA_SUNLIGHT_OBJECT_NAME, light_data)
+        target_collection = ensure_surface_collection(scene) or getattr(scene, "collection", None)
+        if target_collection is not None:
+            target_collection.objects.link(light_obj)
+        else:
+            scene.collection.objects.link(light_obj)
+    else:
+        light_obj = existing
+        light_data = getattr(light_obj, "data", None)
+        if light_data is None or str(getattr(light_data, "type", "") or "") != "SUN":
+            light_data = bpy.data.lights.new(PLANETKA_SUNLIGHT_DATA_NAME, type="SUN")
+            light_obj.data = light_data
+
+    try:
+        light_obj.name = PLANETKA_SUNLIGHT_OBJECT_NAME
+        light_obj.data.name = PLANETKA_SUNLIGHT_DATA_NAME
+        light_obj.data.type = "SUN"
+        light_obj.data.energy = float(PLANETKA_SUNLIGHT_ENERGY)
+        light_obj.location = (0.0, 0.0, 0.0)
+        light_obj.rotation_euler = (0.0, 0.0, 0.0)
+        light_obj.scale = (1.0, 1.0, 1.0)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed configuring Planetka sunlight", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed configuring Planetka sunlight", exc_info=True)
+
+    return light_obj
 
 
 class PLANETKA_OT_PublicSetTextureQuality(bpy.types.Operator):
@@ -231,7 +283,8 @@ class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
             _set_create_status(scene, "Creating Earth preview...")
             ensure_preview_object(earth)
             bind_public_surface_displacement_scale_driver(earth)
-            prepare_public_sunlight_shader_control()
+            sunlight = _ensure_planetka_sunlight(scene)
+            prepare_public_sunlight_shader_control(sunlight)
 
             _set_create_status(scene, "Resolving preview data...")
             props.texture_quality_mode = "PREVIEW"

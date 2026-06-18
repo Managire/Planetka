@@ -23,7 +23,7 @@ def _iter_group_nodes(group_name):
             yield node_group
 
 
-def prepare_public_sunlight_shader_control():
+def prepare_public_sunlight_shader_control(sunlight_object=None):
     """Make the day/night object picker discoverable inside the shader graph."""
     changed = False
     for node_group in _iter_group_nodes(NIGHTDAY_GROUP_NAME):
@@ -43,6 +43,8 @@ def prepare_public_sunlight_shader_control():
             try:
                 node.label = "Select Sunlight Source Object Here"
                 node.name = "Select Sunlight Source Object Here"
+                if sunlight_object is not None:
+                    node.object = sunlight_object
                 changed = True
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed labelling public sunlight shader control", exc_info=True)
