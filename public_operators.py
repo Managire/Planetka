@@ -22,7 +22,7 @@ from .state import (
     logger as state_logger,
     warm_base_sphere_mesh_cache,
 )
-from .public_shader import prepare_public_sunlight_shader_control, set_public_surface_displacement_scale_static
+from .public_shader import prepare_public_sunlight_shader_control, sync_public_surface_displacement_scale
 
 
 logger = logging.getLogger(__name__)
@@ -295,7 +295,7 @@ class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
 
             _set_create_status(scene, "Creating Earth preview...")
             ensure_preview_object(earth)
-            set_public_surface_displacement_scale_static()
+            sync_public_surface_displacement_scale(earth, force=True)
             sunlight = _ensure_planetka_sunlight(scene)
             prepare_public_sunlight_shader_control(sunlight)
 

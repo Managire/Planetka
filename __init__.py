@@ -1,11 +1,13 @@
 import logging
 
 import bpy
+from bpy.app.handlers import persistent
 from bpy.props import PointerProperty
 
 from .auth import local_addon_edition_code
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .properties import PlanetkaProperties
+from .public_shader import EARTH_SURFACE_OBJECT_NAME, sync_public_surface_displacement_scale
 from .public_operators import (
     PLANETKA_OT_PublicCreateEarth,
     PLANETKA_OT_PublicOpenLink,
@@ -149,6 +151,37 @@ def _planetka_shutdown_cleanup(*_args):
         logger.debug("Planetka: failed clearing render state during shutdown", exc_info=True)
 
 
+@persistent
+def _planetka_depsgraph_update(scene, depsgraph):
+    del scene
+    try:
+        earth = bpy.data.objects.get(EARTH_SURFACE_OBJECT_NAME)
+        if earth is None:
+            return
+        earth_mesh = getattr(earth, "data", None)
+        mesh_name = str(getattr(earth_mesh, "name", "") or "") if earth_mesh is not None else ""
+        updates = tuple(getattr(depsgraph, "updates", ()) or ())
+        if updates:
+            relevant_update = False
+            for update in updates:
+                update_id = getattr(update, "id", None)
+                update_name = str(getattr(update_id, "name", "") or "")
+                update_type = str(getattr(update_id, "bl_rna", None).identifier if getattr(update_id, "bl_rna", None) else "")
+                if update_type == "Object" and update_name == EARTH_SURFACE_OBJECT_NAME:
+                    relevant_update = True
+                    break
+                if update_type == "Mesh" and mesh_name and update_name == mesh_name:
+                    relevant_update = True
+                    break
+            if not relevant_update:
+                return
+        sync_public_surface_displacement_scale(earth)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed syncing displacement scale after surface update", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed syncing displacement scale after surface update", exc_info=True)
+
+
 def _remove_handler(handler_list, fn):
     for handler in list(handler_list):
         if handler is fn or getattr(handler, "__name__", "") == getattr(fn, "__name__", ""):
@@ -182,6 +215,12 @@ def _remove_quit_pre_handler():
         _remove_handler(handlers, _planetka_shutdown_cleanup)
 
 
+def _remove_depsgraph_update_handler():
+    handlers = getattr(bpy.app.handlers, "depsgraph_update_post", None)
+    if handlers is not None:
+        _remove_handler(handlers, _planetka_depsgraph_update)
+
+
 def register():
     for cls in classes:
         _safe_unregister_class(cls)
@@ -193,6 +232,11 @@ def register():
         _ensure_cloud_install_id()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed initializing install id", exc_info=True)
+
+    _remove_depsgraph_update_handler()
+    depsgraph_handlers = getattr(bpy.app.handlers, "depsgraph_update_post", None)
+    if depsgraph_handlers is not None:
+        depsgraph_handlers.append(_planetka_depsgraph_update)
 
     if _STUDIO_EDITION:
         _remove_render_handlers()
@@ -216,6 +260,7 @@ def unregister():
         logger.debug("Planetka: failed stopping resolve during unregister", exc_info=True)
     _remove_render_handlers()
     _remove_quit_pre_handler()
+    _remove_depsgraph_update_handler()
     if hasattr(bpy.types.Scene, "planetka_public"):
         try:
             del bpy.types.Scene.planetka_public
