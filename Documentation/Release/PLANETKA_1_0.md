@@ -19,6 +19,12 @@ Hobby and Pro have identical add-on functionality. They differ by licence, suppo
 
 Edition signatures are used by Planetka Cloud to identify authorised Hobby, Pro, and Studio packages. Free does not require a package signature.
 
+## Licensing And Data
+
+Planetka is distributed under multiple terms. The Blender add-on source code is licensed under the GNU General Public License version 3. Planetka Cloud, hosted texture data, cached texture data, edition signatures, account access, API access, support, service availability, and Planetka's processed texture database are governed by Planetka Terms of Service, Planetka Data Licence, and Fair Usage Policy.
+
+Planetka texture data includes processed and modified derivatives of third-party datasets. Source-data attribution and compliance guidance is included in `Documentation/Licencing/Attribution for User Renders.txt` and `Documentation/Licencing/Compliance/`.
+
 ## Fair Usage
 
 Planetka Cloud is a streaming service, not a raw dataset download product.

@@ -4,7 +4,7 @@
   "allowlist": "tools/package_allowlist_studio.txt",
   "zip_path": "dist/Planetka_1.0.0_studio.zip",
   "stage_path": ".build/staging/planetka_1.0.0",
-  "file_count": 57,
-  "total_uncompressed_bytes": 8317057,
-  "sha256": "24aa1c3fb2ccd1a59d1ad48249afbc89314f93c3e3a5c986b53a5a8f561182a4"
+  "file_count": 59,
+  "total_uncompressed_bytes": 8321397,
+  "sha256": "aea63f69185c1b253fef7b4d05cb760184f7d5c380e7670a43ccd54c29bbd846"
 }

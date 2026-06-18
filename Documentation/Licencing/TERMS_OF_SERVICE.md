@@ -4,7 +4,7 @@ Last updated: 2026-06-14
 
 ## 1. Scope
 
-These Terms govern access to Planetka-hosted data, Planetka Cloud services, and use of Planetka-rendered outputs. The Planetka add-on source code may be distributed under a separate software licence. These Terms govern the hosted Planetka service and streamed data.
+These Terms govern access to Planetka-hosted data, Planetka Cloud services, and use of Planetka-rendered outputs. The Planetka add-on source code is licensed separately under the GNU General Public License version 3. See `NOTICE.md` for the mixed-terms summary.
 
 ## 2. Editions
 
@@ -32,6 +32,8 @@ Planetka streams required data into a working cache. Planetka is not a raw-data 
 
 You may not scrape, bulk-download, reconstruct, redistribute, resell, sublicense, host, publish, extract, or expose Planetka-hosted data as standalone map tiles, source imagery, a dataset, a GIS product, a texture pack, an API, a tile server, a training dataset, or a competing service.
 
+Planetka texture data is also governed by `Documentation/Licencing/DATA_LICENSE.md`.
+
 ## 5. Rendered Output
 
 Free and Hobby rendered output may be used for personal, non-commercial work.
@@ -48,7 +50,13 @@ Planetka may suspend, restrict, or revoke access where needed for security incid
 
 ## 7. Attribution And Data Sources
 
-Some underlying data sources require attribution. Planetka documentation includes attribution guidance where needed.
+Some underlying data sources require attribution. Planetka texture data includes processed and modified derivatives of third-party datasets, including Copernicus Sentinel-2, JAXA AW3D30, and DLR World Settlement Footprint 2015. Those source datasets remain subject to their own attribution and licence requirements.
+
+Attribution and compliance guidance is included in:
+
+- `Documentation/Licencing/Attribution for User Renders.txt`
+- `Documentation/Licencing/Compliance/Earth Surface Data Sources.txt`
+- `Documentation/Licencing/Compliance/`
 
 Planetka data is visualisation data and is not suitable for safety-critical use, legal boundary determination, or any other use requiring authoritative geospatial accuracy.
 

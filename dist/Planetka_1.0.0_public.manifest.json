@@ -4,7 +4,7 @@
   "allowlist": "package_allowlist_public.txt",
   "zip_path": "dist/Planetka_1.0.0_public.zip",
   "stage_path": ".build/staging/planetka_1.0.0",
-  "file_count": 56,
-  "total_uncompressed_bytes": 8202735,
-  "sha256": "f520364503a026600f7cb97918597b83909ec9664f6ecb351d5c61a5d32ae013"
+  "file_count": 58,
+  "total_uncompressed_bytes": 8207075,
+  "sha256": "be4fb6d6fb663dd67e45dacd4de10e703bfa121714b56a23ea0504d16cacfba5"
 }

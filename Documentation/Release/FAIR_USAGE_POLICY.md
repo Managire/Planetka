@@ -2,6 +2,8 @@
 
 Planetka is an online texture-streaming service. This Fair Usage Policy protects service reliability for all users.
 
+Planetka Cloud access and Planetka texture data are also governed by the Planetka Terms of Service and Planetka Data Licence.
+
 ## Free, Hobby, Pro, And Studio
 
 Planetka is distributed as separate ZIP files for each edition:

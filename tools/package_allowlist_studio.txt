@@ -4,6 +4,7 @@
 # Metadata
 blender_manifest.toml
 LICENSE
+NOTICE.md
 CHANGELOG.md
 
 # Runtime modules
@@ -48,6 +49,7 @@ Documentation/Licencing/Compliance/DLR World Settlement Footprint 2015 Attributi
 Documentation/Licencing/Compliance/Detailed Source Records.txt
 Documentation/Licencing/Compliance/Earth Surface Data Sources.txt
 Documentation/Licencing/Compliance/JAXA AW3D30 Attribution and Terms.txt
+Documentation/Licencing/DATA_LICENSE.md
 Documentation/Licencing/PRIVACY_POLICY.md
 Documentation/Licencing/TERMS_OF_SERVICE.md
 Documentation/Release/FAIR_USAGE_POLICY.md

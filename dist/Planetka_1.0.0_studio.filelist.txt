@@ -5,12 +5,14 @@ Documentation/Licencing/Compliance/DLR World Settlement Footprint 2015 Attributi
 Documentation/Licencing/Compliance/Detailed Source Records.txt
 Documentation/Licencing/Compliance/Earth Surface Data Sources.txt
 Documentation/Licencing/Compliance/JAXA AW3D30 Attribution and Terms.txt
+Documentation/Licencing/DATA_LICENSE.md
 Documentation/Licencing/PRIVACY_POLICY.md
 Documentation/Licencing/TERMS_OF_SERVICE.md
 Documentation/Release/FAIR_USAGE_POLICY.md
 Documentation/Release/PLANETKA_1_0.md
 Documentation/Release/SYSTEM_REQUIREMENTS.md
 LICENSE
+NOTICE.md
 Resources/Fallback Images/black_pixel_20.exr
 Resources/Fallback Images/blue_pixel_20.exr
 Resources/Fallback Images/el_south_cap_pixel_20.exr
