@@ -23,7 +23,7 @@ bl_info = {
     "version": (1, 0, 0),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Planetka",
-    "description": "Cinematic Earth Visualistaion System",
+    "description": "Cinematic Earth Visualisation System",
     "category": "3D View",
 }
 
