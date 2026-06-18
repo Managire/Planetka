@@ -90,10 +90,15 @@ async function ensureUsageLimitAlertsTable(db, deps) {
 async function sendUsageLimitAlert(env, payload = {}) {
   const webhookUrl = String(env.PLANETKA_USAGE_ALERT_WEBHOOK_URL || "").trim();
   if (!webhookUrl) return false;
+  const headers = { "Content-Type": "application/json; charset=utf-8" };
+  const internalSecret = String(env.PLANETKA_INTERNAL_WEBHOOK_SECRET || "").trim();
+  if (internalSecret) {
+    headers["X-Planetka-Internal-Webhook-Secret"] = internalSecret;
+  }
   try {
     const response = await fetch(webhookUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
+      headers,
       body: JSON.stringify({
         type: "planetka_usage_limit",
         ...payload,

@@ -2,6 +2,7 @@ import { corsHeaders, json } from "./worker/responses.js";
 import {
   isTileSessionFeatureAllowedForEdition,
   isTileFileAllowedForEdition,
+  isBlockedStatus,
   normalizeTileSessionFeature,
   normalizeQualityMode,
 } from "./worker/entitlements.js";
@@ -180,12 +181,13 @@ function authCacheSet(key, value, ttlMs = 60000) {
   AUTH_CACHE.set(safeKey, { value, expires_at_ms: Date.now() + Math.max(1000, ttlMs) });
 }
 
-async function requireCloudSessionContext(request, env) {
+async function requireCloudSessionContext(request, env, options = {}) {
   const token = readBearerToken(request);
   if (!token) return { error: json({ ok: false, error: "missing_bearer_token" }, 401, env) };
   const currentIpScope = requestClientIpScope(request);
+  const requireDbStatus = options && options.lightweightAccessClaims === false;
   const cacheKey = `${token}:${currentIpScope}`;
-  const cached = authCacheGet(cacheKey);
+  const cached = requireDbStatus ? null : authCacheGet(cacheKey);
   if (cached) return cached;
   let access;
   try {
@@ -202,12 +204,35 @@ async function requireCloudSessionContext(request, env) {
   if (authMethod.toLowerCase() === "anonymous" && tokenIpScope && currentIpScope && tokenIpScope !== currentIpScope) {
     return { error: json({ ok: false, error: "anonymous_ip_scope_changed" }, 401, env) };
   }
+  let installStatus = "";
+  if (requireDbStatus) {
+    const installRow = await dbGet(requireDb(env), `SELECT status FROM cloud_installs WHERE id = ? LIMIT 1`, [
+      String(access.sub || "").trim(),
+    ]);
+    if (!installRow) {
+      return { error: json({ ok: false, error: "invalid_cloud_session" }, 401, env) };
+    }
+    installStatus = String(installRow.status || "").trim();
+    if (isBlockedStatus(installStatus)) {
+      return {
+        error: json(
+          {
+            ok: false,
+            error: "session_blocked",
+            message: "Planetka Cloud session is blocked. Contact support.",
+          },
+          403,
+          env,
+        ),
+      };
+    }
+  }
   const result = {
     db: requireDb(env),
     install: {
       id: String(access.sub || "").trim(),
       email: String(access.email || "").trim(),
-      status: "",
+      status: installStatus,
     },
     access,
     authMethod,
@@ -215,7 +240,9 @@ async function requireCloudSessionContext(request, env) {
     deviceId: normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || ""),
     tokenSource: "bearer_lightweight",
   };
-  authCacheSet(cacheKey, result);
+  if (!requireDbStatus) {
+    authCacheSet(cacheKey, result);
+  }
   return result;
 }
 

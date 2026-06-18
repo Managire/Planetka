@@ -1587,6 +1587,48 @@ async function sendOpsAlertEmail(env, subject, lines = []) {
   });
 }
 
+async function handleInternalUsageAlert(request, env) {
+  if (request.method !== "POST") {
+    return json({ ok: false, error: "method_not_allowed" }, 405, env);
+  }
+  const expectedSecret = String(env.PLANETKA_INTERNAL_WEBHOOK_SECRET || "").trim();
+  const providedSecret = String(request.headers.get("X-Planetka-Internal-Webhook-Secret") || "").trim();
+  if (!expectedSecret || providedSecret !== expectedSecret) {
+    return json({ ok: false, error: "forbidden" }, 403, env);
+  }
+
+  let payload = null;
+  try {
+    payload = await request.json();
+  } catch (_error) {
+    return json({ ok: false, error: "invalid_json" }, 400, env);
+  }
+  if (!payload || payload.type !== "planetka_usage_limit") {
+    return json({ ok: false, error: "invalid_usage_alert" }, 400, env);
+  }
+
+  const alertKind = String(payload.alert_kind || "usage_limit").trim();
+  const edition = String(payload.install_edition || "unknown").trim();
+  const blocked = Boolean(payload.blocked);
+  const subject = `Planetka usage limit reached: ${alertKind} (${edition})`;
+  const lines = [
+    `Alert: ${alertKind}`,
+    `Edition: ${edition}`,
+    `Install ID: ${String(payload.install_id || "unknown")}`,
+    `Install email: ${String(payload.install_email || "unknown")}`,
+    `Period start: ${String(payload.period_start || "unknown")}`,
+    `Used bytes: ${String(payload.used_bytes ?? "unknown")}`,
+    `Limit bytes: ${String(payload.limit_bytes ?? "unknown")}`,
+    `Blocked: ${blocked ? "yes" : "no"}`,
+  ];
+  if (payload.dry_run) {
+    return json({ ok: true, emailed: false, dry_run: true }, 200, env);
+  }
+
+  await sendOpsAlertEmail(env, subject, lines);
+  return json({ ok: true, emailed: true }, 200, env);
+}
+
 async function trackThresholdAlertDb(_db, _eventName, _threshold, _windowSeconds, _payload = {}) {
   return { alerted: false };
 }
@@ -1848,6 +1890,9 @@ async function dispatchAnalyticsRequest(request, env) {
   if (path === "/health") {
     if (request.method === "HEAD") return new Response(null, { status: 200, headers: corsHeaders(env) });
     return analyticsWorkerHealth(env);
+  }
+  if (path === "/admin/internal/usage-alert") {
+    return await handleInternalUsageAlert(request, env);
   }
   if (isAdminRoutePath(path)) {
     if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {

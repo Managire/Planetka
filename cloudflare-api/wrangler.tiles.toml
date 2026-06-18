@@ -23,6 +23,8 @@ R2_PREFIX = "planetka-assets"
 TILE_BROWSER_MAX_AGE_SECONDS = "86400"
 TILE_EDGE_MAX_AGE_SECONDS = "604800"
 TILE_CACHE_IMMUTABLE = "1"
+PLANETKA_FULL_DATABASE_BYTES = "2791728742400"
+PLANETKA_USAGE_ALERT_WEBHOOK_URL = "https://api.planetka.io/admin/internal/usage-alert"
 
 [[d1_databases]]
 binding = "DB"
