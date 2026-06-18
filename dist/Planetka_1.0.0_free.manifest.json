@@ -1,10 +1,10 @@
 {
-  "addon_id": "planetka",
+  "addon_id": "Planetka",
   "version": "1.0.0",
   "allowlist": "package_allowlist_public.txt",
   "zip_path": "dist/Planetka_1.0.0_free.zip",
-  "stage_path": ".build/staging/planetka_1.0.0",
+  "stage_path": ".build/staging/Planetka_1.0.0",
   "file_count": 58,
   "total_uncompressed_bytes": 8208205,
-  "sha256": "cee40d21b077786d2c4df51fe89da7707456c1c49d3d9b03ec96f598f7bbb642"
+  "sha256": "e164e35463cc0c1ca70b77a283f402b8bf93be4fa61310df03a49be45af0d154"
 }
