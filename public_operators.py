@@ -1,8 +1,9 @@
 import logging
 import time
+import webbrowser
 
 import bpy
-from bpy.props import EnumProperty
+from bpy.props import EnumProperty, StringProperty
 
 from .auth import AuthApiError, describe_cloud_session_error, ensure_authenticated_session
 from .asset_builder import (
@@ -25,6 +26,28 @@ from .public_shader import prepare_public_sunlight_shader_control
 logger = logging.getLogger(__name__)
 CREATE_EARTH_STATUS_KEY = "planetka_create_earth_status"
 CREATE_EARTH_STATUS_ACTIVE_KEY = "planetka_create_earth_status_active"
+
+
+QUALITY_LEVEL_DESCRIPTIONS = {
+    "PREVIEW": "Preview: fast lower-resolution streaming textures for preview work. Press Resolve Planetka to apply this quality level to the Earth surface.",
+    "BALANCED": "Balanced: medium-resolution streaming textures for normal work. Press Resolve Planetka to apply this quality level to the Earth surface.",
+    "FULL": "Full: highest available streaming textures for final stills or close camera work. Press Resolve Planetka to apply this quality level to the Earth surface.",
+}
+
+PLANETKA_LINKS = {
+    "TUTORIALS": {
+        "url": "https://www.youtube.com/@tomasgriger-planetka/videos",
+        "description": "Open Planetka tutorial videos in your web browser.",
+    },
+    "RESOURCES": {
+        "url": "https://www.planetka.io",
+        "description": "Open Planetka resources in your web browser, including atmosphere, cloud, and related scene elements.",
+    },
+    "CUSTOM": {
+        "url": "",
+        "description": "Open this Planetka link in your web browser.",
+    },
+}
 
 
 def _normalize_quality_mode(value):
@@ -80,13 +103,19 @@ class PLANETKA_OT_PublicSetTextureQuality(bpy.types.Operator):
     texture_quality_mode: EnumProperty(
         name="Quality Level",
         items=(
-            ("PREVIEW", "Preview", "Fastest lower-resolution streaming textures"),
-            ("BALANCED", "Balanced", "Medium-resolution streaming textures"),
-            ("FULL", "Full", "Highest available streaming textures for this edition"),
+            ("PREVIEW", "Preview", "Fast lower-resolution streaming textures for preview work"),
+            ("BALANCED", "Balanced", "Medium-resolution streaming textures for normal work"),
+            ("FULL", "Full", "Highest available streaming textures"),
         ),
         default="PREVIEW",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
+
+    @classmethod
+    def description(cls, context, properties):
+        del context
+        mode = _normalize_quality_mode(getattr(properties, "texture_quality_mode", "PREVIEW"))
+        return QUALITY_LEVEL_DESCRIPTIONS.get(mode, cls.bl_description)
 
     def execute(self, context):
         props = require_planetka_props(self, context, logger=logger)
@@ -105,10 +134,60 @@ class PLANETKA_OT_PublicSetTextureQuality(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_PublicOpenLink(bpy.types.Operator):
+    bl_idname = "planetka_public.open_link"
+    bl_label = "Open Planetka Link"
+    bl_description = "Open a Planetka web link in your browser"
+
+    link_type: EnumProperty(
+        name="Link",
+        items=(
+            ("TUTORIALS", "Tutorials", PLANETKA_LINKS["TUTORIALS"]["description"]),
+            ("RESOURCES", "Resources", PLANETKA_LINKS["RESOURCES"]["description"]),
+            ("CUSTOM", "Custom", PLANETKA_LINKS["CUSTOM"]["description"]),
+        ),
+        default="TUTORIALS",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    url: StringProperty(
+        name="URL",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    tooltip: StringProperty(
+        name="Tooltip",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def description(cls, context, properties):
+        del context
+        link_type = str(getattr(properties, "link_type", "TUTORIALS") or "TUTORIALS").upper()
+        custom_tooltip = str(getattr(properties, "tooltip", "") or "").strip()
+        if custom_tooltip:
+            return custom_tooltip
+        return str(PLANETKA_LINKS.get(link_type, {}).get("description") or cls.bl_description)
+
+    def execute(self, context):
+        del context
+        link_type = str(getattr(self, "link_type", "TUTORIALS") or "TUTORIALS").upper()
+        url = str(getattr(self, "url", "") or "").strip()
+        if not url:
+            url = str(PLANETKA_LINKS.get(link_type, {}).get("url") or "").strip()
+        if not url:
+            return fail(self, "Planetka link is unavailable.", code=ErrorCode.APPLY_FAILED, logger=logger)
+        try:
+            bpy.ops.wm.url_open(url=url)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            webbrowser.open(url)
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
     bl_idname = "planetka_public.add_earth"
     bl_label = "Create New Earth"
-    bl_description = "Create the Planetka Earth surface, root, and preview objects"
+    bl_description = "Create Planetka Root, Planetka Earth Surface, and Planetka Preview Object, then load the initial preview data."
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
@@ -193,7 +272,7 @@ class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
 class PLANETKA_OT_PublicResolvePlanetka(bpy.types.Operator):
     bl_idname = "planetka_public.resolve_planetka"
     bl_label = "Resolve Planetka"
-    bl_description = "Resolve Planetka for the current active scene camera and selected quality level"
+    bl_description = "Stream the visible Earth texture data for the active scene camera, then rebuild the Planetka Earth surface at the selected quality level."
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)

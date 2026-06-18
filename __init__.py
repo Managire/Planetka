@@ -8,6 +8,7 @@ from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .properties import PlanetkaProperties
 from .public_operators import (
     PLANETKA_OT_PublicCreateEarth,
+    PLANETKA_OT_PublicOpenLink,
     PLANETKA_OT_PublicResolvePlanetka,
     PLANETKA_OT_PublicSetTextureQuality,
 )
@@ -37,6 +38,7 @@ recover_post_render_state = None
 base_classes = (
     PlanetkaProperties,
     PLANETKA_OT_PublicSetTextureQuality,
+    PLANETKA_OT_PublicOpenLink,
     PLANETKA_OT_PublicCreateEarth,
     PLANETKA_OT_PublicResolvePlanetka,
     PLANETKA_OT_LoadTextures,

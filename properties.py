@@ -35,12 +35,12 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     texture_quality_mode: EnumProperty(
         name="Quality Level",
         items=(
-            ("PREVIEW", "Preview", "Fast lower-resolution streaming textures"),
-            ("BALANCED", "Balanced", "Medium-resolution streaming textures"),
+            ("PREVIEW", "Preview", "Fast lower-resolution streaming textures for preview work"),
+            ("BALANCED", "Balanced", "Medium-resolution streaming textures for normal work"),
             ("FULL", "Full", "Highest available streaming textures"),
         ),
         default="PREVIEW",
-        description="Choose streaming texture quality",
+        description="Choose the streaming texture quality used the next time Resolve Planetka runs",
         update=_noop_update,
     )
 
@@ -58,4 +58,3 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=True,
         description="Prevent Resolve updates while timeline playback is running",
     )
-

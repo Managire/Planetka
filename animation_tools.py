@@ -1265,7 +1265,7 @@ def _enforce_cycles_simple_subdivision_on_object(scene, obj):
 class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
     bl_idname = "planetka_public.animation_preview_shot"
     bl_label = "Preview Animation"
-    bl_description = "Play the current camera animation using currently loaded data; no resolve or prefetch is run"
+    bl_description = "Play or pause the current camera animation using already prepared Quick Preview data; no new Resolve or download is started."
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Quick Preview playback"):
@@ -1327,7 +1327,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
 class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
     bl_idname = "planetka_public.animation_clear_prepared"
     bl_label = "Clear Quick Preview"
-    bl_description = "Remove prepared segment assets and restore the normal Earth rendering workflow"
+    bl_description = "Remove prepared Quick Preview segment meshes, materials, and visibility keys, then restore the normal Earth rendering workflow."
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Clear Quick Preview"):
@@ -1353,7 +1353,7 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
 class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     bl_idname = "planetka_public.animation_render"
     bl_label = "Render Animation"
-    bl_description = "Render animation segment by segment."
+    bl_description = "Render the active timeline frame range segment by segment, resolving the required Earth data for the selected quality level."
 
     confirmed: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
 
@@ -2469,7 +2469,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
 class PLANETKA_OT_AnimationStop(bpy.types.Operator):
     bl_idname = "planetka_public.animation_stop"
     bl_label = "Stop Animation Render"
-    bl_description = "Stop the active Planetka Animation Render and clean up render state"
+    bl_description = "Stop the active Final Animation Render after the current render operation and restore Planetka render state."
 
     def execute(self, context):
         active_operator = _get_active_animation_render_operator()
@@ -2524,8 +2524,8 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
     bl_idname = "planetka_public.animation_make_ready"
     bl_label = "Build Quick Preview"
     bl_description = (
-        "Download Preview-quality data for all animation segments, build segment meshes/materials, "
-        "and key visibility for smooth timeline playback"
+        "Download Preview-quality data for all animation segments, build preview segment meshes/materials, "
+        "and animate their visibility for smooth timeline playback."
     )
 
     def execute(self, context):

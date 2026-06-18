@@ -124,8 +124,10 @@ def _draw_data_summary(layout):
     row.label(text="Status")
     row.label(text=status_text, icon=status_icon)
     if service_message and service_url:
-        op = row.operator("wm.url_open", text="", icon="URL")
+        op = row.operator("planetka_public.open_link", text="", icon="URL")
+        op.link_type = "CUSTOM"
         op.url = service_url
+        op.tooltip = "Open details for the current Planetka Data status message."
 
     row = box.row(align=True)
     row.label(text="Edition")
@@ -182,8 +184,10 @@ def _draw_quality_and_resolve(layout, scene):
 def _draw_links(layout):
     box = layout.box()
     box.label(text="Links", icon="URL")
-    box.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.youtube.com/@tomasgriger-planetka/videos"
-    box.operator("wm.url_open", text="Resources", icon="VOLUME_DATA").url = "https://www.planetka.io"
+    tutorials = box.operator("planetka_public.open_link", text="Tutorials", icon="PLAY")
+    tutorials.link_type = "TUTORIALS"
+    resources = box.operator("planetka_public.open_link", text="Resources", icon="VOLUME_DATA")
+    resources.link_type = "RESOURCES"
 
 
 class PLANETKA_PT_PublicMainPanel(bpy.types.Panel):
