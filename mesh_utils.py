@@ -459,19 +459,74 @@ def _object_dimensions_tuple(obj):
     return dimensions
 
 
-def _apply_object_dimensions(obj, dimensions):
-    if obj is None or dimensions is None:
+def _local_dimensions_from_object_dimensions(dimensions, scale):
+    if dimensions is None or scale is None:
+        return None
+    try:
+        local_dimensions = tuple(
+            float(dimension) / max(abs(float(scale_value)), 1e-9)
+            for dimension, scale_value in zip(dimensions, scale)
+        )
+    except (RuntimeError, TypeError, ValueError, AttributeError, ZeroDivisionError):
+        logger.debug("Planetka: failed computing preserved Earth Surface local dimensions", exc_info=True)
+        return None
+    if len(local_dimensions) != 3:
+        return None
+    if any(value <= 1e-9 for value in local_dimensions):
+        return None
+    return local_dimensions
+
+
+def _add_mesh_bounds_reference_vertices(mesh, local_dimensions):
+    if mesh is None or local_dimensions is None:
         return False
     try:
-        bpy.context.view_layer.update()
-        obj.dimensions = dimensions
-        bpy.context.view_layer.update()
+        half_x = float(local_dimensions[0]) * 0.5
+        half_y = float(local_dimensions[1]) * 0.5
+        half_z = float(local_dimensions[2]) * 0.5
+        # Loose vertices keep Blender's object Dimensions stable without
+        # changing the rendered, tile-clipped surface faces.
+        base_count = len(getattr(mesh, "vertices", ()) or ())
+        mesh.vertices.add(8)
+        coords = (
+            (-half_x, -half_y, -half_z),
+            (-half_x, -half_y, half_z),
+            (-half_x, half_y, -half_z),
+            (-half_x, half_y, half_z),
+            (half_x, -half_y, -half_z),
+            (half_x, -half_y, half_z),
+            (half_x, half_y, -half_z),
+            (half_x, half_y, half_z),
+        )
+        for offset, coord in enumerate(coords):
+            mesh.vertices[base_count + offset].co = coord
+        mesh.update()
         return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed preserving Earth Surface dimensions", exc_info=True)
+        logger.debug("Planetka: failed adding Earth Surface bounds reference vertices", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed preserving Earth Surface dimensions", exc_info=True)
+        logger.debug("Planetka: failed adding Earth Surface bounds reference vertices", exc_info=True)
     return False
+
+
+def _preserve_object_scale_and_dimensions(obj, scale, dimensions):
+    if obj is None:
+        return False
+    local_dimensions = _local_dimensions_from_object_dimensions(dimensions, scale)
+    try:
+        obj.scale = scale
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed preserving Earth Surface scale", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed preserving Earth Surface scale", exc_info=True)
+    changed = _add_mesh_bounds_reference_vertices(getattr(obj, "data", None), local_dimensions)
+    try:
+        bpy.context.view_layer.update()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed updating preserved Earth Surface transform", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed updating preserved Earth Surface transform", exc_info=True)
+    return bool(changed)
 
 
 def _mesh_local_radius(mesh):
@@ -775,6 +830,6 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     if hasattr(subsurf_mod, "use_custom_normals"):
         subsurf_mod.use_custom_normals = False
 
-    _apply_object_dimensions(temp, target_dimensions)
+    _preserve_object_scale_and_dimensions(temp, scale, target_dimensions)
 
     return temp
