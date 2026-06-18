@@ -3,7 +3,6 @@ import bpy
 from .auth import (
     CLOUD_OVERLOADED_MESSAGE,
     addon_edition_label,
-    ensure_authenticated_session,
     get_cached_cloud_connection_status,
     get_service_status,
     get_status_message,
@@ -80,11 +79,6 @@ def _progress_display(scene, progress):
 def _draw_data_summary(layout):
     has_earth = _has_earth()
     prefs = get_prefs()
-    if prefs is not None and not is_authenticated(prefs):
-        try:
-            ensure_authenticated_session(prefs)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
     authenticated = bool(is_authenticated(prefs))
     cloud = get_cached_cloud_connection_status() if authenticated else {"checked": False, "online": False, "message": ""}
     checked = bool(cloud.get("checked", False))
@@ -98,7 +92,7 @@ def _draw_data_summary(layout):
     session_status_message = str(get_status_message(prefs) or "").strip()
 
     status_icon = "INFO"
-    status_text = "Starting session"
+    status_text = "Ready"
     if service_message:
         status_text = service_message
         status_icon = "ERROR" if service_severity in {"warning", "error", "maintenance"} else "INFO"
