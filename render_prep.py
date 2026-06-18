@@ -24,7 +24,7 @@ from .auth import (
     local_addon_edition_code,
     looks_like_network_error,
 )
-from .asset_builder import ensure_earth_surface_parent
+from .asset_builder import ensure_earth_surface_unparented
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -1197,9 +1197,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             if not new_obj:
                 raise RuntimeError("Failed to create new Earth surface mesh")
             try:
-                ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
+                ensure_earth_surface_unparented(scene=scene, earth_surface=new_obj)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed early-parenting staging Earth surface to Planetka Root", exc_info=True)
+                logger.debug("Planetka: failed preparing unparented staging Earth surface", exc_info=True)
             # Keep the existing resolved surface visible while we build/rebind the new
             # surface in the background. Hiding both surfaces can cause visible white/black
             # flashes in Active View because there is a frame with no textured surface.
@@ -1270,9 +1270,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         except (AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed renaming resolved Earth surface object", exc_info=True)
         try:
-            ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
+            ensure_earth_surface_unparented(scene=scene, earth_surface=new_obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+            logger.debug("Planetka: failed preparing unparented resolved Earth surface", exc_info=True)
         # Reveal the new surface first, then remove replaced surfaces to avoid blank-frame flashes.
         _set_object_hidden_state(
             new_obj,

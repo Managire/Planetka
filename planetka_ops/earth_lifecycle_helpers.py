@@ -1,6 +1,6 @@
 import bpy
 
-from ..asset_builder import ensure_earth_surface_parent, ensure_planetka_root
+from ..asset_builder import ensure_earth_surface_unparented
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import mark_earth_object
 from ..state import delete_temp_meshes, ensure_planetka_temp_collection, logger
@@ -10,13 +10,12 @@ def _earth_graph_rebind(scene, earth_surface):
     if scene is None or earth_surface is None:
         return False
     try:
-        ensure_planetka_root(scene)
-        ensure_earth_surface_parent(scene=scene, earth_surface=earth_surface)
+        ensure_earth_surface_unparented(scene=scene, earth_surface=earth_surface)
         return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed binding Earth surface to Planetka Root", exc_info=True)
+        logger.debug("Planetka: failed preparing unparented Earth surface", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed binding Earth surface to Planetka Root", exc_info=True)
+        logger.debug("Planetka: failed preparing unparented Earth surface", exc_info=True)
     return False
 
 

@@ -8,12 +8,12 @@ from bpy.props import EnumProperty, StringProperty
 from .auth import AuthApiError, describe_cloud_session_error, ensure_authenticated_session
 from .asset_builder import (
     _ensure_surface_material_library,
-    ensure_planetka_root,
+    remove_planetka_root_object,
 )
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
-from .planetka_ops.earth_lifecycle_helpers import _earth_graph_create_bootstrap_surface, _earth_graph_rebind
+from .planetka_ops.earth_lifecycle_helpers import _earth_graph_create_bootstrap_surface
 from .state import (
     _sync_idprops_from_props,
     ensure_preview_object,
@@ -187,7 +187,7 @@ class PLANETKA_OT_PublicOpenLink(bpy.types.Operator):
 class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
     bl_idname = "planetka_public.add_earth"
     bl_label = "Create New Earth"
-    bl_description = "Create Planetka Root, Planetka Earth Surface, and Planetka Preview Object, then load initial data for the current camera or active viewport."
+    bl_description = "Create Planetka Earth Surface and Planetka Preview Object, then load initial data for the current camera or active viewport."
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
@@ -220,15 +220,13 @@ class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
         try:
             _set_create_status(scene, "Loading Planetka surface shader...")
             _ensure_surface_material_library(scene)
+            remove_planetka_root_object()
 
-            _set_create_status(scene, "Creating Planetka Root...")
-            ensure_planetka_root(scene)
             _configure_public_defaults(scene, props)
 
             _set_create_status(scene, "Preparing Earth mesh...")
             warm_base_sphere_mesh_cache()
             earth = _earth_graph_create_bootstrap_surface(scene)
-            _earth_graph_rebind(scene=scene, earth_surface=earth)
 
             _set_create_status(scene, "Creating Earth preview...")
             ensure_preview_object(earth)

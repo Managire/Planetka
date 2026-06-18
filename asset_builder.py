@@ -245,90 +245,65 @@ def _ensure_collection(parent_collection, name):
     return collection
 
 
-def ensure_planetka_root(scene=None):
+def ensure_surface_collection(scene=None):
     scene = scene or getattr(bpy.context, "scene", None)
     if scene is None:
         return None
     root_collection = getattr(scene, "collection", None)
     if root_collection is None:
         return None
-    surface_collection = _ensure_collection(root_collection, SURFACE_COLLECTION_NAME)
-    if surface_collection is None:
-        return None
+    return _ensure_collection(root_collection, SURFACE_COLLECTION_NAME)
 
+
+def remove_planetka_root_object():
     root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
-    created_new = False
-    if root is None or str(getattr(root, "type", "")) != "EMPTY":
-        if root is not None:
-            try:
-                bpy.data.objects.remove(root, do_unlink=True)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        root = bpy.data.objects.new(PLANETKA_ROOT_OBJECT_NAME, None)
-        created_new = True
-
-    for collection in tuple(getattr(root, "users_collection", ())):
-        if collection == surface_collection:
-            continue
+    if root is None:
+        return False
+    for child in tuple(getattr(root, "children", ()) or ()):
         try:
-            collection.objects.unlink(root)
+            matrix_world = child.matrix_world.copy()
+            child.parent = None
+            child.matrix_world = matrix_world
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            logger.debug("Planetka asset builder: failed unparenting object from Planetka Root", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
+            logger.debug("Planetka asset builder: failed unparenting object from Planetka Root", exc_info=True)
     try:
-        if root.name not in surface_collection.objects:
-            surface_collection.objects.link(root)
+        bpy.data.objects.remove(root, do_unlink=True)
+        return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        logger.debug("Planetka asset builder: failed removing Planetka Root", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    try:
-        root.empty_display_type = 'PLAIN_AXES'
-        root.empty_display_size = 0.25
-        if created_new:
-            root.location = (0.0, 0.0, 0.0)
-            root.rotation_euler = (0.0, 0.0, 0.0)
-            root.scale = (1.0, 1.0, 1.0)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    return root
+        logger.debug("Planetka asset builder: failed removing Planetka Root", exc_info=True)
+    return False
 
 
-def ensure_earth_surface_parent(scene=None, earth_surface=None):
+def ensure_earth_surface_unparented(scene=None, earth_surface=None):
     scene = scene or getattr(bpy.context, "scene", None)
     if scene is None or earth_surface is None:
         return earth_surface
-    root = ensure_planetka_root(scene)
-    if root is None:
-        return earth_surface
+    surface_collection = ensure_surface_collection(scene)
 
     try:
-        if getattr(earth_surface, "parent", None) is not root:
-            earth_surface.parent = root
+        if surface_collection is not None and earth_surface.name not in surface_collection.objects:
+            surface_collection.objects.link(earth_surface)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
-    if getattr(earth_surface, "parent", None) is root:
-        try:
-            matrix_world = getattr(root, "matrix_world", None)
-            if matrix_world is not None and hasattr(matrix_world, "inverted_safe"):
-                earth_surface.matrix_parent_inverse = matrix_world.inverted_safe()
-            elif matrix_world is not None:
-                earth_surface.matrix_parent_inverse = matrix_world.inverted()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    try:
+        if getattr(earth_surface, "parent", None) is not None:
+            matrix_world = earth_surface.matrix_world.copy()
+            earth_surface.parent = None
+            earth_surface.matrix_world = matrix_world
+        earth_surface.matrix_parent_inverse.identity()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: failed clearing Earth Surface parent", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: failed clearing Earth Surface parent", exc_info=True)
+
+    remove_planetka_root_object()
     return earth_surface
 
 
