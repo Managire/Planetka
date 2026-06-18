@@ -775,25 +775,27 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
         target_surface_name = str(getattr(earth_surface, "name", "") or "Planetka Earth Surface")
 
-        scope_mode = str(getattr(self, "scope_mode", "AUTO") or "AUTO")
-        altitude_info = _resolve_scope_altitude_info(scene, scope_mode=scope_mode)
-        if bool(altitude_info.get("inside_earth", False)):
-            _set_camera_inside_earth_warning(scene)
-            message = (
-                "Resolve cancelled because the active camera or viewport is inside the Earth surface. "
-                "Move the camera/view outside Planetka Earth Surface or reduce the Earth size, then resolve again."
-            )
-            ui_reports.append(self._ui_report("WARNING", message))
-            return ResolvePrepareContextResult(
-                response=fail(
-                    self,
-                    message,
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                ),
-                ui_reports=ui_reports,
-            )
-        _clear_camera_inside_earth_warning(scene)
+        has_tiles_override = _parse_tiles_override(getattr(self, "tiles_override_json", "")) is not None
+        if not has_tiles_override:
+            scope_mode = str(getattr(self, "scope_mode", "AUTO") or "AUTO")
+            altitude_info = _resolve_scope_altitude_info(scene, scope_mode=scope_mode)
+            if bool(altitude_info.get("inside_earth", False)):
+                _set_camera_inside_earth_warning(scene)
+                message = (
+                    "Resolve cancelled because the active camera or viewport is inside the Earth surface. "
+                    "Move the camera/view outside Planetka Earth Surface or reduce the Earth size, then resolve again."
+                )
+                ui_reports.append(self._ui_report("WARNING", message))
+                return ResolvePrepareContextResult(
+                    response=fail(
+                        self,
+                        message,
+                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                        logger=logger,
+                    ),
+                    ui_reports=ui_reports,
+                )
+            _clear_camera_inside_earth_warning(scene)
 
         return ResolvePrepareContextResult(
             response=None,
