@@ -585,8 +585,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
     scope_mode: EnumProperty(
         name="Scope Mode",
         items=(
-            ("AUTO", "Auto", ""),
-            ("CAMERA", "Camera", ""),
+            ("AUTO", "Auto", "Resolve the current 3D viewport, or the scene camera when the viewport is in camera view"),
+            ("CAMERA", "Camera", "Resolve the active scene camera"),
+            ("ACTIVE_VIEW", "Active View", "Resolve the current non-camera 3D viewport"),
         ),
         default="AUTO",
         options={'HIDDEN', 'SKIP_SAVE'},

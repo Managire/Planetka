@@ -187,7 +187,7 @@ class PLANETKA_OT_PublicOpenLink(bpy.types.Operator):
 class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
     bl_idname = "planetka_public.add_earth"
     bl_label = "Create New Earth"
-    bl_description = "Create Planetka Root, Planetka Earth Surface, and Planetka Preview Object, then load the initial preview data."
+    bl_description = "Create Planetka Root, Planetka Earth Surface, and Planetka Preview Object, then load initial data for the current camera or active viewport."
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
@@ -238,7 +238,7 @@ class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
             props.texture_quality_mode = "PREVIEW"
             _sync_idprops_from_props(scene, ("texture_quality_mode",))
             result = bpy.ops.planetka_public.load_textures(
-                scope_mode="CAMERA",
+                scope_mode="AUTO",
                 defer_download=True,
                 tiles_override_json="",
                 texture_quality_mode_override="PREVIEW",
@@ -272,7 +272,7 @@ class PLANETKA_OT_PublicCreateEarth(bpy.types.Operator):
 class PLANETKA_OT_PublicResolvePlanetka(bpy.types.Operator):
     bl_idname = "planetka_public.resolve_planetka"
     bl_label = "Resolve Planetka"
-    bl_description = "Stream the visible Earth texture data for the active scene camera, then rebuild the Planetka Earth surface at the selected quality level."
+    bl_description = "Stream visible Earth texture data for the current camera view or active viewport, then rebuild the Planetka Earth surface at the selected quality level."
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
@@ -283,19 +283,11 @@ class PLANETKA_OT_PublicResolvePlanetka(bpy.types.Operator):
             return {'CANCELLED'}
         if get_earth_object() is None:
             return fail(self, "Create Earth first.", code=ErrorCode.PRECHECK_FAILED, logger=logger)
-        camera = getattr(scene, "camera", None)
-        if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
-            return fail(
-                self,
-                "Set an active scene camera, then press Resolve Planetka again.",
-                code=ErrorCode.PRECHECK_FAILED,
-                logger=logger,
-            )
         prepare_public_sunlight_shader_control()
         quality_mode = _normalize_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
         try:
             result = bpy.ops.planetka_public.load_textures(
-                scope_mode="CAMERA",
+                scope_mode="AUTO",
                 defer_download=True,
                 tiles_override_json="",
                 texture_quality_mode_override=quality_mode,
