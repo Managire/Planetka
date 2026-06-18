@@ -186,6 +186,73 @@ def _set_material_displacement_and_bump(material):
     return changed
 
 
+def _get_material_displacement_state(material):
+    if material is None:
+        return {}
+    state = {}
+    try:
+        if hasattr(material, "displacement_method"):
+            state["material"] = str(getattr(material, "displacement_method", "") or "")
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: failed reading material displacement method", exc_info=True)
+    cycles_settings = getattr(material, "cycles", None)
+    try:
+        if cycles_settings is not None and hasattr(cycles_settings, "displacement_method"):
+            state["cycles"] = str(getattr(cycles_settings, "displacement_method", "") or "")
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: failed reading cycles displacement method", exc_info=True)
+    return state
+
+
+def _set_enum_value_if_available(owner, prop_name, value):
+    if owner is None or not value or not hasattr(owner, prop_name):
+        return False
+    try:
+        prop_def = owner.bl_rna.properties.get(prop_name)
+        available = (
+            {item.identifier for item in prop_def.enum_items}
+            if prop_def and hasattr(prop_def, "enum_items")
+            else set()
+        )
+        if available and str(value) not in available:
+            return False
+        setattr(owner, prop_name, str(value))
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: failed restoring enum value", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: failed restoring enum value", exc_info=True)
+    return False
+
+
+def _restore_material_displacement_state(material, state):
+    if material is None or not isinstance(state, dict) or not state:
+        return False
+    changed = False
+    changed = _set_enum_value_if_available(material, "displacement_method", state.get("material")) or changed
+    cycles_settings = getattr(material, "cycles", None)
+    changed = _set_enum_value_if_available(cycles_settings, "displacement_method", state.get("cycles")) or changed
+    return bool(changed)
+
+
+def _capture_surface_material_settings():
+    settings = {}
+    for material_name in SURFACE_MATERIAL_LIBRARY_MATERIALS:
+        material = bpy.data.materials.get(material_name)
+        state = _get_material_displacement_state(material)
+        if state:
+            settings[material_name] = state
+    return settings
+
+
+def _restore_surface_material_settings(settings):
+    if not isinstance(settings, dict):
+        return
+    for material_name, state in settings.items():
+        material = bpy.data.materials.get(str(material_name or ""))
+        _restore_material_displacement_state(material, state)
+
+
 def _set_image_colorspace_safe(image, colorspace):
     if not image or not colorspace:
         return
@@ -507,8 +574,11 @@ def _load_surface_material_library():
 
 
 def _ensure_surface_material_library(scene=None):
+    material_settings = _capture_surface_material_settings()
+    loaded_library = False
     if not _is_surface_material_library_ready():
         _load_surface_material_library()
+        loaded_library = True
     # Hard reset image-node bindings on every Create Earth asset ensure so
     # stale/missing cached paths from prior sessions cannot trigger GPU texture
     # creation errors before resolve or preview rebinding completes.
@@ -518,10 +588,13 @@ def _ensure_surface_material_library(scene=None):
     earth_material = bpy.data.materials.get(EARTH_MATERIAL_NAME)
     if not earth_material:
         raise RuntimeError("Planetka: surface shader materials are missing after load.")
-    _set_material_displacement_and_bump(earth_material)
     preview_material = bpy.data.materials.get(PREVIEW_MATERIAL_NAME)
     if preview_material is None:
         raise RuntimeError("Planetka: preview material is missing after loading reference shaders.")
-    _set_material_displacement_and_bump(preview_material)
+    if material_settings:
+        _restore_surface_material_settings(material_settings)
+    elif loaded_library:
+        _set_material_displacement_and_bump(earth_material)
+        _set_material_displacement_and_bump(preview_material)
     _hide_unconnected_group_input_sockets_everywhere()
     return preview_material, earth_material

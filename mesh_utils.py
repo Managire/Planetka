@@ -459,13 +459,79 @@ def _object_dimensions_tuple(obj):
     return dimensions
 
 
-def _local_dimensions_from_object_dimensions(dimensions, scale):
+def _capture_object_transform_state(obj):
+    if obj is None:
+        return {}
+    state = {}
+    try:
+        state["location"] = tuple(float(value) for value in obj.location)
+        state["rotation_mode"] = str(getattr(obj, "rotation_mode", "XYZ") or "XYZ")
+        state["rotation_euler"] = tuple(float(value) for value in obj.rotation_euler)
+        state["rotation_quaternion"] = tuple(float(value) for value in obj.rotation_quaternion)
+        state["rotation_axis_angle"] = tuple(float(value) for value in obj.rotation_axis_angle)
+        state["scale"] = tuple(float(value) for value in obj.scale)
+        state["delta_location"] = tuple(float(value) for value in obj.delta_location)
+        state["delta_rotation_euler"] = tuple(float(value) for value in obj.delta_rotation_euler)
+        state["delta_rotation_quaternion"] = tuple(float(value) for value in obj.delta_rotation_quaternion)
+        state["delta_scale"] = tuple(float(value) for value in obj.delta_scale)
+        dimensions = _object_dimensions_tuple(obj)
+        if dimensions is not None:
+            state["dimensions"] = dimensions
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed capturing Earth Surface transform", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed capturing Earth Surface transform", exc_info=True)
+    return state
+
+
+def _restore_object_transform_values(obj, state):
+    if obj is None or not isinstance(state, dict):
+        return False
+    changed = False
+
+    def _set_vector(attr_name, expected_len):
+        nonlocal changed
+        values = state.get(attr_name)
+        if values is None or len(values) != expected_len:
+            return
+        try:
+            setattr(obj, attr_name, values)
+            changed = True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed restoring Earth Surface %s", attr_name, exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed restoring Earth Surface %s", attr_name, exc_info=True)
+
+    try:
+        rotation_mode = state.get("rotation_mode")
+        if rotation_mode:
+            obj.rotation_mode = str(rotation_mode)
+            changed = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed restoring Earth Surface rotation mode", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed restoring Earth Surface rotation mode", exc_info=True)
+
+    _set_vector("location", 3)
+    _set_vector("rotation_euler", 3)
+    _set_vector("rotation_quaternion", 4)
+    _set_vector("rotation_axis_angle", 4)
+    _set_vector("scale", 3)
+    _set_vector("delta_location", 3)
+    _set_vector("delta_rotation_euler", 3)
+    _set_vector("delta_rotation_quaternion", 4)
+    _set_vector("delta_scale", 3)
+    return bool(changed)
+
+
+def _local_dimensions_from_object_dimensions(dimensions, scale, delta_scale=None):
     if dimensions is None or scale is None:
         return None
     try:
+        delta = delta_scale if delta_scale is not None and len(delta_scale) == 3 else (1.0, 1.0, 1.0)
         local_dimensions = tuple(
-            float(dimension) / max(abs(float(scale_value)), 1e-9)
-            for dimension, scale_value in zip(dimensions, scale)
+            float(dimension) / max(abs(float(scale_value) * float(delta_value)), 1e-9)
+            for dimension, scale_value, delta_value in zip(dimensions, scale, delta)
         )
     except (RuntimeError, TypeError, ValueError, AttributeError, ZeroDivisionError):
         logger.debug("Planetka: failed computing preserved Earth Surface local dimensions", exc_info=True)
@@ -509,16 +575,16 @@ def _add_mesh_bounds_reference_vertices(mesh, local_dimensions):
     return False
 
 
-def _preserve_object_scale_and_dimensions(obj, scale, dimensions):
+def _preserve_object_transform_and_dimensions(obj, transform_state):
     if obj is None:
         return False
-    local_dimensions = _local_dimensions_from_object_dimensions(dimensions, scale)
-    try:
-        obj.scale = scale
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed preserving Earth Surface scale", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed preserving Earth Surface scale", exc_info=True)
+    if not isinstance(transform_state, dict):
+        transform_state = {}
+    _restore_object_transform_values(obj, transform_state)
+    scale = transform_state.get("scale")
+    delta_scale = transform_state.get("delta_scale")
+    dimensions = transform_state.get("dimensions")
+    local_dimensions = _local_dimensions_from_object_dimensions(dimensions, scale, delta_scale=delta_scale)
     changed = _add_mesh_bounds_reference_vertices(getattr(obj, "data", None), local_dimensions)
     try:
         bpy.context.view_layer.update()
@@ -683,13 +749,13 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     rotation = (0.0, 0.0, 0.0)
     scale = EARTH_SURFACE_DEFAULT_SCALE
     local_radius = EARTH_SURFACE_DEFAULT_RADIUS
-    target_dimensions = None
+    transform_state = {}
 
     if existing_surface and getattr(existing_surface, "type", None) == 'MESH':
+        transform_state = _capture_object_transform_state(existing_surface)
         location = tuple(existing_surface.location)
         rotation = tuple(existing_surface.rotation_euler)
         scale = tuple(existing_surface.scale)
-        target_dimensions = _object_dimensions_tuple(existing_surface)
         # Keep the base sphere extent stable across resolve rebuilds.
         # Re-inferring from the visible subset of vertices can introduce tiny
         # frame-to-frame drift when segment tile coverage changes.
@@ -830,6 +896,6 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     if hasattr(subsurf_mod, "use_custom_normals"):
         subsurf_mod.use_custom_normals = False
 
-    _preserve_object_scale_and_dimensions(temp, scale, target_dimensions)
+    _preserve_object_transform_and_dimensions(temp, transform_state)
 
     return temp
